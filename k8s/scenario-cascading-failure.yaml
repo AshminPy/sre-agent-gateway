@@ -1,0 +1,116 @@
+# SCENARIO: Cascading failure — upstream OOM kills downstream service
+#
+# What's happening:
+#   "order-db" pod: OOMKilled (memory limit 32Mi, but allocates 64Mi)
+#   "order-api" pods: CrashLoopBackOff — crash on startup because DB is unreachable
+#   Naive investigation finds order-api crashing → wrong conclusion: "fix the API"
+#   Real root cause: order-db is OOMKilled → needs higher memory limit
+#
+# What agent must find:
+#   1. order-api pods in CrashLoopBackOff with logs "DB connection refused"
+#   2. order-db pod in OOMKilled / CrashLoopBackOff
+#   3. order-db restart count high, last state: OOMKilled
+#   4. Root cause: order-db needs more memory → order-api will recover automatically
+#
+apiVersion: v1
+kind: Pod
+metadata:
+  name: order-db
+  namespace: test-incidents
+  labels:
+    incident-type: CascadingFailure
+    app: order-db
+    role: database
+  annotations:
+    incident-description: "OOMKilled — root cause of order-api cascade"
+spec:
+  restartPolicy: Always
+  containers:
+    - name: order-db
+      image: python:3.11-slim
+      command: ["python", "-c"]
+      args:
+        - |
+          import time
+          import sys
+
+          print("order-db starting — allocating cache...")
+          # Allocate memory until OOM kill
+          data = []
+          chunk_size = 1024 * 1024  # 1MB
+          allocated_mb = 0
+          while True:
+              data.append(b"x" * chunk_size)
+              allocated_mb += 1
+              if allocated_mb % 5 == 0:
+                  print(f"order-db: cache at {allocated_mb}MB")
+              time.sleep(0.05)
+      resources:
+        requests:
+          memory: "32Mi"
+          cpu: "50m"
+        limits:
+          memory: "32Mi"    # Very tight — will OOMKill fast
+          cpu: "100m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-db
+  namespace: test-incidents
+spec:
+  selector:
+    app: order-db
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-api
+  namespace: test-incidents
+  labels:
+    incident-type: CascadingFailure
+  annotations:
+    incident-description: "crashes on startup because order-db is unavailable (OOMKilled)"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: order-api
+  template:
+    metadata:
+      labels:
+        app: order-api
+        role: api
+    spec:
+      containers:
+        - name: order-api
+          image: python:3.11-slim
+          command: ["python", "-c"]
+          args:
+            - |
+              import socket
+              import sys
+              import time
+
+              print("order-api starting...")
+              time.sleep(2)  # brief startup delay
+
+              # Try to connect to DB (will fail because order-db is OOMKilled)
+              try:
+                  sock = socket.create_connection(("order-db", 5432), timeout=3)
+                  sock.close()
+                  print("Connected to order-db successfully")
+              except Exception as e:
+                  print(f"FATAL: Cannot connect to order-db: {e}", file=sys.stderr)
+                  print("order-api cannot start without database connection", file=sys.stderr)
+                  sys.exit(1)
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "100m"
+            limits:
+              memory: "128Mi"
+              cpu: "200m"

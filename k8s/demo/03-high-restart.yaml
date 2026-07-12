@@ -1,0 +1,59 @@
+# SCENARIO: Pod keeps restarting — slow memory leak → OOMKilled
+#
+# Symptom: cache-service is running but RESTARTS column shows 15+.
+#          Service is flapping — users see intermittent cache misses.
+#
+# Root cause: memory leak — cache grows without eviction.
+#             Pod runs fine for 45-60s, then OOMKilled. Repeats.
+#             Unlike a crash, this takes time to manifest (hard to spot immediately).
+#
+# Agent must find:
+#   1. kubectl get pods: restartCount high (10+), status OOMKilled/CrashLoopBackOff
+#   2. kubectl describe pod: lastState.terminated.reason = OOMKilled
+#   3. Pod logs: "cache-service: cache at Xmb" growing before crash
+#   4. Resource limits too low relative to cache growth
+#   5. Fix: increase memory limit OR add cache eviction policy
+#
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cache-service
+  namespace: demo-incidents
+  labels:
+    incident-type: HighRestartMemoryLeak
+    app: cache-service
+  annotations:
+    incident-description: "slow memory leak — OOMKilled after ~45s, 10+ restarts accumulate"
+spec:
+  restartPolicy: Always
+  containers:
+    - name: cache-service
+      image: python:3.11-slim
+      command: ["python", "-c"]
+      args:
+        - |
+          import time
+          import sys
+
+          print("cache-service starting — loading cache...", flush=True)
+          cache = {}
+          item_size = 1024 * 50   # 50KB per cache item
+
+          for i in range(10000):
+              # Simulate cache filling without eviction (memory leak)
+              cache[f"key:{i}"] = b"v" * item_size
+              if i % 20 == 0:
+                  total_mb = (i * item_size) / (1024 * 1024)
+                  print(f"cache-service: cache at {total_mb:.1f}MB ({i} items)", flush=True)
+              time.sleep(0.05)
+
+          print("cache-service: cache full, serving requests...", flush=True)
+          while True:
+              time.sleep(1)
+      resources:
+        requests:
+          memory: "64Mi"
+          cpu: "50m"
+        limits:
+          memory: "80Mi"     # Tight — OOMKilled when cache exceeds this
+          cpu: "100m"

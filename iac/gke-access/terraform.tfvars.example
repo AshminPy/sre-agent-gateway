@@ -1,0 +1,21 @@
+# Copy to terraform.tfvars and fill in your values.
+
+# ── REQUIRED ────────────────────────────────────────────────────────────────
+project_a_id = "my-agent-project"   # where the agent runs (derives its identity)
+project_b_id = "my-gke-project"     # where the GKE cluster lives
+
+# ── GENERAL ─────────────────────────────────────────────────────────────────
+region = "us-central1"
+
+# ── GKE CLUSTER ─────────────────────────────────────────────────────────────
+# true  = create a demo GKE Autopilot cluster here
+# false = use a cluster you already have (grants are still applied)
+create_gke_cluster = true
+gke_cluster_name   = "sre-test-cluster"
+
+# ── CROSS-PROJECT ACCESS (optional; only for CI or custom MCP) ───────────────
+# From the agent stack outputs. Leave empty when applying locally.
+#   deployer_sa_email = "sre-agent-deployer@my-agent-project.iam.gserviceaccount.com"
+#   custom_mcp_runtime_sa_email = "sre-k8s-mcp-runtime@my-agent-project.iam.gserviceaccount.com"
+deployer_sa_email           = ""
+custom_mcp_runtime_sa_email = ""

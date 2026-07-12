@@ -1,0 +1,100 @@
+# SCENARIO: Init container stuck — main app never starts
+#
+# What's happening:
+#   Pod has two init containers:
+#     1. "wait-for-db" — loops forever waiting for a DB that doesn't exist
+#     2. "migrate-schema" — never runs because init-1 never finishes
+#   Main container never starts.
+#   Pod status: Init:0/2 for many minutes.
+#
+# What agent must find:
+#   1. Pod status shows Init:0/2 (not Running)
+#   2. Init container "wait-for-db" logs show repeated "DB not ready, retrying..."
+#   3. No endpoint at db-service:5432
+#   4. Root cause: db-service does not exist in this namespace
+#
+apiVersion: v1
+kind: Pod
+metadata:
+  name: inventory-service
+  namespace: test-incidents
+  labels:
+    incident-type: InitContainerStuck
+    app: inventory-service
+  annotations:
+    incident-description: "init container blocking on missing db-service — app never starts"
+spec:
+  restartPolicy: Never
+  initContainers:
+    - name: wait-for-db
+      image: python:3.11-slim
+      command: ["python", "-c"]
+      args:
+        - |
+          import socket
+          import time
+          import sys
+
+          host = "db-service"
+          port = 5432
+          attempts = 0
+
+          print(f"Waiting for DB at {host}:{port}...")
+          while True:
+              attempts += 1
+              try:
+                  sock = socket.create_connection((host, port), timeout=2)
+                  sock.close()
+                  print(f"DB ready after {attempts} attempts")
+                  sys.exit(0)
+              except Exception as e:
+                  print(f"Attempt {attempts}: DB not ready ({e}) — retrying in 5s")
+                  time.sleep(5)
+      resources:
+        requests:
+          memory: "32Mi"
+          cpu: "50m"
+        limits:
+          memory: "64Mi"
+          cpu: "100m"
+    - name: migrate-schema
+      image: python:3.11-slim
+      command: ["python", "-c"]
+      args:
+        - |
+          print("Running schema migrations...")
+          print("Migration complete.")
+      resources:
+        requests:
+          memory: "32Mi"
+          cpu: "50m"
+        limits:
+          memory: "64Mi"
+          cpu: "100m"
+  containers:
+    - name: inventory-service
+      image: python:3.11-slim
+      command: ["python", "-c"]
+      args:
+        - |
+          import http.server
+          import socketserver
+
+          class Handler(http.server.SimpleHTTPRequestHandler):
+              def do_GET(self):
+                  self.send_response(200)
+                  self.end_headers()
+                  self.wfile.write(b'{"status": "ok", "service": "inventory"}')
+              def log_message(self, format, *args):
+                  pass
+
+          print("inventory-service starting on :8080")
+          with socketserver.TCPServer(("", 8080), Handler) as httpd:
+              httpd.serve_forever()
+      resources:
+        requests:
+          memory: "64Mi"
+          cpu: "100m"
+        limits:
+          memory: "128Mi"
+          cpu: "200m"

@@ -1,0 +1,73 @@
+# SCENARIO: Kubernetes Job failing — BackoffLimitExceeded
+#
+# Symptom: data-export-job shows status "BackoffLimitExceeded".
+#          Nightly data export to data warehouse has not run for 3 days.
+#          Data team is escalating.
+#
+# Root cause: job script fails because output S3 bucket path is misconfigured.
+#             Job fails → retried → fails again → hits backoffLimit.
+#
+# Agent must find:
+#   1. kubectl get job data-export-job: COMPLETIONS=0/1, AGE=Xm
+#   2. kubectl describe job: Reason=BackoffLimitExceeded, Failed=5
+#   3. kubectl logs (failed pod): "FATAL: export destination not configured"
+#   4. Fix: correct the EXPORT_BUCKET environment variable
+#
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: data-export-job
+  namespace: demo-incidents
+  labels:
+    incident-type: JobBackoffLimitExceeded
+    app: data-export-job
+  annotations:
+    incident-description: "batch job fails 5 times, hits BackoffLimitExceeded — missing export config"
+spec:
+  backoffLimit: 4        # 5 total attempts (4 retries + initial)
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        app: data-export-job
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: exporter
+          image: python:3.11-slim
+          command: ["python", "-c"]
+          args:
+            - |
+              import os
+              import sys
+              import time
+
+              print("data-export-job: starting nightly export...", flush=True)
+              time.sleep(2)
+
+              export_bucket = os.environ.get("EXPORT_BUCKET", "")
+              db_host       = os.environ.get("DB_HOST", "")
+
+              if not export_bucket:
+                  print("FATAL: EXPORT_BUCKET env var is not set", file=sys.stderr, flush=True)
+                  print("Cannot determine export destination. Check job configuration.", file=sys.stderr)
+                  sys.exit(1)
+
+              if not db_host:
+                  print("FATAL: DB_HOST env var is not set", file=sys.stderr, flush=True)
+                  sys.exit(1)
+
+              # If we get here, export would succeed
+              print(f"Exporting from {db_host} to {export_bucket}...")
+          env:
+            - name: EXPORT_BUCKET
+              value: ""          # INTENTIONALLY EMPTY — this is the bug
+            - name: DB_HOST
+              value: "postgres.internal:5432"
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "100m"
+            limits:
+              memory: "128Mi"
+              cpu: "200m"

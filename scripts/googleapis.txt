@@ -1,0 +1,28 @@
+# Google API hosts the SRE agent calls, registered in Agent Registry so the
+# Agent Gateway's default-deny egress allows them. Consumed by register_endpoints.py.
+# Category headers below control which endpoint variants are generated.
+
+# global and locational (by region & multi-region) endpoints
+# {location}-{service}.googleapis.com  and  {service}.googleapis.com  (+ mtls)
+aiplatform.googleapis.com
+
+# global and locational (by region only) endpoints
+agentregistry.googleapis.com
+
+# global endpoints
+# {service}.googleapis.com  (+ mtls)
+container.googleapis.com
+cloudresourcemanager.googleapis.com
+logging.googleapis.com
+monitoring.googleapis.com
+oauth2.googleapis.com
+trace.googleapis.com
+telemetry.googleapis.com
+iap.googleapis.com
+storage.googleapis.com
+iamcredentials.googleapis.com
+sts.googleapis.com
+
+# regional endpoints
+# {service}.{region}.googleapis.com  (+ mtls)
+modelarmor.googleapis.com

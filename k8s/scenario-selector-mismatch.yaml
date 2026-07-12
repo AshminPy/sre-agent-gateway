@@ -1,0 +1,82 @@
+# SCENARIO: Service selector mismatch — silent traffic failure
+#
+# What's happening:
+#   Service "notification-svc" selects pods with label: app=notification-service
+#   Deployment creates pods with label:               app=notification  (MISSING "-service")
+#   Pods are Running and healthy. Service has NO endpoints.
+#   Users see connection timeouts — everything "looks fine" in pod status.
+#
+# What agent must find:
+#   1. Pods Running — no obvious error
+#   2. Service exists — no obvious error
+#   3. kubectl get endpoints notification-svc → NotReadyAddresses OR empty
+#   4. Pod labels vs service selector → mismatch
+#   5. Root cause: service was renamed but deployment labels were not updated
+#
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-deployment
+  namespace: test-incidents
+  labels:
+    incident-type: SelectorMismatch
+  annotations:
+    incident-description: "service selector does not match pod labels — zero endpoints, silent traffic drop"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: notification     # correct for this deployment
+  template:
+    metadata:
+      labels:
+        app: notification   # DOES NOT match service selector below
+    spec:
+      containers:
+        - name: notification
+          image: python:3.11-slim
+          command: ["python", "-c"]
+          args:
+            - |
+              import http.server
+              import socketserver
+
+              class Handler(http.server.SimpleHTTPRequestHandler):
+                  def do_GET(self):
+                      self.send_response(200)
+                      self.end_headers()
+                      self.wfile.write(b'{"status": "ok", "service": "notification"}')
+                  def log_message(self, format, *args):
+                      pass
+
+              print("notification-service starting on :8080")
+              with socketserver.TCPServer(("", 8080), Handler) as httpd:
+                  httpd.serve_forever()
+          ports:
+            - containerPort: 8080
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "100m"
+            limits:
+              memory: "128Mi"
+              cpu: "200m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-svc
+  namespace: test-incidents
+  annotations:
+    incident-description: "selector expects app=notification-service but pods have app=notification"
+spec:
+  selector:
+    app: notification-service   # WRONG — pods use "app: notification"
+  ports:
+    - port: 80
+      targetPort: 8080

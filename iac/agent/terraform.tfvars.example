@@ -1,0 +1,55 @@
+# Copy this file to terraform.tfvars and fill in your values.
+# terraform.tfvars is gitignored (it holds environment-specific values).
+
+# ── REQUIRED ────────────────────────────────────────────────────────────────
+
+# Project A: hosts the agent + Agent Gateway (must exist, billing linked).
+project_a_id = "my-agent-project"
+
+# Project B: hosts the GKE cluster the agent investigates (deployed by the
+# iac/gke-access stack; may be an existing cluster you already own).
+project_b_id = "my-gke-project"
+
+# Name of the GKE cluster in Project B the agent investigates by default.
+gke_cluster_name = "sre-test-cluster"
+
+# Email that receives Cloud Monitoring alerts.
+notification_email = "sre-oncall@example.com"
+
+# GitHub repo (owner/name) allowed to deploy via Workload Identity Federation.
+github_repo = "my-org/testing2-gcp-sre-agent"
+
+# ── GENERAL ─────────────────────────────────────────────────────────────────
+
+region = "us-central1"
+
+# ── FEATURE FLAGS ───────────────────────────────────────────────────────────
+
+# Deploy the Agent Gateway (egress governance). Set false for a gateway-free
+# deploy where the agent works immediately with no post-apply steps.
+enable_agent_gateway = true
+
+# IAP authorization mode while validating: "DRY_RUN" logs but never blocks.
+# Switch to null (with authz_fail_open) to enforce once end-to-end is verified.
+iap_iam_enforcement_mode = "DRY_RUN"
+
+# Allow traffic if an authz extension is unreachable (safe for rollout).
+# Set false in production to fail closed.
+authz_fail_open = true
+
+# ── NETWORKING ──────────────────────────────────────────────────────────────
+
+agent_subnet_cidr = "10.0.0.0/24"
+
+# Agent Gateway PSC-Interface subnet — min /28, RFC1918, must NOT overlap
+# 10.0.0.0/24, 10.0.1.0/24, or 10.0.2.0/24.
+agent_gateway_subnet_cidr = "10.20.0.0/28"
+
+# ── MODEL / MODEL ARMOR ─────────────────────────────────────────────────────
+
+gemini_model              = "gemini-2.5-flash"
+model_armor_pi_confidence = "MEDIUM_AND_ABOVE"
+
+# ── MONITORING ──────────────────────────────────────────────────────────────
+
+log_analytics_retention_days = 30

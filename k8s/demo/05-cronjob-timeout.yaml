@@ -1,0 +1,89 @@
+# SCENARIO: CronJob killed — context deadline / activeDeadlineSeconds exceeded
+#
+# Symptom: report-generator CronJob shows last 3 runs failed.
+#          Management dashboard reports are not updating.
+#
+# Root cause: report generation fetches data from a slow external API.
+#             Each fetch times out (context deadline exceeded after 5s).
+#             The job's activeDeadlineSeconds (20s) is hit before all retries finish.
+#
+# Agent must find:
+#   1. kubectl get cronjob report-generator: LAST SCHEDULE shows recent, ACTIVE=0
+#   2. kubectl get jobs -n demo-incidents: data shows Failed jobs
+#   3. kubectl describe job (latest): reason=DeadlineExceeded
+#   4. kubectl logs (failed pod): "FATAL: context deadline exceeded: GET http://..."
+#   5. Fix: increase activeDeadlineSeconds AND fix external API timeout handling
+#
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: report-generator
+  namespace: demo-incidents
+  labels:
+    incident-type: CronJobDeadlineExceeded
+    app: report-generator
+  annotations:
+    incident-description: "CronJob killed by deadline — external API calls time out (context deadline exceeded)"
+spec:
+  schedule: "*/2 * * * *"    # Every 2 minutes for fast demo visibility
+  concurrencyPolicy: Forbid
+  failedJobsHistoryLimit: 3
+  successfulJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 20    # Job killed after 20s
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            app: report-generator
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: report-generator
+              image: python:3.11-slim
+              command: ["python", "-c"]
+              args:
+                - |
+                  import socket
+                  import sys
+                  import time
+
+                  EXTERNAL_API = "reporting-api.internal.example.com"
+                  REPORTS = ["daily_sales", "user_signups", "revenue_summary", "churn_rate"]
+
+                  print("report-generator: starting dashboard data fetch...", flush=True)
+
+                  for report in REPORTS:
+                      print(f"Fetching {report} from {EXTERNAL_API}...", flush=True)
+                      start = time.time()
+                      try:
+                          sock = socket.create_connection((EXTERNAL_API, 443), timeout=5)
+                          sock.close()
+                          print(f"{report}: OK")
+                      except socket.timeout:
+                          elapsed = time.time() - start
+                          print(
+                              f"FATAL: context deadline exceeded after {elapsed:.1f}s: "
+                              f"GET https://{EXTERNAL_API}/api/reports/{report}",
+                              file=sys.stderr, flush=True
+                          )
+                          sys.exit(1)
+                      except Exception as e:
+                          elapsed = time.time() - start
+                          print(
+                              f"FATAL: context deadline exceeded: {e}: "
+                              f"GET https://{EXTERNAL_API}/api/reports/{report}",
+                              file=sys.stderr, flush=True
+                          )
+                          sys.exit(1)
+                      time.sleep(6)   # Slow enough that activeDeadlineSeconds kills the job
+
+                  print("All reports generated successfully.", flush=True)
+              resources:
+                requests:
+                  memory: "64Mi"
+                  cpu: "100m"
+                limits:
+                  memory: "128Mi"
+                  cpu: "200m"

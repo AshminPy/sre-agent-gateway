@@ -1,0 +1,30 @@
+[project]
+name = "testing2-gcp-sre-agent"
+version = "1.0.0"
+description = "AI SRE incident-investigation agent on Vertex AI Agent Engine, governed by GCP Agent Gateway, with a two-project (agent + GKE) topology."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+
+# The deployed agent's runtime dependencies live in agent/requirements.txt
+# (they are installed inside the Agent Engine runtime from the packaged
+# agent.tar.gz). The lists below are for LOCAL development and evaluation only.
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.6.0",
+  "black>=24.0.0",
+]
+eval = [
+  "google-cloud-aiplatform[agent_engines,evaluation]>=1.60.0",
+  "pandas>=2.0.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]

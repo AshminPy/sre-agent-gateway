@@ -1,0 +1,95 @@
+# SCENARIO: Deployment rollout stuck
+#
+# What's happening:
+#   Deployment rolled out a new version. New pods start but readiness probe
+#   points to port 9999 (app listens on 8080). Pods never become Ready.
+#   RollingUpdate halts — old pods terminated, new ones not ready.
+#   Deployment shows: 0/3 ready.
+#
+# What agent must find:
+#   1. Deployment unavailableReplicas > 0
+#   2. Pod events: "Readiness probe failed: dial tcp ... port 9999: connection refused"
+#   3. App logs: server actually running on 8080
+#   4. Root cause: probe misconfiguration in the new rollout
+#
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-api
+  namespace: test-incidents
+  labels:
+    incident-type: RolloutStuck
+    app: payment-api
+  annotations:
+    incident-description: "v2 rollout stuck — readiness probe port mismatch"
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: payment-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: payment-api
+        version: v2-broken
+    spec:
+      containers:
+        - name: payment-api
+          image: python:3.11-slim
+          command: ["python", "-c"]
+          args:
+            - |
+              import http.server
+              import socketserver
+              import threading
+              import time
+
+              class Handler(http.server.SimpleHTTPRequestHandler):
+                  def do_GET(self):
+                      self.send_response(200)
+                      self.end_headers()
+                      self.wfile.write(b'{"status": "ok", "version": "v2"}')
+                  def log_message(self, format, *args):
+                      pass
+
+              print("payment-api v2 starting on port 8080...")
+              with socketserver.TCPServer(("", 8080), Handler) as httpd:
+                  print("Listening on :8080")
+                  httpd.serve_forever()
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            tcpSocket:
+              port: 9999          # WRONG PORT — app runs on 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: 8080          # liveness is correct — pod stays alive but never ready
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "100m"
+            limits:
+              memory: "128Mi"
+              cpu: "200m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-api
+  namespace: test-incidents
+spec:
+  selector:
+    app: payment-api
+  ports:
+    - port: 80
+      targetPort: 8080

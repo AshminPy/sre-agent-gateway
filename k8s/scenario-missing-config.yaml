@@ -1,0 +1,64 @@
+# SCENARIO: Missing ConfigMap — pod stuck in ContainerCreating
+#
+# What's happening:
+#   Pod mounts a ConfigMap named "app-config" that was never created.
+#   Pod stays in ContainerCreating indefinitely.
+#   Events show: "MountVolume.SetUp failed ... configmap not found"
+#
+# What agent must find:
+#   1. Pod status: ContainerCreating (not Running)
+#   2. Events: configmap "app-config" not found
+#   3. kubectl get configmap app-config -n test-incidents → NotFound
+#   4. Root cause: deployment refers to a config that was deleted or never applied
+#
+apiVersion: v1
+kind: Pod
+metadata:
+  name: auth-service
+  namespace: test-incidents
+  labels:
+    incident-type: MissingConfigMap
+    app: auth-service
+  annotations:
+    incident-description: "pod stuck in ContainerCreating — configmap app-config not found"
+spec:
+  restartPolicy: Never
+  containers:
+    - name: auth-service
+      image: python:3.11-slim
+      command: ["python", "-c"]
+      args:
+        - |
+          import os
+          import http.server
+          import socketserver
+
+          db_url = open("/config/DATABASE_URL").read().strip()
+          jwt_secret = open("/config/JWT_SECRET").read().strip()
+          print(f"auth-service starting — DB={db_url}")
+
+          class Handler(http.server.SimpleHTTPRequestHandler):
+              def do_GET(self):
+                  self.send_response(200)
+                  self.end_headers()
+                  self.wfile.write(b'{"status": "ok"}')
+              def log_message(self, format, *args):
+                  pass
+
+          with socketserver.TCPServer(("", 8080), Handler) as httpd:
+              httpd.serve_forever()
+      volumeMounts:
+        - name: config-volume
+          mountPath: /config
+          readOnly: true
+      resources:
+        requests:
+          memory: "64Mi"
+          cpu: "100m"
+        limits:
+          memory: "128Mi"
+          cpu: "200m"
+  volumes:
+    - name: config-volume
+      configMap:
+        name: app-config      # THIS ConfigMap does not exist

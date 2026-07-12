@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: crashloop-pod
+  namespace: test-incidents
+  labels:
+    incident-type: CrashLoopBackOff
+    app: crashloop-pod
+spec:
+  restartPolicy: Always
+  containers:
+    - name: crasher
+      image: python:3.11-slim
+      command: ["python", "-c"]
+      args:
+        - |
+          import sys
+          import time
+          print("Starting up...")
+          time.sleep(3)
+          print("Simulating application crash — exit code 1")
+          sys.exit(1)
+      resources:
+        requests:
+          memory: "32Mi"
+          cpu: "100m"
+        limits:
+          memory: "64Mi"
+          cpu: "200m"

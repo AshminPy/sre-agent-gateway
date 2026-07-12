@@ -1,0 +1,41 @@
+%% Architecture — testing2-gcp-sre-agent
+%% Render: mmdc -i architecture.mmd -o architecture.png -b white
+%% (GitHub renders this natively when embedded in a ```mermaid block.)
+flowchart LR
+    caller["SRE / invoke_agent.py"]
+
+    subgraph A["Project A — agent"]
+        direction TB
+        gw["Agent Gateway<br/>egress governance (optional)"]
+        subgraph engine["Vertex AI Agent Engine — sre-agent-gcp"]
+            direction TB
+            pipe["LangGraph pipeline:<br/>normalize → resolve → plan → route →<br/>execute → evidence → evaluate → loop → RCA"]
+        end
+        ma["Model Armor<br/>input/output safety"]
+        mem["Memory Bank<br/>past RCAs"]
+        buckets[("GCS buckets<br/>evidence · eval · clusters")]
+        mcp["Custom MCP<br/>Cloud Run (fallback)"]
+        mon["Cloud Monitoring<br/>metrics · alerts"]
+    end
+
+    subgraph B["Project B — GKE"]
+        direction TB
+        remote["GKE Remote MCP<br/>container.googleapis.com"]
+        cluster["GKE cluster<br/>read-only"]
+    end
+
+    caller -->|query| engine
+    engine --> ma
+    engine --> mem
+    engine --> buckets
+    engine --> mon
+    engine -->|MCP tools/call| gw
+    gw -->|governed egress| remote
+    engine -.->|fallback| mcp
+    remote --> cluster
+    mcp -.-> cluster
+
+    classDef proj fill:#e8f0fe,stroke:#4285f4,color:#1a73e8
+    classDef gkebox fill:#e6f4ea,stroke:#34a853,color:#137333
+    class A proj
+    class B gkebox

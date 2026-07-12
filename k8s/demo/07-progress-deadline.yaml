@@ -1,0 +1,108 @@
+# SCENARIO: Deployment ProgressDeadlineExceeded — deployment error
+#
+# Symptom: billing-api deployment was updated 5 minutes ago.
+#          New version never rolled out. Deployment stuck. Billing is broken.
+#
+# Root cause: new container image starts, but the /ready endpoint returns 503
+#             because the service is trying to connect to a payment gateway
+#             that requires an API key not yet provided in this environment.
+#             Readiness probe fails → pods never become Ready →
+#             deployment doesn't progress → ProgressDeadlineExceeded after 120s.
+#
+# Agent must find:
+#   1. kubectl describe deployment billing-api: condition ProgressDeadlineExceeded
+#   2. kubectl get pods: pods Running but 0/N Ready
+#   3. kubectl describe pod: "Readiness probe failed: HTTP probe failed statuscode: 503"
+#   4. Pod logs: "billing-api: payment gateway API key not configured — cannot become ready"
+#   5. Fix: mount the PAYMENT_API_KEY secret and re-deploy
+#
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: billing-api
+  namespace: demo-incidents
+  labels:
+    incident-type: ProgressDeadlineExceeded
+    app: billing-api
+  annotations:
+    incident-description: "deployment stuck — readiness fails because payment API key missing"
+spec:
+  replicas: 2
+  progressDeadlineSeconds: 120    # Deployment marked failed after 2 minutes
+  selector:
+    matchLabels:
+      app: billing-api
+  template:
+    metadata:
+      labels:
+        app: billing-api
+    spec:
+      containers:
+        - name: billing-api
+          image: python:3.11-slim
+          command: ["python", "-c"]
+          args:
+            - |
+              import http.server
+              import socketserver
+              import os
+              import sys
+
+              PAYMENT_API_KEY = os.environ.get("PAYMENT_API_KEY", "")
+
+              class Handler(http.server.SimpleHTTPRequestHandler):
+                  def do_GET(self):
+                      if self.path == "/ready":
+                          if not PAYMENT_API_KEY:
+                              # Cannot become ready without payment gateway credentials
+                              self.send_response(503)
+                              self.end_headers()
+                              self.wfile.write(
+                                  b'{"ready": false, '
+                                  b'"reason": "payment gateway API key not configured"}'
+                              )
+                              import sys
+                              print(
+                                  "billing-api: /ready returning 503 — "
+                                  "PAYMENT_API_KEY not set, cannot validate payment gateway",
+                                  file=sys.stderr, flush=True
+                              )
+                          else:
+                              self.send_response(200)
+                              self.end_headers()
+                              self.wfile.write(b'{"ready": true}')
+                      else:
+                          self.send_response(200)
+                          self.end_headers()
+                          self.wfile.write(b'{"service": "billing-api", "status": "running"}')
+
+                  def log_message(self, fmt, *args): pass
+
+              print(f"billing-api: starting (PAYMENT_API_KEY={'set' if PAYMENT_API_KEY else 'NOT SET'})", flush=True)
+              with socketserver.TCPServer(("", 8080), Handler) as httpd:
+                  httpd.serve_forever()
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          env:
+            - name: PAYMENT_API_KEY
+              value: ""          # INTENTIONALLY EMPTY — this is the bug
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "100m"
+            limits:
+              memory: "128Mi"
+              cpu: "200m"

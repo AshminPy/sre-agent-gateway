@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: imagepull-pod
+  namespace: test-incidents
+  labels:
+    incident-type: ImagePullBackOff
+    app: imagepull-pod
+spec:
+  restartPolicy: Always
+  containers:
+    - name: bad-image
+      image: gcr.io/google-containers/nonexistent-image:v99.9.9
+      resources:
+        requests:
+          memory: "32Mi"
+          cpu: "100m"
+        limits:
+          memory: "64Mi"
+          cpu: "200m"

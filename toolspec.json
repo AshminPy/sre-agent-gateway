@@ -1,0 +1,135 @@
+{
+  "tools": [
+    {
+      "name": "list_k8s_events",
+      "description": "Read Kubernetes events for a namespace, pod, or workload during incident investigation.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "parent": {
+            "type": "string",
+            "description": "GKE cluster resource path, for example projects/your-gcp-project-id/locations/us-central1/clusters/sre-test-cluster"
+          },
+          "namespace": {
+            "type": "string",
+            "description": "Kubernetes namespace"
+          },
+          "name": {
+            "type": "string",
+            "description": "Kubernetes resource name, such as pod name"
+          },
+          "resourceType": {
+            "type": "string",
+            "description": "Kubernetes resource type, such as pod"
+          }
+        },
+        "required": ["parent", "namespace"]
+      },
+      "annotations": {
+        "title": "List Kubernetes Events",
+        "readOnlyHint": true,
+        "idempotentHint": true
+      }
+    },
+    {
+      "name": "describe_k8s_resource",
+      "description": "Describe a Kubernetes resource such as a pod, deployment, or node.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "parent": {
+            "type": "string",
+            "description": "GKE cluster resource path"
+          },
+          "resourceType": {
+            "type": "string",
+            "description": "Kubernetes resource type, such as pod, deployment, node"
+          },
+          "name": {
+            "type": "string",
+            "description": "Kubernetes resource name"
+          },
+          "namespace": {
+            "type": "string",
+            "description": "Kubernetes namespace"
+          }
+        },
+        "required": ["parent", "resourceType", "name"]
+      },
+      "annotations": {
+        "title": "Describe Kubernetes Resource",
+        "readOnlyHint": true,
+        "idempotentHint": true
+      }
+    },
+    {
+      "name": "get_k8s_resource",
+      "description": "Get structured Kubernetes resource details for read-only incident investigation.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "parent": {
+            "type": "string",
+            "description": "GKE cluster resource path"
+          },
+          "resourceType": {
+            "type": "string",
+            "description": "Kubernetes resource type"
+          },
+          "name": {
+            "type": "string",
+            "description": "Kubernetes resource name"
+          },
+          "namespace": {
+            "type": "string",
+            "description": "Kubernetes namespace"
+          }
+        },
+        "required": ["parent", "resourceType", "name"]
+      },
+      "annotations": {
+        "title": "Get Kubernetes Resource",
+        "readOnlyHint": true,
+        "idempotentHint": true
+      }
+    },
+    {
+      "name": "list_k8s_api_resources",
+      "description": "List Kubernetes API resources available in the target cluster.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "parent": {
+            "type": "string",
+            "description": "GKE cluster resource path"
+          }
+        },
+        "required": ["parent"]
+      },
+      "annotations": {
+        "title": "List Kubernetes API Resources",
+        "readOnlyHint": true,
+        "idempotentHint": true
+      }
+    },
+    {
+      "name": "get_k8s_cluster_info",
+      "description": "Get read-only metadata about the Kubernetes or GKE cluster.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "parent": {
+            "type": "string",
+            "description": "GKE cluster resource path"
+          }
+        },
+        "required": ["parent"]
+      },
+      "annotations": {
+        "title": "Get Kubernetes Cluster Info",
+        "readOnlyHint": true,
+        "idempotentHint": true
+      }
+    }
+  ]
+}

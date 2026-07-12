@@ -1,0 +1,72 @@
+# SCENARIO: Liveness probe failing
+#
+# Symptom: web-service pod restarts every ~30s. Users see intermittent 502 errors.
+#          "Liveness probe failed" appears in Kubernetes events.
+#
+# Root cause: /health endpoint returns HTTP 500 (bug in health check handler).
+#             The app itself is functional but the liveness probe kills it.
+#             Fix: repair the /health endpoint — not the app logic.
+#
+# Agent must find:
+#   1. kubectl events: "Liveness probe failed: HTTP probe failed with statuscode: 500"
+#   2. Pod logs: GET /health 500 repeated
+#   3. kubectl describe pod: restartCount > 3, lastState.terminated.reason = Error
+#   4. Conclusion: health check endpoint is broken, not the service itself
+#
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web-service
+  namespace: demo-incidents
+  labels:
+    incident-type: LivenessProbeFailure
+    app: web-service
+  annotations:
+    incident-description: "liveness probe kills pod every 30s — /health returns 500 but app is fine"
+spec:
+  restartPolicy: Always
+  containers:
+    - name: web-service
+      image: python:3.11-slim
+      command: ["python", "-c"]
+      args:
+        - |
+          import http.server
+          import socketserver
+
+          class Handler(http.server.SimpleHTTPRequestHandler):
+              def do_GET(self):
+                  if self.path == "/health":
+                      # Bug: health check always returns 500
+                      # The real service logic below is perfectly fine
+                      self.send_response(500)
+                      self.end_headers()
+                      self.wfile.write(b'{"status": "error", "reason": "health check misconfigured"}')
+                  else:
+                      self.send_response(200)
+                      self.end_headers()
+                      self.wfile.write(b'{"status": "ok", "service": "web-service"}')
+
+              def log_message(self, fmt, *args):
+                  import sys
+                  print(f"[web-service] {self.address_string()} {fmt % args}", file=sys.stderr, flush=True)
+
+          print("web-service starting on :8080", flush=True)
+          with socketserver.TCPServer(("", 8080), Handler) as httpd:
+              httpd.serve_forever()
+      ports:
+        - containerPort: 8080
+      livenessProbe:
+        httpGet:
+          path: /health
+          port: 8080
+        initialDelaySeconds: 10
+        periodSeconds: 10
+        failureThreshold: 3
+      resources:
+        requests:
+          memory: "64Mi"
+          cpu: "100m"
+        limits:
+          memory: "128Mi"
+          cpu: "200m"

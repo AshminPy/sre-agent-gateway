@@ -1,0 +1,60 @@
+name: terraform-plan
+
+# Plan the agent stack on pull requests. Uses Workload Identity Federation
+# (no long-lived keys). Configure these repo secrets first:
+#   GCP_WIF_PROVIDER  = output "wif_provider"      from iac/agent
+#   GCP_DEPLOYER_SA   = output "deployer_sa_email"  from iac/agent
+#   GCP_PROJECT_A_ID / GCP_PROJECT_B_ID / GCP_REGION
+#   TFSTATE_BUCKET    = your Terraform state bucket
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "agent/**"
+      - "iac/agent/**"
+      - ".github/workflows/terraform-*.yml"
+
+permissions:
+  contents: read
+  id-token: write        # required for WIF
+  pull-requests: write   # to post the plan comment
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: iac/agent
+    steps:
+      - uses: actions/checkout@v4
+
+      # filebase64() reads agent.tar.gz at plan time, so build it first.
+      - name: Package agent
+        run: bash ../../scripts/package_agent.sh
+        working-directory: .
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOYER_SA }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.0"
+
+      - name: Init
+        run: terraform init -backend-config="bucket=${{ secrets.TFSTATE_BUCKET }}" -backend-config="prefix=agent"
+
+      - name: Validate
+        run: terraform validate
+
+      - name: Plan
+        run: |
+          terraform plan -no-color \
+            -var="project_a_id=${{ secrets.GCP_PROJECT_A_ID }}" \
+            -var="project_b_id=${{ secrets.GCP_PROJECT_B_ID }}" \
+            -var="region=${{ secrets.GCP_REGION }}" \
+            -var="notification_email=${{ secrets.NOTIFICATION_EMAIL }}" \
+            -var="github_repo=${{ github.repository }}" \
+            -var="tfstate_bucket=${{ secrets.TFSTATE_BUCKET }}"
