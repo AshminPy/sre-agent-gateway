@@ -47,12 +47,14 @@ locals {
       MEMORY_BANK_RESOURCE                       = google_vertex_ai_reasoning_engine.memory_bank.id
       GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY = "true"
     },
-    # When gateway routing is on, the agent runs as an Agent Identity whose
-    # tokens are DPoP-bound by default; this opt-out lets its SDK calls to other
-    # Google services authenticate. Matches the codelab's --allow-token-sharing.
-    var.enable_agent_gateway ? {
+    # The engine always runs as an Agent Identity (required for the gateway),
+    # whose tokens are DPoP-bound by default. This opt-out lets the agent's own
+    # SDK calls to Google services (Gemini, Model Armor, Memory Bank) authenticate
+    # — needed in BOTH gateway modes since the identity type is the same. Matches
+    # the codelab's --allow-token-sharing.
+    {
       GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES = "false"
-    } : {},
+    },
     # Point the fallback MCP at the custom Cloud Run service when enabled.
     var.enable_custom_mcp ? {
       K8S_MCP_URL = google_cloud_run_v2_service.mcp[0].uri
