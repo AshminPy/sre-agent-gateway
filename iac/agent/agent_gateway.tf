@@ -183,5 +183,12 @@ resource "google_network_security_authz_policy" "model_armor" {
     }
   }
 
-  depends_on = [time_sleep.wait_for_gateway]
+  # Attaching an authz policy updates the gateway's tenant configuration, and the
+  # gateway rejects two concurrent tenant-config updates ("resource is being
+  # created and can not be updated yet", ABORTED). Serialize after the IAP policy
+  # so the two attach one at a time.
+  depends_on = [
+    time_sleep.wait_for_gateway,
+    google_network_security_authz_policy.iap,
+  ]
 }
