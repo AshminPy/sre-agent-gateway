@@ -87,19 +87,8 @@ variable "custom_mcp_image" {
   default     = "us-docker.pkg.dev/cloudrun/container/placeholder"
 }
 
-variable "iap_iam_enforcement_mode" {
-  description = "Agent Gateway IAP authorization mode. \"DRY_RUN\" logs allow/deny decisions without blocking (recommended until validated); null (with fail_open) enforces. Only used when enable_agent_gateway = true."
-  type        = string
-  default     = "DRY_RUN"
-
-  validation {
-    condition     = var.iap_iam_enforcement_mode == null || var.iap_iam_enforcement_mode == "DRY_RUN"
-    error_message = "iap_iam_enforcement_mode must be \"DRY_RUN\" or null."
-  }
-}
-
 variable "authz_fail_open" {
-  description = "When true, the gateway ALLOWS a request if an authorization extension is unreachable (safe for rollout). Set false in production to fail closed. Only used when enable_agent_gateway = true."
+  description = "When true, the gateway ALLOWS a request if the Model Armor authorization extension is unreachable (safe for rollout). Set false in production to fail closed. Only used when enable_agent_gateway = true."
   type        = bool
   default     = true
 }
