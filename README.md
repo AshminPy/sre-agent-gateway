@@ -91,6 +91,35 @@ terraform plan
 terraform apply
 ```
 
+The command above runs a **self-contained local apply** (`create_wif = true`,
+the default): it bootstraps the CI/CD deployer identity *and* deploys the agent
+in one shot. That's the quickest way to stand the stack up.
+
+#### Alternative — deploy through GitHub Actions (git-driven)
+
+Prefer every apply to flow through pull requests? Bootstrap the CI deployer
+identity once with gcloud, then let GitHub Actions run plan (on PRs) and apply
+(on merge to `main`, behind the `production` environment approval gate):
+
+```bash
+# 1. Seed the deployer identity out-of-band (a deployer can't create the
+#    identity it runs as — see scripts/bootstrap_wif.sh for why).
+PROJECT_A_ID=my-agent-proj \
+GITHUB_REPO=my-org/testing2-gcp-sre-agent \
+TFSTATE_BUCKET=my-agent-proj-tfstate \
+bash scripts/bootstrap_wif.sh
+
+# 2. Set the repo secrets it prints (plus GCP_PROJECT_B_ID, GCP_REGION,
+#    NOTIFICATION_EMAIL) via `gh secret set` or the GitHub UI.
+
+# 3. Open a PR → terraform-plan runs. Merge → terraform-apply runs.
+```
+
+The CI workflows pass `create_wif=false`, so Terraform manages everything
+*except* the pre-seeded deployer identity. See
+[docs/least-privilege-iam.md](docs/least-privilege-iam.md) for the deployer's
+scoped roles.
+
 ### Step 3 — Post-apply (only when the gateway is enabled)
 
 ```bash

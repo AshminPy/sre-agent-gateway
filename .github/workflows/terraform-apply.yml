@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Package agent
-        run: bash ../../scripts/package_agent.sh
+        run: bash scripts/package_agent.sh
         working-directory: .
 
       - uses: google-github-actions/auth@v2
@@ -55,9 +55,10 @@ jobs:
             -var="region=${{ secrets.GCP_REGION }}" \
             -var="notification_email=${{ secrets.NOTIFICATION_EMAIL }}" \
             -var="github_repo=${{ github.repository }}" \
-            -var="tfstate_bucket=${{ secrets.TFSTATE_BUCKET }}"
+            -var="tfstate_bucket=${{ secrets.TFSTATE_BUCKET }}" \
+            -var="create_wif=false"
 
       # Post-apply gateway binding (no-op when the gateway is disabled).
       - name: Attach gateway to engine
-        run: bash ../../scripts/attach_gateway_to_engine.sh
+        run: bash scripts/attach_gateway_to_engine.sh
         working-directory: .

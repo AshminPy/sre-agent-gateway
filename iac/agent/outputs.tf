@@ -77,11 +77,15 @@ output "gke_remote_mcp_url" {
 }
 
 output "wif_provider" {
-  description = "Workload Identity Federation provider resource name — set as GCP_WIF_PROVIDER in GitHub Actions."
-  value       = google_iam_workload_identity_pool_provider.github.name
+  description = "Workload Identity Federation provider resource name — set as GCP_WIF_PROVIDER in GitHub Actions. Resolves to the same value whether the identity is managed here (create_wif = true) or bootstrapped by scripts/bootstrap_wif.sh (create_wif = false)."
+  value = var.create_wif ? (
+    google_iam_workload_identity_pool_provider.github[0].name
+    ) : (
+    "projects/${data.google_project.a.number}/locations/global/workloadIdentityPools/github-pool/providers/github-provider"
+  )
 }
 
 output "deployer_sa_email" {
   description = "CI/CD deployer service account email — set as GCP_DEPLOYER_SA in GitHub Actions, and used by the iac/gke-access stack to grant its Project B roles."
-  value       = google_service_account.deployer.email
+  value       = var.create_wif ? google_service_account.deployer[0].email : "sre-agent-deployer@${var.project_a_id}.iam.gserviceaccount.com"
 }
