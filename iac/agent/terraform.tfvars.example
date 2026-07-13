@@ -45,7 +45,6 @@ agent_subnet_cidr = "10.0.0.0/24"
 
 # Agent Gateway PSC-Interface subnet — min /28, RFC1918, must NOT overlap
 # 10.0.0.0/24, 10.0.1.0/24, or 10.0.2.0/24.
-agent_gateway_subnet_cidr = "10.20.0.0/28"
 
 # ── MODEL / MODEL ARMOR ─────────────────────────────────────────────────────
 

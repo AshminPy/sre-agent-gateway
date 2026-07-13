@@ -8,6 +8,7 @@
 AGENT_DIR := iac/agent
 GKE_DIR   := iac/gke-access
 REGION    ?= us-central1
+MREGION   ?= us
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -41,10 +42,10 @@ tf-agent-apply: package-agent  ## Package agent, then terraform apply the agent 
 	terraform -chdir=$(AGENT_DIR) apply
 
 # ── Post-apply (gateway path) ──────────────────────────────────────────────
-register-endpoints:  ## Register Google-API + MCP endpoints in Agent Registry
+register-endpoints:  ## Register Google-API + MCP endpoints in Agent Registry (both regional + multi-region, per the official codelab)
 	python3 scripts/register_endpoints.py \
 		--project $$(terraform -chdir=$(AGENT_DIR) output -raw project_a_id) \
-		--region $(REGION) --mtls-endpoints=include
+		--region $(REGION) --multi-region $(MREGION) --mtls-endpoints=include
 
 attach-gateway:  ## Bind the reasoning engine to the Agent Gateway
 	@bash scripts/attach_gateway_to_engine.sh
