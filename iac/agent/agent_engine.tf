@@ -66,15 +66,6 @@ locals {
       # Make gateway-denied (403) MCP tool calls fail fast instead of hanging the
       # turn as a broken-stream TaskGroup/TimeoutError.
       ADK_ENABLE_MCP_GRACEFUL_ERROR_HANDLING = "true"
-      # Force the PLAIN (non-mTLS) Google API endpoints. The Agent Gateway performs
-      # TLS *inspection* (MITM), which is incompatible with a mutual-TLS endpoint
-      # (aiplatform.mtls.googleapis.com → CERTIFICATE_VERIFY_FAILED). The Vertex SDK
-      # otherwise selects the .mtls. endpoint under Agent Identity. Plain TLS is
-      # inspected fine (proven on the MCP path) and the AI_PLATFORM floor-setting
-      # integration establishes Model Armor trust on the plain Vertex endpoint.
-      # (A deliberate deviation from the codelab, which relies on a long-warm data
-      # plane that has the mTLS inspection trust; a fresh/cold gateway does not.)
-      GOOGLE_API_USE_MTLS_ENDPOINT = "never"
     },
     # ── App-level Model Armor: gateway-OFF only ─────────────────────────────
     # Under the gateway the Model Armor CONTENT_AUTHZ extension inspects egress,
