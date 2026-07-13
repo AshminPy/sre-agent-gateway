@@ -22,11 +22,11 @@ resource "google_service_account" "deployer" {
 
 # ── Deployer roles in Project A ─────────────────────────────────────────────
 # Mirrors the official codelab operator roles (agw-cuj-arun-egress-gmcp step 2:
-# networkservices.admin, serviceextensions.admin, networksecurity.admin,
-# agentregistry.admin, aiplatform.admin, iap.admin, storage.admin,
-# serviceusage.serviceUsageAdmin) plus the roles this SA needs to manage its own
-# WIF/IAM/supporting infra. NOTE: intentionally NOT least-privilege right now —
-# tighten later (see docs/least-privilege-iam.md).
+# networkservices.admin, networksecurity.admin, agentregistry.admin,
+# aiplatform.admin, iap.admin, storage.admin, serviceusage.serviceUsageAdmin)
+# plus the roles this SA needs to manage its own WIF/IAM/supporting infra.
+# (networkservices.admin covers the authz service extensions.) NOTE: intentionally
+# NOT least-privilege right now — tighten later (see docs/least-privilege-iam.md).
 locals {
   deployer_a_roles = [
     "roles/serviceusage.serviceUsageAdmin",  # enable required APIs
