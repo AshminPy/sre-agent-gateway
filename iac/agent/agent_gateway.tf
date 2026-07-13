@@ -97,5 +97,12 @@ resource "google_network_security_authz_policy" "iap" {
     }
   }
 
+  # The gateway's id string is stable across a destroy+recreate (same name),
+  # so Terraform can't see that this policy must be detached first. Without
+  # this, a gateway replace hits "already being used by" (see docs/ADR-002).
+  lifecycle {
+    replace_triggered_by = [google_network_services_agent_gateway.sre_egress]
+  }
+
   depends_on = [time_sleep.wait_for_gateway]
 }
