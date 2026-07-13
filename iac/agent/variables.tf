@@ -114,11 +114,6 @@ variable "agent_subnet_cidr" {
   default     = "10.0.0.0/24"
 }
 
-variable "agent_gateway_subnet_cidr" {
-  description = "Dedicated subnet CIDR for the Agent Gateway PSC-Interface network attachment. Must be at least a /28, RFC1918, and must NOT overlap 10.0.0.0/24, 10.0.1.0/24, or 10.0.2.0/24 (Agent Gateway egress-range exclusions). Only used when enable_agent_gateway = true."
-  type        = string
-  default     = "10.20.0.0/28"
-}
 
 # ============================================================================
 # MODEL / MODEL ARMOR
@@ -130,11 +125,6 @@ variable "gemini_model" {
   default     = "gemini-2.5-flash"
 }
 
-variable "model_endpoint_location" {
-  description = "Vertex AI model-endpoint location for the agent's Gemini calls (GOOGLE_CLOUD_LOCATION). Defaults to \"global\" to match the Agent Gateway codelab (deploy_agent.py --model-endpoint-location). The regional/mTLS Vertex endpoint is not compatible with the gateway's TLS inspection; \"global\" is the codelab's proven path."
-  type        = string
-  default     = "global"
-}
 
 variable "model_armor_pi_confidence" {
   description = "Model Armor prompt-injection / jailbreak detection confidence threshold."

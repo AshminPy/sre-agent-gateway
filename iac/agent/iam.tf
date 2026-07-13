@@ -12,13 +12,13 @@ locals {
   runtime_project_roles = [
     "roles/aiplatform.expressUser",            # inference / sessions / memory (Agent Identity baseline)
     "roles/aiplatform.user",                   # Memory Bank generate/retrieve
+    "roles/aiplatform.agentDefaultAccess",     # Agent Runtime default access (official codelab grants this to the agent identity)
     "roles/serviceusage.serviceUsageConsumer", # quota / API access
     "roles/browser",                           # resourcemanager.projects.get (Agent Identity prereq)
     "roles/agentregistry.viewer",              # read Agent Registry (mcpServers discovery)
     "roles/logging.logWriter",                 # structured run logs
     "roles/cloudtrace.agent",                  # OpenTelemetry traces
     "roles/monitoring.metricWriter",           # metrics
-    "roles/modelarmor.user",                   # app-layer prompt/response sanitize
   ]
 }
 

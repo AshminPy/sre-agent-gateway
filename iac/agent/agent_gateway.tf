@@ -13,49 +13,12 @@ locals {
   gw_count = var.enable_agent_gateway ? 1 : 0
 }
 
-# ── Dedicated subnet + PSC-Interface network attachment ────────────────────
-# The gateway's egress data plane connects into this VPC via a PSC interface;
-# the firewall below admits it. Required for the data plane to serve traffic.
-
-resource "google_compute_subnetwork" "agent_gateway_psc" {
-  count = local.gw_count
-
-  project       = var.project_a_id
-  name          = "agent-gateway-psc-subnet"
-  region        = var.region
-  network       = google_compute_network.agent.id
-  ip_cidr_range = var.agent_gateway_subnet_cidr
-}
-
-resource "google_compute_network_attachment" "agent_gateway" {
-  count = local.gw_count
-
-  project               = var.project_a_id
-  name                  = "agent-gateway-attachment"
-  region                = var.region
-  connection_preference = "ACCEPT_AUTOMATIC"
-  subnetworks           = [google_compute_subnetwork.agent_gateway_psc[0].self_link]
-}
-
-# Admit the gateway's PSC interface on 443. Without this the data plane cannot
-# complete connections.
-resource "google_compute_firewall" "agent_gateway_allow_psc_i" {
-  count = local.gw_count
-
-  project       = var.project_a_id
-  name          = "agent-gateway-allow-psc-i"
-  network       = google_compute_network.agent.id
-  direction     = "INGRESS"
-  priority      = 1000
-  source_ranges = [var.agent_gateway_subnet_cidr]
-
-  allow {
-    protocol = "tcp"
-    ports    = ["443"]
-  }
-}
-
 # ── The gateway ────────────────────────────────────────────────────────────
+# Per the official codelab (agw-cuj-arun-egress-gmcp): a Google-managed gateway
+# with NO networkConfig / NO PSC network attachment. The gateway reaches the
+# public Google-API + GKE Remote MCP destinations over Google's backbone; a PSC
+# egress attachment into a VPC is only for PRIVATE-VPC targets (not our case),
+# and the codelab creates none.
 
 resource "google_network_services_agent_gateway" "sre_egress" {
   count = local.gw_count
@@ -69,22 +32,13 @@ resource "google_network_services_agent_gateway" "sre_egress" {
     governed_access_path = "AGENT_TO_ANYWHERE"
   }
 
-  # protocols=[MCP] per the official codelab (agw-cuj-arun-egress-gmcp): the
-  # gateway parses MCP request attributes for authorization.
+  # protocols=[MCP] per the official codelab: the gateway parses MCP request
+  # attributes for authorization.
   protocols = ["MCP"]
 
   registries = [local.registry_uri]
 
-  network_config {
-    egress {
-      network_attachment = google_compute_network_attachment.agent_gateway[0].id
-    }
-  }
-
-  depends_on = [
-    google_project_service.apis,
-    google_compute_firewall.agent_gateway_allow_psc_i,
-  ]
+  depends_on = [google_project_service.apis]
 }
 
 # Avoid a race where the authz policies are created before the gateway is ready.

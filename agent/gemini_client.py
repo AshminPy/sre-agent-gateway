@@ -20,12 +20,10 @@ PROJECT_ID = os.environ.get("PROJECT_ID", "your-gcp-project-id")
 REGION     = os.environ.get("REGION", "us-central1")
 MODEL      = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
-# Vertex AI model-endpoint location. Reads GOOGLE_CLOUD_LOCATION (the exact env
-# var the codelab agent sets, deploy_agent.py), defaulting to "global" to match
-# the codelab. A regional location sends model traffic to
-# us-central1-aiplatform[.mtls].googleapis.com, which the Agent Gateway's TLS
-# inspection treats as a separate target; global is the codelab's proven path.
-MODEL_ENDPOINT_LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "global")
+# Vertex AI model-endpoint location. Reads GOOGLE_CLOUD_LOCATION, defaulting to
+# REGION (the official codelab uses the regional endpoint and sets no global
+# model-endpoint-location).
+MODEL_ENDPOINT_LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", REGION)
 
 # Gemini 2.5 Flash pricing (on-demand)
 # Verify at: https://cloud.google.com/vertex-ai/generative-ai/pricing
