@@ -37,6 +37,7 @@ locals {
     "roles/networksecurity.editor",          # authorization policies
     "roles/agentregistry.viewer",            # list registry at gateway create (gateway validates resource.registries; replaces the old editor deployer's implicit access)
     "roles/modelarmor.admin",                # Model Armor template
+    "roles/modelarmor.floorSettingsAdmin",   # project-level Model Armor floor setting (GOOGLE_MCP_SERVER integration)
     "roles/run.admin",                       # Cloud Run MCP fallback
     "roles/artifactregistry.admin",          # AR repo + image push
     "roles/monitoring.editor",               # alert policies + channel
