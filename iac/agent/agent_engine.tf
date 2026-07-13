@@ -49,11 +49,13 @@ locals {
     # ── EXACT mirror of the proven-working codelab agent's env_vars ──────────
     # Source: agent-gateway codelab src/mortgage-agent/deploy_agent.py env_vars.
     {
-      # Vertex AI + model endpoint. GOOGLE_CLOUD_LOCATION pins the model endpoint
-      # location; "global" (the codelab default) avoids the regional mTLS Vertex
-      # endpoint, which the Agent Gateway's TLS inspection cannot handle.
+      # Vertex AI. GOOGLE_CLOUD_LOCATION = the region (the official codelab uses the
+      # regional endpoint ${REGION}-aiplatform.googleapis.com and does NOT set a
+      # global model-endpoint-location). With IAP REQUEST_AUTHZ (no content
+      # inspection / no TLS MITM) the gateway does not intercept these calls, so the
+      # regional endpoint routes through and is IAP-authorized.
       GOOGLE_GENAI_USE_VERTEXAI = "True"
-      GOOGLE_CLOUD_LOCATION     = var.model_endpoint_location
+      GOOGLE_CLOUD_LOCATION     = var.region
       # Agent Identity DPoP token-sharing opt-out (codelab's --allow-token-sharing).
       GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES = "false"
       # Telemetry ON, with the OTEL config the codelab pairs with it (telemetry ON
