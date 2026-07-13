@@ -54,6 +54,7 @@ DEPLOYER_ROLES=(
   roles/aiplatform.admin
   roles/networkservices.editor
   roles/networksecurity.editor
+  roles/agentregistry.viewer
   roles/modelarmor.admin
   roles/run.admin
   roles/artifactregistry.admin
