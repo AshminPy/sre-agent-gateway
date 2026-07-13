@@ -61,9 +61,14 @@ output "cluster_config_bucket_name" {
   value       = google_storage_bucket.cluster_config.name
 }
 
-output "model_armor_template" {
-  description = "Model Armor template name used by the agent."
-  value       = google_model_armor_template.sre_agent.name
+output "model_armor_request_template" {
+  description = "Model Armor request-side template name (used by the app layer when the gateway is off, and by the gateway's CONTENT_AUTHZ request inspection)."
+  value       = google_model_armor_template.sre_agent_request.name
+}
+
+output "model_armor_response_template" {
+  description = "Model Armor response-side template name (gateway CONTENT_AUTHZ response inspection)."
+  value       = google_model_armor_template.sre_agent_response.name
 }
 
 output "custom_mcp_url" {

@@ -123,12 +123,15 @@ resource "google_network_services_authz_extension" "model_armor" {
 
   metadata = {
     "model_armor_settings" = jsonencode([{
-      request_template_id  = google_model_armor_template.sre_agent.id
-      response_template_id = google_model_armor_template.sre_agent.id
+      request_template_id  = google_model_armor_template.sre_agent_request.id
+      response_template_id = google_model_armor_template.sre_agent_response.id
     }])
   }
 
-  depends_on = [google_model_armor_template.sre_agent]
+  depends_on = [
+    google_model_armor_template.sre_agent_request,
+    google_model_armor_template.sre_agent_response,
+  ]
 }
 
 resource "google_network_security_authz_policy" "model_armor" {

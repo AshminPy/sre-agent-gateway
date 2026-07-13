@@ -54,7 +54,7 @@ locals {
     # Model Armor gracefully when this is unset (agent/main.py). The Model Armor
     # TEMPLATE resource still exists — the gateway extension references it.
     var.enable_agent_gateway ? {} : {
-      MODEL_ARMOR_TEMPLATE = google_model_armor_template.sre_agent.name
+      MODEL_ARMOR_TEMPLATE = google_model_armor_template.sre_agent_request.name
     },
     # The engine always runs as an Agent Identity (required for the gateway),
     # whose tokens are DPoP-bound by default. This opt-out lets the agent's own
@@ -117,7 +117,8 @@ resource "google_vertex_ai_reasoning_engine" "sre_agent" {
 
   depends_on = [
     google_project_iam_member.vertex_ai_service_agent,
-    google_model_armor_template.sre_agent,
+    google_model_armor_template.sre_agent_request,
+    google_model_armor_template.sre_agent_response,
     google_storage_bucket.evidence,
     google_storage_bucket.eval,
     google_storage_bucket.cluster_config,
