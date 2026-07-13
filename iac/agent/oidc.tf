@@ -30,7 +30,8 @@ locals {
     "roles/iam.serviceAccountUser",          # attach SAs (Cloud Run)
     "roles/iam.workloadIdentityPoolAdmin",   # manage the WIF pool/provider
     "roles/resourcemanager.projectIamAdmin", # set project IAM policy (scoped to A)
-    "roles/compute.networkAdmin",            # VPC/subnet/NAT/firewall + PSC attachment
+    "roles/compute.networkAdmin",            # VPC/subnet/NAT/routes + PSC attachment
+    "roles/compute.securityAdmin",           # firewall rules (networkAdmin lacks compute.firewalls.create) ⚑
     "roles/aiplatform.admin",                # create reasoning engines + memory bank
     "roles/networkservices.editor",          # Agent Gateway + authz extensions
     "roles/networksecurity.editor",          # authorization policies

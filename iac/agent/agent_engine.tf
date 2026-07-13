@@ -11,9 +11,9 @@
 resource "google_project_iam_member" "vertex_ai_service_agent" {
   project = var.project_a_id
   role    = "roles/aiplatform.serviceAgent"
-  member  = "serviceAccount:service-${data.google_project.a.number}@gcp-sa-aiplatform.iam.gserviceaccount.com"
+  member  = "serviceAccount:${google_project_service_identity.aiplatform.email}"
 
-  depends_on = [google_project_service.apis]
+  depends_on = [google_project_service_identity.aiplatform]
 }
 
 # Persistent Memory Bank — a source-less reasoning engine used as long-term

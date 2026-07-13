@@ -49,3 +49,16 @@ resource "google_project_service" "apis" {
   disable_on_destroy         = false
   disable_dependent_services = false
 }
+
+# Force-create the Vertex AI service agent (service-<num>@gcp-sa-aiplatform...).
+# On a brand-new project, enabling aiplatform.googleapis.com does NOT immediately
+# create this Google-managed identity, so IAM bindings that target it fail with
+# "Service account ... does not exist" on the first apply. Creating it explicitly
+# here (and depending the bindings on it) removes that race. Idempotent.
+resource "google_project_service_identity" "aiplatform" {
+  provider = google-beta
+  project  = var.project_a_id
+  service  = "aiplatform.googleapis.com"
+
+  depends_on = [google_project_service.apis]
+}

@@ -50,6 +50,7 @@ DEPLOYER_ROLES=(
   roles/iam.workloadIdentityPoolAdmin
   roles/resourcemanager.projectIamAdmin
   roles/compute.networkAdmin
+  roles/compute.securityAdmin
   roles/aiplatform.admin
   roles/networkservices.editor
   roles/networksecurity.editor
