@@ -69,9 +69,12 @@ resource "google_network_services_agent_gateway" "sre_egress" {
     governed_access_path = "AGENT_TO_ANYWHERE"
   }
 
-  # The gateway data plane speaks these protocols; MCP is required so it can
-  # decode tool calls. An empty list leaves the data plane unable to serve.
-  protocols = ["MCP"]
+  # NOTE: `protocols` is intentionally NOT set. It is deprecated, and the
+  # proven-working codelab gateway (GoogleCloudPlatform agent-gateway demo) omits
+  # it entirely — a live describe of the working gateway shows no protocols field.
+  # Setting the deprecated `protocols = ["MCP"]` (carried from the old sre-agent-gcp
+  # repo) was the ONLY config difference vs the working gateway and left our data
+  # plane unable to complete TLS. Match the codelab: omit it.
 
   registries = [local.registry_uri]
 
