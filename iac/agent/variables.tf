@@ -119,6 +119,12 @@ variable "gemini_model" {
   default     = "gemini-2.5-flash"
 }
 
+variable "model_endpoint_location" {
+  description = "Vertex AI model-endpoint location for the agent's Gemini calls (GOOGLE_CLOUD_LOCATION). Defaults to \"global\" to match the Agent Gateway codelab (deploy_agent.py --model-endpoint-location). The regional/mTLS Vertex endpoint is not compatible with the gateway's TLS inspection; \"global\" is the codelab's proven path."
+  type        = string
+  default     = "global"
+}
+
 variable "model_armor_pi_confidence" {
   description = "Model Armor prompt-injection / jailbreak detection confidence threshold."
   type        = string
