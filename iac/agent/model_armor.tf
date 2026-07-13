@@ -112,8 +112,14 @@ resource "google_model_armor_floorsetting" "mcp" {
     }
   }
 
+  # inspect_only (not inspect_and_block): Model Armor still inspects and logs
+  # every governed MCP tool call/response (full governance visibility), but does
+  # NOT block. Raw kubectl output (e.g. `describe pod`) trips the PI/jailbreak
+  # filter as a false positive; inspect_and_block would drop legitimate SRE
+  # evidence mid-investigation. Switch to inspect_and_block once the filter set
+  # is tuned for infra payloads.
   google_mcp_server_floor_setting {
-    inspect_and_block    = true
+    inspect_only         = true
     enable_cloud_logging = true
   }
 
