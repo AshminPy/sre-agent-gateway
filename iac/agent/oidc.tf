@@ -38,7 +38,6 @@ locals {
     "roles/compute.securityAdmin",           # firewall rules (networkAdmin lacks compute.firewalls.create) ⚑
     "roles/aiplatform.admin",                # create reasoning engines + memory bank
     "roles/networkservices.admin",           # Agent Gateway (codelab operator role)
-    "roles/serviceextensions.admin",         # authz service extensions (codelab operator role)
     "roles/networksecurity.admin",           # authorization policies (codelab operator role)
     "roles/agentregistry.admin",             # Agent Registry catalog + gateway registry validation (codelab operator role)
     "roles/modelarmor.admin",                # Model Armor templates (app-level, gateway-off)
