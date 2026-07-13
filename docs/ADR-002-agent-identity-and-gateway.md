@@ -34,12 +34,57 @@ service account. Two platform facts shape the design:
 
 A newly-created Agent Gateway's data plane provisions **asynchronously on
 Google's side** and may take a while (observed: up to a few hours) before it
-serves traffic — during which egress calls can fail silently. This is expected
-platform behaviour, not a misconfiguration. If the agent's calls fail right
-after enabling the gateway, wait and retry before debugging config. A
-project-level provisioning issue (e.g. an older, pre-GA project) can prevent it
-entirely — in that case the identical setup works in a fresh project, which
-points to the platform side rather than this configuration.
+serves traffic — during which egress calls can fail silently. If the agent's
+calls fail right after enabling the gateway, wait and retry before debugging
+config.
+
+> **Caveat (2026-07-13):** we initially attributed a persistent
+> `certificate verify failed` on the agent→Vertex mTLS endpoint
+> (`us-central1-aiplatform.mtls.googleapis.com`) to this async warmth. That
+> explanation no longer holds — see "Open item" below. Do not treat cert-verify
+> failures as merely "not warm yet."
+
+## Open item: agent→Vertex mTLS `certificate verify failed` (2026-07-13)
+
+Live validation into `sreagent-t2-demo` (gateway ON) hit a persistent TLS
+`certificate verify failed` / `self signed certificate in certificate chain`
+when the agent calls the Vertex mTLS endpoint **through** the gateway. It
+survived every config variable we changed (Model Armor→IAP authz, global→regional
+endpoint, PSC→no-PSC) **and** a fresh, churn-free gateway warmed ~3 hours. The
+earlier "cold data plane, just wait" reading is therefore **not supported** by the
+evidence.
+
+What the evidence now says:
+
+- **No online footprint.** There is no public trace of this exact error anywhere.
+  A universal Google bug in a documented combo (Agent Gateway + Agent Identity +
+  Vertex) would have one. Its absence points at *our* setup, not the platform.
+- **Google's own [Troubleshoot Agent Gateway connectivity] doc lists only
+  registration/permission failure modes** — missing `roles/iap.egressor`,
+  unregistered destination hostname, IAP blocking at startup — and explicitly
+  states agents need **no special certificate setup** to trust the gateway. A
+  cert-verify failure is not a documented/expected gateway failure mode.
+- **Registration is not the gap.** The exact failing host
+  `us-central1-aiplatform.mtls.googleapis.com` is confirmed registered in the
+  Agent Registry.
+- **The one genuinely-unique factor left:** this agent calls Vertex via a raw
+  `genai.Client(vertexai=True, …)` (`agent/gemini_client.py`), whereas the proven
+  codelab uses ADK `Agent(model=…)`. Almost nobody runs a raw google-genai client
+  behind this gateway — which fits the zero-traces observation.
+
+**Leading hypothesis:** the cert-verify is a property of *our* client
+configuration, not Google-side data-plane warmth.
+
+**Decisive next test (not yet run):** deploy this same repo into a brand-new
+Project A. If it works there, the fault is specific to the `sreagent-t2-demo`
+project's state; if it fails there too, the fault is our config/code (the
+raw-genai-client hypothesis) and the fix lands in this repo. Until that test runs,
+this item is **open**, not "expected platform behaviour."
+
+The gateway-free path (`enable_agent_gateway=false`) is unaffected and works
+immediately — which is why the repo keeps it as a first-class, tested mode.
+
+[Troubleshoot Agent Gateway connectivity]: https://docs.cloud.google.com/gemini-enterprise-agent-platform/troubleshooting/troubleshoot-agent-gateway
 
 ## Consequences
 
