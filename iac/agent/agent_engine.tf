@@ -37,24 +37,25 @@ resource "google_vertex_ai_reasoning_engine" "memory_bank" {
 locals {
   agent_env = merge(
     {
-      PROJECT_ID                                 = var.project_a_id
-      REGION                                     = var.region
-      GEMINI_MODEL                               = var.gemini_model
-      EVAL_BUCKET                                = "gs://${google_storage_bucket.eval.name}"
-      EVIDENCE_BUCKET                            = google_storage_bucket.evidence.name
-      CLUSTER_CONFIG_BUCKET                      = google_storage_bucket.cluster_config.name
-      MEMORY_BANK_RESOURCE                       = google_vertex_ai_reasoning_engine.memory_bank.id
-      GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY = "true"
+      PROJECT_ID            = var.project_a_id
+      REGION                = var.region
+      GEMINI_MODEL          = var.gemini_model
+      EVAL_BUCKET           = "gs://${google_storage_bucket.eval.name}"
+      EVIDENCE_BUCKET       = google_storage_bucket.evidence.name
+      CLUSTER_CONFIG_BUCKET = google_storage_bucket.cluster_config.name
+      MEMORY_BANK_RESOURCE  = google_vertex_ai_reasoning_engine.memory_bank.id
     },
-    # App-level Model Armor is only wired when the gateway is OFF. When the gateway
-    # is ON, its Model Armor CONTENT_AUTHZ extension inspects egress, so setting
-    # MODEL_ARMOR_TEMPLATE here would make the agent sanitize a second time (and
-    # that extra call routes through the gateway too). The proven-working codelab
-    # agent does NOT set it under the gateway. The agent code skips app-level
-    # Model Armor gracefully when this is unset (agent/main.py). The Model Armor
-    # TEMPLATE resource still exists — the gateway extension references it.
+    # These are only set when the gateway is OFF. Under the gateway (the proven-
+    # working codelab agent's config), they are NOT set:
+    #   - MODEL_ARMOR_TEMPLATE: the gateway's Model Armor CONTENT_AUTHZ extension
+    #     inspects egress, so app-level sanitize would be a redundant second call
+    #     (also routed through the gateway). Agent code skips it gracefully.
+    #   - GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY: the OpenTelemetry OTLP gRPC
+    #     exporter fails through the gateway ("Context has already been used to
+    #     create a Connection"). The codelab agent runs with telemetry OFF.
     var.enable_agent_gateway ? {} : {
-      MODEL_ARMOR_TEMPLATE = google_model_armor_template.sre_agent_request.name
+      MODEL_ARMOR_TEMPLATE                       = google_model_armor_template.sre_agent_request.name
+      GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY = "true"
     },
     # The engine always runs as an Agent Identity (required for the gateway),
     # whose tokens are DPoP-bound by default. This opt-out lets the agent's own
