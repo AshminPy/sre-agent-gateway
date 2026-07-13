@@ -41,12 +41,28 @@ _session_calls         = 0
 def _get_client():
     global _client
     if _client is None:
+        # Pin the PLAIN (non-mTLS) Vertex endpoint. Under Agent Identity
+        # (identity_type=AGENT_IDENTITY), google-genai auto-selects the mTLS
+        # endpoint (aiplatform.mtls.googleapis.com) — confirmed via live Agent
+        # Gateway logs that this trips the gateway's OWN front-door mTLS check
+        # (clientCertError=client_cert_validation_not_performed), which then
+        # hits its default_denied rule (CERTIFICATE_VERIFY_FAILED / Unexpected
+        # EOF client-side). GOOGLE_API_USE_MTLS_ENDPOINT is ignored by this SDK.
+        # IAP REQUEST_AUTHZ authorizes at the HTTP layer and does no TLS
+        # inspection, so the plain endpoint needs no special cert trust.
+        base_url = (
+            "https://aiplatform.googleapis.com"
+            if MODEL_ENDPOINT_LOCATION == "global"
+            else f"https://{MODEL_ENDPOINT_LOCATION}-aiplatform.googleapis.com"
+        )
         _client = genai.Client(
             vertexai=True,
             project=PROJECT_ID,
             location=MODEL_ENDPOINT_LOCATION,
+            http_options=types.HttpOptions(base_url=base_url),
         )
-        log.info("Gemini client initialized via Vertex AI: %s in %s/%s", MODEL, PROJECT_ID, MODEL_ENDPOINT_LOCATION)
+        log.info("Gemini client initialized via Vertex AI: %s in %s/%s (endpoint %s)",
+                 MODEL, PROJECT_ID, MODEL_ENDPOINT_LOCATION, base_url)
     return _client
 
 
