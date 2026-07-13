@@ -35,10 +35,6 @@ create_wif = true
 # deploy where the agent works immediately with no post-apply steps.
 enable_agent_gateway = true
 
-# IAP authorization mode while validating: "DRY_RUN" logs but never blocks.
-# Switch to null (with authz_fail_open) to enforce once end-to-end is verified.
-iap_iam_enforcement_mode = "DRY_RUN"
-
 # Allow traffic if an authz extension is unreachable (safe for rollout).
 # Set false in production to fail closed.
 authz_fail_open = true

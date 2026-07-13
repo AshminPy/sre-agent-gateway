@@ -40,12 +40,21 @@ locals {
       PROJECT_ID                                 = var.project_a_id
       REGION                                     = var.region
       GEMINI_MODEL                               = var.gemini_model
-      MODEL_ARMOR_TEMPLATE                       = google_model_armor_template.sre_agent.name
       EVAL_BUCKET                                = "gs://${google_storage_bucket.eval.name}"
       EVIDENCE_BUCKET                            = google_storage_bucket.evidence.name
       CLUSTER_CONFIG_BUCKET                      = google_storage_bucket.cluster_config.name
       MEMORY_BANK_RESOURCE                       = google_vertex_ai_reasoning_engine.memory_bank.id
       GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY = "true"
+    },
+    # App-level Model Armor is only wired when the gateway is OFF. When the gateway
+    # is ON, its Model Armor CONTENT_AUTHZ extension inspects egress, so setting
+    # MODEL_ARMOR_TEMPLATE here would make the agent sanitize a second time (and
+    # that extra call routes through the gateway too). The proven-working codelab
+    # agent does NOT set it under the gateway. The agent code skips app-level
+    # Model Armor gracefully when this is unset (agent/main.py). The Model Armor
+    # TEMPLATE resource still exists — the gateway extension references it.
+    var.enable_agent_gateway ? {} : {
+      MODEL_ARMOR_TEMPLATE = google_model_armor_template.sre_agent.name
     },
     # The engine always runs as an Agent Identity (required for the gateway),
     # whose tokens are DPoP-bound by default. This opt-out lets the agent's own

@@ -69,9 +69,12 @@ resource "google_network_services_agent_gateway" "sre_egress" {
     governed_access_path = "AGENT_TO_ANYWHERE"
   }
 
-  # The gateway data plane speaks these protocols; MCP is required so it can
-  # decode tool calls. An empty list leaves the data plane unable to serve.
-  protocols = ["MCP"]
+  # NOTE: `protocols` is intentionally NOT set. It is deprecated, and the
+  # proven-working codelab gateway (GoogleCloudPlatform agent-gateway demo) omits
+  # it entirely — a live describe of the working gateway shows no protocols field.
+  # Setting the deprecated `protocols = ["MCP"]` (carried from the old sre-agent-gcp
+  # repo) was the ONLY config difference vs the working gateway and left our data
+  # plane unable to complete TLS. Match the codelab: omit it.
 
   registries = [local.registry_uri]
 
@@ -94,53 +97,18 @@ resource "time_sleep" "wait_for_gateway" {
   depends_on      = [google_network_services_agent_gateway.sre_egress]
 }
 
-# ── IAP request authorization (REQUEST_AUTHZ) ──────────────────────────────
+# ── IAP request authorization (REQUEST_AUTHZ) — intentionally NOT configured ─
+#
+# The proven-working codelab gateway (sreagent-codelab/agent-gateway) attaches
+# ONLY a Model Armor CONTENT_AUTHZ policy — verified live: its single authz
+# policy is `agent-gateway-ma-policy`, no IAP REQUEST_AUTHZ extension or policy.
+# The gateway still enforces per-destination egress via the native IAP/IAM path
+# (the `iap.egressor` bindings in iap_egressor.tf) — an explicit IAP authz
+# EXTENSION is not part of the working configuration. We previously carried an
+# IAP REQUEST_AUTHZ extension + policy from the old sre-agent-gcp repo's
+# assumption; removed here to match the codelab exactly.
 
-resource "google_network_services_authz_extension" "iap" {
-  count    = local.gw_count
-  provider = google-beta
-
-  project   = var.project_a_id
-  name      = "sre-agent-iap-authz"
-  location  = var.region
-  service   = "iap.googleapis.com"
-  timeout   = "1s"
-  fail_open = var.authz_fail_open
-
-  # iapPolicyVersion is always required; iamEnforcementMode is added only in
-  # DRY_RUN (logs decisions without blocking). Omit it to enforce.
-  metadata = merge(
-    { iapPolicyVersion = "V1" },
-    var.iap_iam_enforcement_mode != null ? { iamEnforcementMode = var.iap_iam_enforcement_mode } : {},
-  )
-
-  depends_on = [google_project_service.apis]
-}
-
-resource "google_network_security_authz_policy" "iap" {
-  count    = local.gw_count
-  provider = google-beta
-
-  project        = var.project_a_id
-  name           = "sre-agent-iap-gateway-policy"
-  location       = var.region
-  policy_profile = "REQUEST_AUTHZ"
-  action         = "CUSTOM"
-
-  target {
-    resources = [google_network_services_agent_gateway.sre_egress[0].id]
-  }
-
-  custom_provider {
-    authz_extension {
-      resources = [google_network_services_authz_extension.iap[0].id]
-    }
-  }
-
-  depends_on = [time_sleep.wait_for_gateway]
-}
-
-# ── Model Armor content authorization (CONTENT_AUTHZ) — defense in depth ────
+# ── Model Armor content authorization (CONTENT_AUTHZ) ──────────────────────
 
 resource "google_network_services_authz_extension" "model_armor" {
   count    = local.gw_count
@@ -183,12 +151,5 @@ resource "google_network_security_authz_policy" "model_armor" {
     }
   }
 
-  # Attaching an authz policy updates the gateway's tenant configuration, and the
-  # gateway rejects two concurrent tenant-config updates ("resource is being
-  # created and can not be updated yet", ABORTED). Serialize after the IAP policy
-  # so the two attach one at a time.
-  depends_on = [
-    time_sleep.wait_for_gateway,
-    google_network_security_authz_policy.iap,
-  ]
+  depends_on = [time_sleep.wait_for_gateway]
 }
