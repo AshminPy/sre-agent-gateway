@@ -74,3 +74,48 @@ resource "google_model_armor_template" "sre_agent_response" {
 
   depends_on = [google_project_service.apis]
 }
+
+# ── Project-level Model Armor FLOOR SETTING ────────────────────────────────
+# The proven-working codelab project has a Model Armor floor setting integrated
+# with GOOGLE_MCP_SERVER (verified live: enforcement=true, integratedServices=
+# ['GOOGLE_MCP_SERVER']). This enables Model Armor's native integration with the
+# Google MCP Server path that the Agent Gateway governs. Our t2 project had NO
+# floor setting — the one live, project-level difference vs the working codelab.
+# Only created when the gateway is enabled (the gateway is what inspects MCP).
+resource "google_model_armor_floorsetting" "mcp" {
+  count    = var.enable_agent_gateway ? 1 : 0
+  provider = google-beta
+
+  parent   = "projects/${var.project_a_id}"
+  location = "global"
+
+  enable_floor_setting_enforcement = true
+  integrated_services              = ["GOOGLE_MCP_SERVER"]
+
+  filter_config {
+    rai_settings {
+      rai_filters {
+        filter_type      = "SEXUALLY_EXPLICIT"
+        confidence_level = "MEDIUM_AND_ABOVE"
+      }
+      rai_filters {
+        filter_type      = "HATE_SPEECH"
+        confidence_level = "MEDIUM_AND_ABOVE"
+      }
+    }
+    pi_and_jailbreak_filter_settings {
+      filter_enforcement = "ENABLED"
+      confidence_level   = var.model_armor_pi_confidence
+    }
+    malicious_uri_filter_settings {
+      filter_enforcement = "ENABLED"
+    }
+  }
+
+  google_mcp_server_floor_setting {
+    inspect_and_block    = true
+    enable_cloud_logging = true
+  }
+
+  depends_on = [google_project_service.apis]
+}
