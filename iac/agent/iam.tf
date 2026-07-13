@@ -19,7 +19,6 @@ locals {
     "roles/logging.logWriter",                 # structured run logs
     "roles/cloudtrace.agent",                  # OpenTelemetry traces
     "roles/monitoring.metricWriter",           # metrics
-    "roles/modelarmor.user",                   # app-layer prompt/response sanitize
   ]
 }
 

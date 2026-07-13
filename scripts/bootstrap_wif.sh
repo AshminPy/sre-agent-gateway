@@ -52,9 +52,10 @@ DEPLOYER_ROLES=(
   roles/compute.networkAdmin
   roles/compute.securityAdmin
   roles/aiplatform.admin
-  roles/networkservices.editor
-  roles/networksecurity.editor
-  roles/agentregistry.viewer
+  roles/networkservices.admin
+  roles/serviceextensions.admin
+  roles/networksecurity.admin
+  roles/agentregistry.admin
   roles/modelarmor.admin
   roles/modelarmor.floorSettingsAdmin
   roles/run.admin

@@ -20,10 +20,14 @@ resource "google_service_account" "deployer" {
   display_name = "SRE Agent CI/CD deployer (WIF)"
 }
 
-# ── Scoped deployer roles in Project A (least privilege — no editor/owner) ──
+# ── Deployer roles in Project A ─────────────────────────────────────────────
+# Mirrors the official codelab operator roles (agw-cuj-arun-egress-gmcp step 2:
+# networkservices.admin, serviceextensions.admin, networksecurity.admin,
+# agentregistry.admin, aiplatform.admin, iap.admin, storage.admin,
+# serviceusage.serviceUsageAdmin) plus the roles this SA needs to manage its own
+# WIF/IAM/supporting infra. NOTE: intentionally NOT least-privilege right now —
+# tighten later (see docs/least-privilege-iam.md).
 locals {
-  # Minimum roles to create everything this stack manages. See
-  # docs/least-privilege-iam.md for the per-role justification.
   deployer_a_roles = [
     "roles/serviceusage.serviceUsageAdmin",  # enable required APIs
     "roles/iam.serviceAccountAdmin",         # create runtime/MCP SAs
@@ -33,10 +37,11 @@ locals {
     "roles/compute.networkAdmin",            # VPC/subnet/NAT/routes + PSC attachment
     "roles/compute.securityAdmin",           # firewall rules (networkAdmin lacks compute.firewalls.create) ⚑
     "roles/aiplatform.admin",                # create reasoning engines + memory bank
-    "roles/networkservices.editor",          # Agent Gateway + authz extensions
-    "roles/networksecurity.editor",          # authorization policies
-    "roles/agentregistry.viewer",            # list registry at gateway create (gateway validates resource.registries; replaces the old editor deployer's implicit access)
-    "roles/modelarmor.admin",                # Model Armor template
+    "roles/networkservices.admin",           # Agent Gateway (codelab operator role)
+    "roles/serviceextensions.admin",         # authz service extensions (codelab operator role)
+    "roles/networksecurity.admin",           # authorization policies (codelab operator role)
+    "roles/agentregistry.admin",             # Agent Registry catalog + gateway registry validation (codelab operator role)
+    "roles/modelarmor.admin",                # Model Armor templates (app-level, gateway-off)
     "roles/run.admin",                       # Cloud Run MCP fallback
     "roles/artifactregistry.admin",          # AR repo + image push
     "roles/monitoring.editor",               # alert policies + channel
