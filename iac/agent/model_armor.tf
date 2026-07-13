@@ -89,8 +89,14 @@ resource "google_model_armor_floorsetting" "mcp" {
   parent   = "projects/${var.project_a_id}"
   location = "global"
 
+  # GOOGLE_MCP_SERVER lit up Model Armor inspection + trust on the GKE Remote MCP
+  # path (proven: the gateway now decodes MCP tools/call). AI_PLATFORM does the
+  # same for the agent's Vertex AI (Gemini) egress, which otherwise fails the
+  # gateway TLS-inspection handshake (cert-verify on aiplatform.mtls). The codelab
+  # runs these on a long-warm data plane; on a fresh project we integrate both
+  # paths explicitly so trust/inspection is established for each.
   enable_floor_setting_enforcement = true
-  integrated_services              = ["GOOGLE_MCP_SERVER"]
+  integrated_services              = ["GOOGLE_MCP_SERVER", "AI_PLATFORM"]
 
   filter_config {
     rai_settings {
@@ -119,6 +125,13 @@ resource "google_model_armor_floorsetting" "mcp" {
   # evidence mid-investigation. Switch to inspect_and_block once the filter set
   # is tuned for infra payloads.
   google_mcp_server_floor_setting {
+    inspect_only         = true
+    enable_cloud_logging = true
+  }
+
+  # inspect_only on the Vertex AI path too — govern/log Gemini egress without
+  # blocking the agent's own model calls.
+  ai_platform_floor_setting {
     inspect_only         = true
     enable_cloud_logging = true
   }
