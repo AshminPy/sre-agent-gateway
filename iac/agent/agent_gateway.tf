@@ -69,12 +69,9 @@ resource "google_network_services_agent_gateway" "sre_egress" {
     governed_access_path = "AGENT_TO_ANYWHERE"
   }
 
-  # NOTE: `protocols` is intentionally NOT set. It is deprecated, and the
-  # proven-working codelab gateway (GoogleCloudPlatform agent-gateway demo) omits
-  # it entirely — a live describe of the working gateway shows no protocols field.
-  # Setting the deprecated `protocols = ["MCP"]` (carried from the old sre-agent-gcp
-  # repo) was the ONLY config difference vs the working gateway and left our data
-  # plane unable to complete TLS. Match the codelab: omit it.
+  # protocols=[MCP] per the official codelab (agw-cuj-arun-egress-gmcp): the
+  # gateway parses MCP request attributes for authorization.
+  protocols = ["MCP"]
 
   registries = [local.registry_uri]
 
@@ -97,51 +94,43 @@ resource "time_sleep" "wait_for_gateway" {
   depends_on      = [google_network_services_agent_gateway.sre_egress]
 }
 
-# ── IAP request authorization (REQUEST_AUTHZ) — intentionally NOT configured ─
+# ── IAP request authorization (REQUEST_AUTHZ) — the official codelab's governance ─
 #
-# The proven-working codelab gateway (sreagent-codelab/agent-gateway) attaches
-# ONLY a Model Armor CONTENT_AUTHZ policy — verified live: its single authz
-# policy is `agent-gateway-ma-policy`, no IAP REQUEST_AUTHZ extension or policy.
-# The gateway still enforces per-destination egress via the native IAP/IAM path
-# (the `iap.egressor` bindings in iap_egressor.tf) — an explicit IAP authz
-# EXTENSION is not part of the working configuration. We previously carried an
-# IAP REQUEST_AUTHZ extension + policy from the old sre-agent-gcp repo's
-# assumption; removed here to match the codelab exactly.
-
-# ── Model Armor content authorization (CONTENT_AUTHZ) ──────────────────────
-
-resource "google_network_services_authz_extension" "model_armor" {
+# Per the official codelab (agw-cuj-arun-egress-gmcp), the gateway is governed by
+# an IAP REQUEST_AUTHZ extension: it authorizes each request by evaluating the
+# agent identity's IAM policy on the target (the `iap.egressor` bindings in
+# iap_egressor.tf). This is HEADER/attribute-based — the gateway does NOT
+# TLS-terminate or inspect payload content, so there is no MITM (and no
+# cert-verify failure on the agent's mutual-TLS Vertex endpoint). DRY_RUN logs
+# decisions without blocking; switch to enforce (null enforcement mode,
+# fail_open=false) once validated.
+resource "google_network_services_authz_extension" "iap" {
   count    = local.gw_count
   provider = google-beta
 
   project   = var.project_a_id
-  name      = "sre-agent-ma-authz"
+  name      = "sre-agent-iap-authz"
   location  = var.region
-  service   = "modelarmor.${var.region}.rep.googleapis.com"
-  timeout   = "2s"
+  service   = "iap.googleapis.com"
+  timeout   = "1s"
   fail_open = var.authz_fail_open
 
-  metadata = {
-    "model_armor_settings" = jsonencode([{
-      request_template_id  = google_model_armor_template.sre_agent_request.id
-      response_template_id = google_model_armor_template.sre_agent_response.id
-    }])
-  }
+  metadata = merge(
+    { iapPolicyVersion = "V1" },
+    var.iap_iam_enforcement_mode != null ? { iamEnforcementMode = var.iap_iam_enforcement_mode } : {},
+  )
 
-  depends_on = [
-    google_model_armor_template.sre_agent_request,
-    google_model_armor_template.sre_agent_response,
-  ]
+  depends_on = [google_project_service.apis]
 }
 
-resource "google_network_security_authz_policy" "model_armor" {
+resource "google_network_security_authz_policy" "iap" {
   count    = local.gw_count
   provider = google-beta
 
   project        = var.project_a_id
-  name           = "sre-agent-ma-gateway-policy"
+  name           = "sre-agent-iap-gateway-policy"
   location       = var.region
-  policy_profile = "CONTENT_AUTHZ"
+  policy_profile = "REQUEST_AUTHZ"
   action         = "CUSTOM"
 
   target {
@@ -150,7 +139,7 @@ resource "google_network_security_authz_policy" "model_armor" {
 
   custom_provider {
     authz_extension {
-      resources = [google_network_services_authz_extension.model_armor[0].id]
+      resources = [google_network_services_authz_extension.iap[0].id]
     }
   }
 

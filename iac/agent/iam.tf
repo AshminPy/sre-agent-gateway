@@ -110,16 +110,3 @@ resource "google_project_iam_member" "agentgateway_p4sa_dns" {
   depends_on = [google_network_services_agent_gateway.sre_egress]
 }
 
-# The gateway invokes its Model Armor authz extension as this Google-managed SA
-# (read from the gateway card — never hardcoded). It needs to use the templates.
-resource "google_project_iam_member" "service_ext_sa_model_armor" {
-  for_each = var.enable_agent_gateway ? toset([
-    "roles/modelarmor.calloutUser",
-    "roles/modelarmor.user",
-    "roles/serviceusage.serviceUsageConsumer",
-  ]) : toset([])
-
-  project = var.project_a_id
-  role    = each.value
-  member  = "serviceAccount:${google_network_services_agent_gateway.sre_egress[0].agent_gateway_card[0].service_extensions_service_account}"
-}
