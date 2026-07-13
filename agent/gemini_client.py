@@ -43,12 +43,25 @@ _session_calls         = 0
 def _get_client():
     global _client
     if _client is None:
+        # Pin the PLAIN (non-mTLS) Vertex endpoint. Under the Agent Gateway, the
+        # SDK's default mTLS endpoint (aiplatform.mtls.googleapis.com — selected
+        # because Agent Identity presents client certs) fails the gateway's TLS
+        # inspection (CERTIFICATE_VERIFY_FAILED); GOOGLE_API_USE_MTLS_ENDPOINT is
+        # ignored by google-genai. Setting http_options.base_url forces the plain
+        # host, which the gateway inspects fine (like the MCP path).
+        base_url = (
+            "https://aiplatform.googleapis.com"
+            if MODEL_ENDPOINT_LOCATION == "global"
+            else f"https://{MODEL_ENDPOINT_LOCATION}-aiplatform.googleapis.com"
+        )
         _client = genai.Client(
             vertexai=True,
             project=PROJECT_ID,
             location=MODEL_ENDPOINT_LOCATION,
+            http_options=types.HttpOptions(base_url=base_url),
         )
-        log.info("Gemini client initialized via Vertex AI: %s in %s/%s", MODEL, PROJECT_ID, MODEL_ENDPOINT_LOCATION)
+        log.info("Gemini client initialized via Vertex AI: %s in %s/%s (endpoint %s)",
+                 MODEL, PROJECT_ID, MODEL_ENDPOINT_LOCATION, base_url)
     return _client
 
 
