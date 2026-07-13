@@ -20,6 +20,14 @@ PROJECT_ID = os.environ.get("PROJECT_ID", "your-gcp-project-id")
 REGION     = os.environ.get("REGION", "us-central1")
 MODEL      = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
+# Model-endpoint location for the Vertex AI Gemini calls. Defaults to "global"
+# to match the Agent Gateway codelab (deploy_agent.py --model-endpoint-location
+# defaults to global). A regional location (e.g. us-central1) sends model traffic
+# to us-central1-aiplatform[.mtls].googleapis.com, which the Agent Gateway's TLS
+# inspection treats as a separate target; the global endpoint is the codelab's
+# proven path under the gateway.
+MODEL_ENDPOINT_LOCATION = os.environ.get("MODEL_ENDPOINT_LOCATION", "global")
+
 # Gemini 2.5 Flash pricing (on-demand)
 # Verify at: https://cloud.google.com/vertex-ai/generative-ai/pricing
 PRICE_INPUT_PER_1M  = float(os.environ.get("GEMINI_PRICE_INPUT",  "0.15"))
@@ -39,9 +47,9 @@ def _get_client():
         _client = genai.Client(
             vertexai=True,
             project=PROJECT_ID,
-            location=REGION,
+            location=MODEL_ENDPOINT_LOCATION,
         )
-        log.info("Gemini client initialized via Vertex AI: %s in %s/%s", MODEL, PROJECT_ID, REGION)
+        log.info("Gemini client initialized via Vertex AI: %s in %s/%s", MODEL, PROJECT_ID, MODEL_ENDPOINT_LOCATION)
     return _client
 
 
