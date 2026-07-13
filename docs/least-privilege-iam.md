@@ -61,7 +61,8 @@ bootstrap script mirrors it.
 
 **Project A** (`deployer_a_roles`): `serviceusage.serviceUsageAdmin`,
 `iam.serviceAccountAdmin`, `iam.serviceAccountUser`, `iam.workloadIdentityPoolAdmin`,
-`resourcemanager.projectIamAdmin` ⚑, `compute.networkAdmin`, `aiplatform.admin` ⚑,
+`resourcemanager.projectIamAdmin` ⚑, `compute.networkAdmin`, `compute.securityAdmin`
+(firewall rules — `networkAdmin` lacks `compute.firewalls.create`), `aiplatform.admin` ⚑,
 `networkservices.editor`, `networksecurity.editor`, `modelarmor.admin`, `run.admin`,
 `artifactregistry.admin`, `monitoring.editor`, `logging.configWriter`, `storage.admin` ⚑,
 `iap.admin` ⚑ (the only predefined role granting `iap.webServiceVersions.setIamPolicy`, needed

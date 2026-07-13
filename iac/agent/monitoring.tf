@@ -108,6 +108,21 @@ resource "google_logging_metric" "loop_exit_reason" {
 
 # ── Notification channel + alert policies ──────────────────────────────────
 
+# A newly-created log-based metric is not immediately queryable by Cloud
+# Monitoring, so an alert policy referencing it can fail with "Cannot find
+# metric(s)..." even with a depends_on. Wait for propagation before creating the
+# alert policies. (On the rare occasion the metric still isn't visible, a
+# re-apply converges — alert creation is idempotent.)
+resource "time_sleep" "wait_for_metrics" {
+  create_duration = "120s"
+
+  depends_on = [
+    google_logging_metric.errors,
+    google_logging_metric.escalations,
+    google_logging_metric.investigation_cost,
+  ]
+}
+
 resource "google_monitoring_notification_channel" "email_oncall" {
   project      = var.project_a_id
   display_name = "SRE Agent On-Call Email"
@@ -140,7 +155,7 @@ resource "google_monitoring_alert_policy" "high_error_rate" {
     content   = "SRE Agent error rate is elevated. Query logs: `jsonPayload.status=\"error\"`"
     mime_type = "text/markdown"
   }
-  depends_on = [google_logging_metric.errors]
+  depends_on = [time_sleep.wait_for_metrics]
 }
 
 resource "google_monitoring_alert_policy" "high_escalation_rate" {
@@ -165,7 +180,7 @@ resource "google_monitoring_alert_policy" "high_escalation_rate" {
     content   = "SRE Agent is escalating incidents at a high rate. Query logs: `jsonPayload.confidence_band=\"escalate\"`"
     mime_type = "text/markdown"
   }
-  depends_on = [google_logging_metric.escalations]
+  depends_on = [time_sleep.wait_for_metrics]
 }
 
 resource "google_monitoring_alert_policy" "cost_spike" {
@@ -190,5 +205,5 @@ resource "google_monitoring_alert_policy" "cost_spike" {
     content   = "Single SRE Agent investigation exceeded $0.10. Check run_id in Cloud Logging for the token breakdown.\nQuery: `jsonPayload.estimated_cost_usd > 0.1`"
     mime_type = "text/markdown"
   }
-  depends_on = [google_logging_metric.investigation_cost]
+  depends_on = [time_sleep.wait_for_metrics]
 }

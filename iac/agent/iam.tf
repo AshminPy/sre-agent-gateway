@@ -83,9 +83,9 @@ resource "google_project_iam_member" "aiplatform_sa_network" {
 
   project = var.project_a_id
   role    = each.value
-  member  = "serviceAccount:service-${data.google_project.a.number}@gcp-sa-aiplatform.iam.gserviceaccount.com"
+  member  = "serviceAccount:${google_project_service_identity.aiplatform.email}"
 
-  depends_on = [google_project_service.apis]
+  depends_on = [google_project_service_identity.aiplatform]
 }
 
 resource "google_project_iam_member" "aiplatform_re_sa_network" {
