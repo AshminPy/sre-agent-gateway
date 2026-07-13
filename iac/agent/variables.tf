@@ -69,6 +69,12 @@ variable "enable_agent_gateway" {
   default     = true
 }
 
+variable "create_wif" {
+  description = "Manage the CI/CD deployer identity (Workload Identity Federation pool/provider, deployer service account, and its role bindings) inside this stack. Set true for a self-contained local `terraform apply` that bootstraps everything. Set false when the deployer identity is created out-of-band by scripts/bootstrap_wif.sh — required for the git-driven flow, since GitHub Actions must authenticate AS that identity to run the apply (a deployer cannot create the very identity it runs as). CI passes create_wif=false automatically."
+  type        = bool
+  default     = true
+}
+
 variable "enable_custom_mcp" {
   description = "Deploy the custom Cloud Run MCP server as a FALLBACK to GKE Remote MCP. Optional — the agent works with GKE Remote MCP alone. When true you must build & push the MCP image first (see README / `make build-mcp`); until then the service runs a Google placeholder image."
   type        = bool

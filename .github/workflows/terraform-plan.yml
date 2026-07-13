@@ -1,10 +1,13 @@
 name: terraform-plan
 
 # Plan the agent stack on pull requests. Uses Workload Identity Federation
-# (no long-lived keys). Configure these repo secrets first:
-#   GCP_WIF_PROVIDER  = output "wif_provider"      from iac/agent
-#   GCP_DEPLOYER_SA   = output "deployer_sa_email"  from iac/agent
+# (no long-lived keys). The deployer identity is seeded once by
+# scripts/bootstrap_wif.sh; these workflows pass create_wif=false so Terraform
+# does not try to re-create it. Configure these repo secrets first:
+#   GCP_WIF_PROVIDER  = output "wif_provider"      (printed by bootstrap_wif.sh)
+#   GCP_DEPLOYER_SA   = output "deployer_sa_email"  (printed by bootstrap_wif.sh)
 #   GCP_PROJECT_A_ID / GCP_PROJECT_B_ID / GCP_REGION
+#   NOTIFICATION_EMAIL = email for Cloud Monitoring alerts
 #   TFSTATE_BUCKET    = your Terraform state bucket
 
 on:
@@ -57,4 +60,5 @@ jobs:
             -var="region=${{ secrets.GCP_REGION }}" \
             -var="notification_email=${{ secrets.NOTIFICATION_EMAIL }}" \
             -var="github_repo=${{ github.repository }}" \
-            -var="tfstate_bucket=${{ secrets.TFSTATE_BUCKET }}"
+            -var="tfstate_bucket=${{ secrets.TFSTATE_BUCKET }}" \
+            -var="create_wif=false"

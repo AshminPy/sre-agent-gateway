@@ -52,7 +52,12 @@ No write access, no broad project roles.
 ## 3. CI/CD deployer service account
 
 One WIF service account (`iac/agent/oidc.tf`) impersonated by GitHub Actions —
-no long-lived keys.
+no long-lived keys. It can be created two ways, both producing the identical
+identity and role set: managed in-stack (`create_wif = true`, a self-contained
+local apply) or seeded out-of-band by `scripts/bootstrap_wif.sh`
+(`create_wif = false`, the git-driven flow — CI authenticates *as* this SA, so
+it cannot create it). The role list below is the single source of truth; the
+bootstrap script mirrors it.
 
 **Project A** (`deployer_a_roles`): `serviceusage.serviceUsageAdmin`,
 `iam.serviceAccountAdmin`, `iam.serviceAccountUser`, `iam.workloadIdentityPoolAdmin`,

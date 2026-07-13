@@ -25,6 +25,12 @@ region = "us-central1"
 
 # ── FEATURE FLAGS ───────────────────────────────────────────────────────────
 
+# Manage the CI/CD deployer identity (WIF pool/provider + deployer SA) in this
+# stack. true = a self-contained local apply bootstraps it. Set false only for
+# the git-driven flow, where scripts/bootstrap_wif.sh seeds it first and GitHub
+# Actions applies as it (CI passes create_wif=false automatically).
+create_wif = true
+
 # Deploy the Agent Gateway (egress governance). Set false for a gateway-free
 # deploy where the agent works immediately with no post-apply steps.
 enable_agent_gateway = true
