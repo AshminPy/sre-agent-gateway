@@ -34,7 +34,7 @@ jobs:
 
       # filebase64() reads agent.tar.gz at plan time, so build it first.
       - name: Package agent
-        run: bash ../../scripts/package_agent.sh
+        run: bash scripts/package_agent.sh
         working-directory: .
 
       - uses: google-github-actions/auth@v2
