@@ -36,6 +36,7 @@ resource "google_vertex_ai_reasoning_engine" "memory_bank" {
 # Single source of truth for the agent's runtime environment.
 locals {
   agent_env = merge(
+    # ── This agent's own functional config ──────────────────────────────────
     {
       PROJECT_ID            = var.project_a_id
       REGION                = var.region
@@ -45,25 +46,33 @@ locals {
       CLUSTER_CONFIG_BUCKET = google_storage_bucket.cluster_config.name
       MEMORY_BANK_RESOURCE  = google_vertex_ai_reasoning_engine.memory_bank.id
     },
-    # These are only set when the gateway is OFF. Under the gateway (the proven-
-    # working codelab agent's config), they are NOT set:
-    #   - MODEL_ARMOR_TEMPLATE: the gateway's Model Armor CONTENT_AUTHZ extension
-    #     inspects egress, so app-level sanitize would be a redundant second call
-    #     (also routed through the gateway). Agent code skips it gracefully.
-    #   - GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY: the OpenTelemetry OTLP gRPC
-    #     exporter fails through the gateway ("Context has already been used to
-    #     create a Connection"). The codelab agent runs with telemetry OFF.
-    var.enable_agent_gateway ? {} : {
-      MODEL_ARMOR_TEMPLATE                       = google_model_armor_template.sre_agent_request.name
-      GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY = "true"
-    },
-    # The engine always runs as an Agent Identity (required for the gateway),
-    # whose tokens are DPoP-bound by default. This opt-out lets the agent's own
-    # SDK calls to Google services (Gemini, Model Armor, Memory Bank) authenticate
-    # — needed in BOTH gateway modes since the identity type is the same. Matches
-    # the codelab's --allow-token-sharing.
+    # ── EXACT mirror of the proven-working codelab agent's env_vars ──────────
+    # Source: agent-gateway codelab src/mortgage-agent/deploy_agent.py env_vars.
     {
+      # Vertex AI + model endpoint. GOOGLE_CLOUD_LOCATION pins the model endpoint
+      # location; "global" (the codelab default) avoids the regional mTLS Vertex
+      # endpoint, which the Agent Gateway's TLS inspection cannot handle.
+      GOOGLE_GENAI_USE_VERTEXAI = "True"
+      GOOGLE_CLOUD_LOCATION     = var.model_endpoint_location
+      # Agent Identity DPoP token-sharing opt-out (codelab's --allow-token-sharing).
       GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES = "false"
+      # Telemetry ON, with the OTEL config the codelab pairs with it (telemetry ON
+      # *without* this OTEL config is what produced the OTLP "Context has already
+      # been used to create a Connection" error).
+      GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY         = "true"
+      OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = "true"
+      OTEL_TRACES_SAMPLER                                = "parentbased_traceidratio"
+      OTEL_TRACES_SAMPLER_ARG                            = "1.0"
+      # Make gateway-denied (403) MCP tool calls fail fast instead of hanging the
+      # turn as a broken-stream TaskGroup/TimeoutError.
+      ADK_ENABLE_MCP_GRACEFUL_ERROR_HANDLING = "true"
+    },
+    # ── App-level Model Armor: gateway-OFF only ─────────────────────────────
+    # Under the gateway the Model Armor CONTENT_AUTHZ extension inspects egress,
+    # so app-level sanitize would be a redundant second (gateway-routed) call.
+    # The codelab agent does not set it under the gateway; agent code skips it.
+    var.enable_agent_gateway ? {} : {
+      MODEL_ARMOR_TEMPLATE = google_model_armor_template.sre_agent_request.name
     },
     # Point the fallback MCP at the custom Cloud Run service when enabled.
     var.enable_custom_mcp ? {
@@ -100,6 +109,11 @@ resource "google_vertex_ai_reasoning_engine" "sre_agent" {
     }
 
     deployment_spec {
+      # Match the codelab agent's deploy_config: min 2 warm instances + 4 vCPU /
+      # 8Gi so the runtime is provisioned the same way (deploy_agent.py).
+      min_instances   = 2
+      resource_limits = { cpu = "4", memory = "8Gi" }
+
       dynamic "env" {
         for_each = local.agent_env
         content {
