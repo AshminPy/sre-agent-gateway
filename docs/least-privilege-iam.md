@@ -63,7 +63,9 @@ bootstrap script mirrors it.
 `iam.serviceAccountAdmin`, `iam.serviceAccountUser`, `iam.workloadIdentityPoolAdmin`,
 `resourcemanager.projectIamAdmin` ⚑, `compute.networkAdmin`, `compute.securityAdmin`
 (firewall rules — `networkAdmin` lacks `compute.firewalls.create`), `aiplatform.admin` ⚑,
-`networkservices.editor`, `networksecurity.editor`, `modelarmor.admin`, `run.admin`,
+`networkservices.editor`, `networksecurity.editor`, `agentregistry.viewer`
+(list the registry the gateway references at create time — the old `editor` deployer had
+this implicitly), `modelarmor.admin`, `run.admin`,
 `artifactregistry.admin`, `monitoring.editor`, `logging.configWriter`, `storage.admin` ⚑,
 `iap.admin` ⚑ (the only predefined role granting `iap.webServiceVersions.setIamPolicy`, needed
 to set the agent-registry egress binding). Plus `storage.objectAdmin` on the **tfstate bucket only**.

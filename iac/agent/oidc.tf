@@ -35,6 +35,7 @@ locals {
     "roles/aiplatform.admin",                # create reasoning engines + memory bank
     "roles/networkservices.editor",          # Agent Gateway + authz extensions
     "roles/networksecurity.editor",          # authorization policies
+    "roles/agentregistry.viewer",            # list registry at gateway create (gateway validates resource.registries; replaces the old editor deployer's implicit access)
     "roles/modelarmor.admin",                # Model Armor template
     "roles/run.admin",                       # Cloud Run MCP fallback
     "roles/artifactregistry.admin",          # AR repo + image push
