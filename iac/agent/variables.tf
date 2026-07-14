@@ -88,9 +88,9 @@ variable "custom_mcp_image" {
 }
 
 variable "iap_iam_enforcement_mode" {
-  description = "Agent Gateway IAP REQUEST_AUTHZ mode. \"DRY_RUN\" logs allow/deny decisions without blocking (recommended until validated); null enforces (blocks unauthorized egress). Only used when enable_agent_gateway = true. Matches the official codelab's dry-run -> enforced flow."
+  description = "Agent Gateway IAP REQUEST_AUTHZ mode. \"DRY_RUN\" logs allow/deny decisions without blocking; null enforces (blocks unauthorized egress). Defaults to enforce — validated live 2026-07-14: enforce mode passed the same end-to-end smoke test as DRY_RUN with zero behavior difference for legitimate traffic (fail_open=true still protects against IAP itself being unreachable). Set to \"DRY_RUN\" to go back to audit-only."
   type        = string
-  default     = "DRY_RUN"
+  default     = null
 
   validation {
     condition     = var.iap_iam_enforcement_mode == null || var.iap_iam_enforcement_mode == "DRY_RUN"
