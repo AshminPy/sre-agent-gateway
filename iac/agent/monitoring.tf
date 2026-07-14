@@ -106,6 +106,39 @@ resource "google_logging_metric" "loop_exit_reason" {
   depends_on = [google_project_service.apis]
 }
 
+# One log entry per failed tool call (emitted by nodes/tool_executor.py).
+# Broken down by tool name and cluster — use this to find which tools fail
+# most and on which clusters.
+resource "google_logging_metric" "tool_failures" {
+  name    = "sre_agent/tool_failures"
+  project = var.project_a_id
+  filter  = "logName=\"projects/${var.project_a_id}/logs/sre-agent-tool-failures\""
+
+  metric_descriptor {
+    metric_kind  = "DELTA"
+    value_type   = "INT64"
+    display_name = "SRE Agent Tool Failures"
+
+    labels {
+      key         = "tool"
+      value_type  = "STRING"
+      description = "MCP tool name that failed"
+    }
+    labels {
+      key         = "cluster"
+      value_type  = "STRING"
+      description = "Target cluster where the tool was called"
+    }
+  }
+
+  label_extractors = {
+    "tool"    = "EXTRACT(jsonPayload.tool)"
+    "cluster" = "EXTRACT(jsonPayload.cluster)"
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
 # ── Notification channel + alert policies ──────────────────────────────────
 
 # A newly-created log-based metric is not immediately queryable by Cloud
