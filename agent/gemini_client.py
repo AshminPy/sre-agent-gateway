@@ -20,6 +20,12 @@ PROJECT_ID = os.environ.get("PROJECT_ID", "your-gcp-project-id")
 REGION     = os.environ.get("REGION", "us-central1")
 MODEL      = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
+# Flash/Flash-Lite allow thinking_budget=0 (fully disabled). Pro models reject 0
+# ("The model does not support setting thinking_budget to 0.") and require
+# 128-32768 (or -1 for dynamic) — 128 is the minimum, used here to stay as
+# close to deterministic as this model allows.
+THINKING_BUDGET = 128 if "pro" in MODEL else 0
+
 # Vertex AI model-endpoint location. Reads GOOGLE_CLOUD_LOCATION, defaulting to
 # REGION (the official codelab uses the regional endpoint and sets no global
 # model-endpoint-location).
@@ -133,8 +139,8 @@ def llm(system: str, user: str, *, max_tokens: int = 1024) -> tuple[str, dict]:
                 config=types.GenerateContentConfig(
                     max_output_tokens=max_tokens,
                     temperature=0.0,
-                    # Disable thinking for deterministic SRE tool calls
-                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+                    # Disable thinking for deterministic SRE tool calls (0 where the model allows it)
+                    thinking_config=types.ThinkingConfig(thinking_budget=THINKING_BUDGET),
                 ),
             )
             _span_end_ns = int(time.time() * 1e9)

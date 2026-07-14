@@ -17,6 +17,10 @@ resource "google_storage_bucket" "evidence" {
     action { type = "Delete" }
   }
 
+  lifecycle {
+    prevent_destroy = true
+  }
+
   depends_on = [google_project_service.apis]
 }
 
@@ -33,6 +37,10 @@ resource "google_storage_bucket" "eval" {
   lifecycle_rule {
     condition { age = 365 }
     action { type = "Delete" }
+  }
+
+  lifecycle {
+    prevent_destroy = true
   }
 
   depends_on = [google_project_service.apis]

@@ -30,6 +30,20 @@ resource "google_project_iam_member" "runtime_identity" {
   member  = local.agent_identity_member
 }
 
+# App-level Model Armor sanitize calls (agent/main.py _sanitize) only run
+# when MODEL_ARMOR_TEMPLATE is set, which is gateway-OFF only (see
+# agent_engine.tf) — under the gateway, Model Armor content inspection would
+# happen at the gateway layer instead. Grant matches that same condition;
+# without it, sanitize_user_prompt/sanitize_model_response 403s in
+# gateway-OFF mode.
+resource "google_project_iam_member" "runtime_model_armor_user" {
+  count = var.enable_agent_gateway ? 0 : 1
+
+  project = var.project_a_id
+  role    = "roles/modelarmor.user"
+  member  = local.agent_identity_member
+}
+
 # ── Runtime Agent Identity: bucket-level roles (not project-wide storage) ───
 resource "google_storage_bucket_iam_member" "runtime_evidence_writer" {
   bucket = google_storage_bucket.evidence.name

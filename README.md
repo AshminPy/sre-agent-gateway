@@ -63,6 +63,14 @@ iac/
    gcloud storage buckets update gs://PROJECT_A-tfstate --versioning
    ```
 5. Authenticate: `gcloud auth application-default login` (or use the WIF CI flow).
+6. Check Vertex AI's Gemini quota for Project A (Console → IAM & Admin → Quotas,
+   filter `aiplatform.googleapis.com`, model `gemini-2.5-flash` or whichever
+   model you set via `gemini_model`). New/low-usage projects can default to a
+   very low per-minute request quota (seen as low as 1-5 RPM on some models) —
+   `make smoke` will fail with `429 RESOURCE_EXHAUSTED` if you hit it, which
+   looks like a broken deploy but isn't. Request a quota increase, or point
+   `gemini_model` at a model with more headroom on your project, before
+   assuming something is wrong.
 
 ## Deploy
 
