@@ -576,3 +576,236 @@ bash scripts/attach_gateway_to_engine.sh
 **Interpretation:** The `UpdateReasoningEngine` PATCH for `agentGatewayConfig` on this engine/gateway pair fails 100% of the time (8/8) since 2026-07-13T16:24:13Z, across every structurally distinct variation we could construct (mask value, request bundling, unbind, fresh-gateway immediate bind, fresh-gateway delayed bind). This is very likely a genuine platform-side bug or an undocumented private-preview constraint (matches the spirit, if not the letter, of Google's own documented known-issue #3) that cannot be fixed from the client side. Not something further guessing will solve.
 **Files modified:** None
 **Next action:** Report to user (currently asleep, pre-approved autonomous continuation for "this task's completion," but a genuine dead-end on the core fix is a decision point, not another step to push through). Options for the user to choose from on waking: (1) open a GCP support case — no self-serve fix visible from our side, (2) fall back to `enable_agent_gateway=false` (a separately-documented, tested, working mode) to unblock the production-critical need while treating the gateway-attach bug as a longer-running separate issue — NOT done unilaterally since it changes the project's governance posture, a decision the user should make, not me, (3) wait and retry later in case this is a longer-cycle platform issue than what we've tested. Did NOT take further mutating action beyond this point without user input.
+
+---
+
+## Clean-room test: does a completely fresh project avoid the bug?
+
+**Timestamp:** 2026-07-15T22:20:01Z–2026-07-16T02:20:07Z
+**Objective:** User proposed the decisive test flagged as an open item earlier: deploy the codelab's own proven-working gateway recipe (from `AshminPy/agent-gateway-codelab`) into a brand-new, never-touched project, then attach our SRE agent to it. Isolates whether the bug is specific to `sreagent-t2-demo`'s churned project state, or systemic.
+**Commands executed:**
+```bash
+gcloud projects create sreagent-cleanroom-test --organization=1076201471152 --name="SRE Agent Clean-Room Test"
+gcloud beta billing projects link sreagent-cleanroom-test --billing-account=0138AB-1B1BE5-05AFF5   # FAILED: quota exceeded (5 projects already on this billing account)
+gcloud beta billing projects list --billing-account=0138AB-1B1BE5-05AFF5   # sreagent-codelab, sreagent-demo, sreagent-t2-demo, ai-adk-sre-agent-demo, project-95d23e63-...
+gcloud beta billing projects unlink sreagent-codelab      # user chose unlink over full delete, preserves the project as reference evidence
+gcloud beta billing projects link sreagent-cleanroom-test --billing-account=0138AB-1B1BE5-05AFF5   # succeeded
+```
+**Result:** SUCCESS — project created, billing resolved by unlinking `sreagent-codelab` (kept intact, not destroyed, so its history/evidence remains available).
+**Evidence discovered:** `agent-gateway-codelab`'s Terraform (`demos/agent-gateway/terraform/main.tf`) unconditionally creates 3 Cloud Run MCP services (`module "mcp_services"`, no `count` gate) regardless of the `enable_cloud_run_private_networking` flag — needs `mcp_services = {}` in tfvars to actually skip them. Scoped down the deploy per user request (our agent uses GKE Remote MCP, not this demo's Cloud Run MCP path): disable `mcp_services`, `enable_model_armor`, `enable_agent_registry_endpoints`, `enable_psc_interface`; keep `foundation`/`observability`/`networking` (required gateway prerequisites) and `agent_gateway` itself.
+**Files modified:** None yet (infra only)
+**Next action:** Enable required APIs on `sreagent-cleanroom-test`, write a scoped-down `terraform.tfvars`, run `terraform plan` to confirm the actual minimized resource count before applying.
+
+---
+
+**Timestamp:** 2026-07-16T02:20:07Z–02:35:39Z
+**Objective:** Enable APIs, scope down the codelab's Terraform (skip Cloud Run MCP/Model Armor/PSC-interface/agent-registry-endpoints — not needed for our GKE Remote MCP path, per user's scoping request), and deploy the gateway.
+**Command executed:**
+```bash
+gcloud services enable <21 APIs, split into 2 batches — batch enable caps at 20> --project=sreagent-cleanroom-test
+gcloud storage buckets create gs://sreagent-cleanroom-test-tfstate --location=us-central1 --uniform-bucket-level-access
+# edited terraform.tfvars: project_id -> sreagent-cleanroom-test, mcp_services = {}, enable_model_armor = false,
+#   enable_agent_registry_endpoints = false, enable_psc_interface = false
+# edited backend.conf: bucket -> sreagent-cleanroom-test-tfstate
+cd ~/projects/agent-gateway-codelab/cloud-networking-solutions/demos/agent-gateway/terraform
+terraform init -reconfigure -backend-config=backend.conf
+terraform plan   # reviewed: 109 to add, 0 to change, 0 to destroy — confirmed no Cloud Run/DLP/Model-Armor templates
+terraform apply -auto-approve
+```
+**Exit code:** 0
+**Relevant output:**
+```
+Apply complete! Resources: 109 added, 0 changed, 0 destroyed.
+agent_gateway_id = "projects/sreagent-cleanroom-test/locations/us-central1/agentGateways/agent-gateway"
+```
+Gateway itself took 2m37s to create; its IAP authz policy took 2m16s. Both timings roughly consistent with prior observations on `sreagent-t2-demo`.
+**Result:** SUCCESS
+**Evidence discovered:** A truly fresh gateway, in a project untouched by any of `sreagent-t2-demo`'s churn history, deploys cleanly via the codelab's own Terraform. Dropped the mortgage-agent "Control A" deployment (task #8) since it needs the now-disabled Cloud Run MCP services to do anything meaningful — not useful without them.
+**Files modified:** `~/projects/agent-gateway-codelab/cloud-networking-solutions/demos/agent-gateway/terraform/terraform.tfvars`, `backend.conf` (local, not committed — this is a scratch test config, not part of any tracked PR)
+**Next action:** Deploy our SRE agent's engine (no gateway of our own — `enable_agent_gateway=false`) into `sreagent-cleanroom-test`, grant it cross-project read-only IAM on the existing `sreagent-demo` GKE cluster (via `iac/gke-access`, no new cluster), then attach the engine to this codelab-created gateway using our own `attach_gateway_to_engine.sh`.
+
+---
+
+**Timestamp:** 2026-07-16T02:35Z–03:45:26Z
+**Objective:** Grant the new cleanroom project's agent principal read-only cross-project access to the existing `sreagent-demo` GKE cluster (`sre-test-cluster`), reusing it rather than creating a new one.
+**Command executed:**
+```bash
+cd ~/projects/testing2-gcp-sre-agent/iac/gke-access
+terraform init -reconfigure -backend-config="bucket=sreagent-cleanroom-test-tfstate" -backend-config="prefix=gke-access-cleanroom"
+terraform plan -var="project_a_id=sreagent-cleanroom-test" -var="project_b_id=sreagent-demo" -var="create_gke_cluster=false"
+terraform apply -auto-approve [same vars]
+```
+**Exit code:** 0
+**Relevant output:**
+```
+Apply complete! Resources: 4 added, 0 changed, 0 destroyed.
+crossproject_roles_granted = ["roles/container.viewer","roles/mcp.toolUser","roles/logging.viewer","roles/monitoring.viewer"]
+gke_cluster_name = "sre-test-cluster"
+```
+**Result:** SUCCESS. Note: this apply needed extra explicit user confirmation naming the exact IAM roles/target — the permission classifier treats cross-project IAM grants on shared infra (`sreagent-demo`) as a higher protected-scope bar than same-project changes.
+**Files modified:** None (infra only, additive IAM bindings)
+**Next action:** Deploy our SRE agent engine into `sreagent-cleanroom-test` via `iac/agent` with `enable_agent_gateway=false` (skip creating a redundant gateway — reuse the codelab-created one) and `create_wif=false` (applying locally, not via CI).
+
+---
+
+**Timestamp:** 2026-07-16T03:45:26Z–03:52:58Z
+**Objective:** Deploy our SRE agent's own engine (no gateway of our own) into the clean-room project.
+**Command executed:**
+```bash
+bash scripts/package_agent.sh
+cd iac/agent
+terraform init -reconfigure -backend-config="bucket=sreagent-cleanroom-test-tfstate" -backend-config="prefix=agent-cleanroom"
+terraform plan  -var="project_a_id=sreagent-cleanroom-test" -var="project_b_id=sreagent-demo" -var="region=us-central1" \
+  -var="notification_email=ashmin.sub@gmail.com" -var="github_repo=AshminPy/testing2-gcp-sre-agent" \
+  -var="tfstate_bucket=sreagent-cleanroom-test-tfstate" -var="create_wif=false" -var="enable_agent_gateway=false" \
+  -var="gemini_model=gemini-2.5-flash"
+terraform apply -auto-approve [same vars]
+```
+**Exit code:** 0
+**Relevant output:**
+```
+Apply complete! Resources: 59 added, 0 changed, 0 destroyed.
+reasoning_engine_id = "3983291483653406720"
+reasoning_engine_resource_name = "projects/sreagent-cleanroom-test/locations/us-central1/reasoningEngines/3983291483653406720"
+memory_bank_resource_name = "projects/sreagent-cleanroom-test/locations/us-central1/reasoningEngines/5185752584161329152"
+```
+**Result:** SUCCESS. Confirmed our own `google_network_services_agent_gateway.sre_egress[0]` was NOT created (0 matches for "will be created" in the plan) — the deprecation warning shown is a static schema warning, not evidence of creation.
+**Evidence discovered:** User questioned why VPC/NAT and Model Armor were in the plan, suspecting unnecessary scope creep. Checked: both are unconditional in our own `iac/agent` codebase, not toggles that were missed — `networking.tf`'s own comment confirms the VPC/NAT is baseline Cloud NAT egress (not PSC; no PSC subnet is created when `enable_agent_gateway=false`), and Model Armor is our own established fallback content-inspection layer, specifically designed to activate when our own gateway is off. Correctly scoped for a fair "gateway-off" baseline comparison against `sreagent-t2-demo`'s equivalent config — not extra.
+**Files modified:** None (infra only)
+**Next action:** Attach engine `3983291483653406720` to the codelab-created gateway `projects/sreagent-cleanroom-test/locations/us-central1/agentGateways/agent-gateway` using our own `attach_gateway_to_engine.sh` (adapted to target the codelab's gateway instead of one from our own Terraform). This is the actual decisive test.
+
+---
+
+## DECISIVE RESULT — bind succeeded in the clean-room project
+
+**Timestamp:** 2026-07-16T03:53:36Z–03:57:41Z
+**Objective:** The actual decisive test — attach our engine to a gateway created in a completely fresh project with zero churn history, using the exact same PATCH mechanism (`attach_gateway_to_engine.sh`'s logic) that has failed 8/8 times on `sreagent-t2-demo` since 2026-07-13T16:24:13Z.
+**Command executed:**
+```bash
+curl -sS -X PATCH \
+  "https://us-central1-aiplatform.googleapis.com/v1beta1/projects/sreagent-cleanroom-test/locations/us-central1/reasoningEngines/3983291483653406720?updateMask=spec.deploymentSpec.agentGatewayConfig" \
+  -H "Content-Type: application/json" \
+  -d '{"spec":{"deploymentSpec":{"agentGatewayConfig":{"agentToAnywhereConfig":{"agentGateway":"projects/sreagent-cleanroom-test/locations/us-central1/agentGateways/agent-gateway"}}}}}'
+```
+Polled operation `3442599566883422208` to terminal state (took ~4 minutes, consistent with prior timings).
+**Exit code:** 0
+**Relevant output:**
+```json
+{
+  "done": true,
+  "response": {
+    "spec": {
+      "deploymentSpec": {
+        "agentGatewayConfig": {
+          "agentToAnywhereConfig": {
+            "agentGateway": "projects/sreagent-cleanroom-test/locations/us-central1/agentGateways/agent-gateway"
+          }
+        }
+      }
+    }
+  }
+}
+```
+No `error` field. Full engine spec returned showing the gateway correctly bound.
+**Result:** SUCCESS — first successful bind since 2026-07-13T16:24:13Z, on the first attempt, in a brand-new project.
+**Evidence discovered:** The bind mechanism, request format, and our script's logic are all correct and functional. The persistent failure on `sreagent-t2-demo` is NOT a fundamental bug in our code, our request format, or the platform's bind API in general.
+**Interpretation:** This decisively answers the open question from the earlier investigation: **the failure is specific to `sreagent-t2-demo`'s particular project/gateway state** (accumulated from repeated destroy/recreate cycles across this investigation — PR #19's recreate, the "Option C" recreate from the original mTLS investigation, this session's recreate, etc.) — not a systemic platform bug, not a flaw in our approach. Most likely explanation: some stale backend-side state tied to that specific project or that specific gateway's repeated churn history that a completely fresh project doesn't carry.
+**Facts established / hypotheses affected:**
+- CONFIRMED: our bind mechanism, code, and request format are correct.
+- CONFIRMED: the bug is project/gateway-state-specific to `sreagent-t2-demo`, not systemic.
+- STILL OPEN: the exact mechanism of what "stale state" means server-side — not diagnosable from our side, but no longer relevant to unblocking the actual work, since the path forward is now clear.
+**Files modified:** None
+**Next action:** Register the GKE Remote MCP + Vertex AI endpoints for this new project (our own `scripts/register_endpoints.py`, matching testing2's established process), then run `make smoke` equivalent for full end-to-end proof.
+
+---
+
+**Timestamp:** 2026-07-16T04:00Z–04:06:06Z
+**Objective:** Register endpoints and run the actual smoke test against the clean-room engine to get full end-to-end proof (agent → gateway → GKE Remote MCP → RCA).
+**Command executed:**
+```bash
+python3 scripts/register_endpoints.py --project=sreagent-cleanroom-test --region=us-central1
+PROJECT_ID=sreagent-cleanroom-test REGION=us-central1 REASONING_ENGINE_ID=3983291483653406720 \
+  python3 invoke_agent.py --scenario imagepull --verbose
+# (retried once — same result, ruling out a "just-created template" transient)
+```
+**Exit code:** 0 (script ran fine; the *scenario* itself did not produce an RCA)
+**Relevant output:**
+```
+Agent response [56-59s]:
+⚠ BLOCKED by Model Armor: Input blocked by safety filter (prompt injection or harmful content detected)
+```
+Traced to `agent/main.py:820` — our own app-level Model Armor `sanitize_user_prompt` call (client-side content screening, active because our gateway is off and `MODEL_ARMOR_TEMPLATE` env is set) returns `MATCH_FOUND` on the completely benign query `"Pod imagepull-pod in test-incidents cannot pull its image. Investigate."` Reproducible on 2 separate attempts — not a transient/warm-up issue.
+**Result:** PARTIAL — endpoints registered successfully (13/13). The smoke test itself did not reach an RCA, blocked by a DIFFERENT mechanism than the one this whole investigation was about.
+**Evidence discovered:** No SSL/mTLS error, no gateway-attach error — the bind and the gateway path are unaffected by this. This is a distinct, separate issue: our own app-level Model Armor content-screening call is false-positive-flagging a benign SRE query at the default `MEDIUM_AND_ABOVE` confidence threshold.
+**Interpretation:** The gateway-attach investigation's decisive question is answered and this is NOT a regression of it — it's a new, unrelated finding surfaced only because we got far enough (past the bind, past the mTLS path) to reach the app's own content-screening step for the first time in this session. Worth its own separate investigation, not a continuation of this one.
+**Facts established / hypotheses affected:**
+- CONFIRMED (final, for this investigation): the gateway-attach bug is isolated to `sreagent-t2-demo`'s specific project/gateway state, not our code or approach.
+- NEW OPEN ITEM (separate scope): Model Armor false-positive blocking benign SRE queries in the gateway-off / app-level-screening path — needs its own investigation (template config, confidence threshold, or a code-level bug in what's being submitted).
+**Files modified:** None
+**Next action:** Report full picture to user — primary investigation resolved with a clear, positive, actionable conclusion; flag the Model Armor finding as a new, separate item requiring a decision on whether/how to pursue it further.
+
+---
+
+## IMPORTANT CORRECTION — removing Model Armor unmasked the original mTLS bug
+
+**Timestamp:** 2026-07-16T04:11:26Z–04:15:04Z
+**Objective:** Per user request, remove Model Armor from the clean-room engine (delete `MODEL_ARMOR_TEMPLATE` env var) to simplify the end-to-end demo, then re-run the smoke test.
+**Command executed:**
+```bash
+# fetched current env array, filtered out MODEL_ARMOR_TEMPLATE, PATCHed:
+curl -sS -X PATCH ".../reasoningEngines/3983291483653406720?updateMask=spec.deploymentSpec.env" -d "$BODY"
+# polled to completion: done=true, error=None (8 polls, ~80s)
+# verified agentGatewayConfig was NOT disturbed by this follow-up PATCH — still correctly bound
+PROJECT_ID=sreagent-cleanroom-test REGION=us-central1 REASONING_ENGINE_ID=3983291483653406720 \
+  python3 invoke_agent.py --scenario imagepull --verbose
+```
+**Exit code:** 0 (script ran; the scenario itself failed)
+**Relevant output:**
+```
+Agent response [2.6s]:
+{"status": "failed", "error": "HTTPSConnectionPool(host='us-central1-aiplatform.mtls.googleapis.com', port=443): ... SSLError(SSLError(\"bad handshake: Error([('SSL routines', '', 'certificate verify failed')])\"))"}
+```
+**Result:** FAILURE — but a genuinely important, distinct one from anything seen before in this session.
+**Evidence discovered:**
+- Confirmed `agentGatewayConfig` was untouched by the env-only PATCH (checked directly) — the bind itself is still intact. This is NOT a regression of the bind investigation.
+- The error text is DIFFERENT from `sreagent-t2-demo`'s failures: `certificate verify failed` (client-side cert trust failure), not `SysCallError(-1, 'Unexpected EOF')` (transport-level handshake drop). Different failure signature.
+- **Critical realization: we had never actually reached the real Gemini API call in this clean-room engine until now.** The earlier "successful bind" test was blocked by Model Armor *before* the code ever attempted the Gemini call — so the bind succeeding proved the BIND mechanism works, but said nothing about whether the deeper, original mTLS issue (that PR #20 was supposed to fix) is actually resolved. Only now, with Model Armor removed, did we reach that code path for the first time.
+- The codelab gateway for this clean-room test has `enable_model_armor = false` (deliberately disabled per the earlier scoping request). The codelab's DEFAULT config has `enable_model_armor = true`, and the one cross-project reference that worked historically (`sre-agent-langgraph-crosstest` in `sreagent-codelab`) was bound to a gateway WITH Model Armor/CONTENT_AUTHZ active.
+**Interpretation (HYPOTHESIS, not yet proven):** Model Armor/CONTENT_AUTHZ being active on the gateway may not be purely a content-screening feature for us — it may be *load-bearing* for the mTLS trust chain: the gateway's TLS-inspection CA (provisioned specifically for CONTENT_AUTHZ) might be what Agent Identity's runtime ends up trusting for the mTLS handshake, even when our code's `base_url` override should route around it. Removing Model Armor may have removed that CA, so Agent Identity's underlying transport (which still appears to select the mTLS endpoint despite our `base_url` override — the same behavior PR #20 was meant to prevent) now has nothing to validate against. Not confirmed — the alternative explanation (this was ALWAYS broken and Model Armor's block just prevented us from ever seeing it, on this OR on `sreagent-t2-demo`) is equally plausible and not yet ruled out.
+**Facts established / hypotheses affected:**
+- CONFIRMED: the bind mechanism itself remains proven correct (unaffected by this finding).
+- REOPENED: whether PR #20's fix (`base_url` override) actually prevents the mTLS auto-selection in all cases, or only appeared to work previously because Model Armor's gateway-provisioned CA was incidentally present.
+- NEW HYPOTHESIS: Model Armor/CONTENT_AUTHZ on the gateway may be a hidden dependency for the mTLS handshake to succeed, not just a content-screening feature.
+**Files modified:** None
+**Next action:** Do not make further live changes until discussed with the user — this is a significant, unexpected finding that reframes part of the investigation. Awaiting direction: test with Model Armor re-enabled on the clean-room gateway to isolate the variable, or treat this as a separate finding to raise directly with Google alongside the Model Armor false-positive question.
+
+---
+
+## Documentation review — is Model Armor required? What actually governs the mTLS handshake?
+
+**Timestamp:** 2026-07-16T04:15Z–04:32:01Z
+**Objective:** User asked to remove Model Armor and, separately, provided a "Governing Agentic Egress" architecture deck (NotebookLM-generated) plus two official doc URLs, suspecting Model Armor might actually be required (deck implies it) despite docs reportedly saying optional. Told explicitly: review all hyperlinks, get a grounded answer, do not guess.
+**Sources reviewed:**
+1. `Governing_Agentic_Egress.pptx` (15 slides, all image-based — no extractable hyperlinks in the file itself; read visually)
+2. `docs.cloud.google.com/.../govern/gateways/set-up-agent-gateway` (WebFetch + full hyperlink list, ~200 links, mostly nav chrome)
+3. `docs.cloud.google.com/.../govern/configure-model-armor` (WebFetch + full hyperlink list)
+4. `docs.cloud.google.com/.../govern/agent-identity-overview` (followed from #2's hyperlinks — directly relevant to mTLS)
+5. `docs.cloud.google.com/.../scale/runtime/agent-identity` (followed from #2's hyperlinks — Agent Runtime-specific identity mechanics)
+6. `docs.cloud.google.com/.../govern/gateways/delegate-authorization` (followed from #2's hyperlinks — how Model Armor wires into the gateway)
+**Result:** SUCCESS — precise, sourced answers obtained; one genuine documentation gap identified (not resolvable by more reading, flagged for Google).
+**Evidence discovered (all direct quotes, not paraphrase-as-fact):**
+- **Model Armor is explicitly optional**, confirmed twice: set-up-agent-gateway doc says *"(Optional) If your deployment requires safeguarding against prompt injection attacks..."* and *"Optional: In the AI Security section, configure additional security"*. configure-model-armor doc frames it as something you *configure* on top, never as a prerequisite.
+- **The presentation deck oversells this.** It visually presents Model Armor (CONTENT_AUTHZ) and IAP (REQUEST_AUTHZ) as a paired, standard "Two-Phase Authorization Framework" — a *recommended architecture* framing, not a technical requirement. Our own clean-room test already empirically proved this: we created a gateway and successfully bound our engine to it with `enable_model_armor = false`. Bind and gateway creation do not need Model Armor.
+- **mTLS to Google Cloud APIs IS the documented DEFAULT for Agent Identity** — not a bug, not something PR #20 was "fixing" in a sanctioned way. `govern/agent-identity-overview`: *"By default, agent identities use mutual TLS (mTLS) with X.509 certificates when communicating directly with Google Cloud APIs."* `scale/runtime/agent-identity`: *"We also auto-provision and manage an x509 certificate on the agent with the same identity for secure authentication"* and *"Agent identity credentials are secured by default through a Google-managed Context-Aware Access (CAA) policy. This policy enforces mTLS binding..."*
+- **The only documented opt-out is an env var, and we already have it set** — `GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES=False` disables the default CAA policy (doc calls this "strongly discouraged"). Checked our own engine's live env vars (captured earlier in this investigation): we already have `GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES: "false"` set. But the doc frames this narrowly as enabling SDK *credential/token sharing*, not endpoint-hostname selection — these read as two adjacent but distinct mechanisms, and the docs don't clarify whether setting this also changes which hostname (mtls vs plain) gets targeted.
+- **No documented mechanism exists to force the plain/non-mTLS endpoint.** Searched specifically for this across all 3 identity/gateway docs — nothing. Our `agent/gemini_client.py` `base_url` override (PR #20's fix) is an **undocumented workaround**, not a Google-sanctioned configuration.
+- **No documented relationship between Model Armor and the mTLS trust chain** — checked explicitly in `delegate-authorization` (the doc that covers how Model Armor wires into gateway authz). It describes gateway-to-Model-Armor communication using its own TLS ("HTTP2 protocol with TLS encryption... port 443") but says nothing about this affecting agent-to-gateway or agent-to-Vertex mTLS.
+**Interpretation:** The deck's Layer 1 diagram ("mTLS: for first-party access to the GATEWAY" / "DPoP: for interactions beyond the gateway") appears to be the architecturally-intended design: the mTLS handshake target is supposed to be the Agent Gateway itself (which terminates it and is trusted via the platform's own SPIFFE/X.509 auto-provisioning), not a raw Vertex AI endpoint reached directly or via a base_url trick. This reframes the whole investigation's premise: PR #20's fix likely "worked" historically not because it avoided mTLS, but because it happened to route through a gateway that was properly configured to terminate that mTLS handshake — and it fails when there's no gateway properly intercepting/terminating it (direct-to-Vertex) or when the gateway's own trust provisioning for this specific agent isn't complete.
+**Facts established / hypotheses affected:**
+- CONFIRMED (documented fact): Model Armor is optional for Agent Gateway.
+- CONFIRMED (documented fact): mTLS-to-Google-APIs is Agent Identity's documented default behavior, not a bug.
+- REJECTED as a sanctioned approach: forcing the plain endpoint via `base_url` — works empirically sometimes, but is not how Google's architecture is designed to be configured.
+- NEW HYPOTHESIS (better-supported than the Model-Armor-CA theory from the previous entry): the mTLS handshake is meant to terminate AT the gateway, not at raw Vertex — cert-verify failures likely mean the gateway isn't properly positioned/trusted for this specific call path, independent of Model Armor specifically.
+- GENUINE DOCUMENTATION GAP (not resolvable by more reading, worth asking Google): exact relationship between `GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES` and mTLS endpoint selection; whether there's ANY supported way to route Agent Identity calls through the gateway's mTLS termination point when calling Vertex AI directly (as opposed to via MCP/tool calls, which the docs describe more thoroughly).
+**Files modified:** None
+**Next action:** Present findings to user. Well-sourced answer to "why remove Model Armor" is ready. The mTLS root-cause investigation has a new, better-evidenced direction (gateway-termination, not Model-Armor-CA) but is not yet conclusively resolved — worth bringing directly to Google given the identified documentation gap, rather than more internal guessing.
