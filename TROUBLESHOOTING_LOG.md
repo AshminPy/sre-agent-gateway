@@ -1244,3 +1244,76 @@ ERROR: operation failed: {"code": 3, "message": "The Reasoning Engine failed to 
 - This was the last remaining untested candidate from the 7-point platform-state investigation. **Every candidate identified across the entire investigation has now been either tested-and-rejected or explained-with-documented-evidence.**
 **Files modified:** None (read-only)
 **Next action:** Report findings to user plainly — recommend against building PSC-I in t2-demo (no evidence it would fix an admin-plane failure, adds real infra cost/complexity for a documented optional-only feature) and recommend GCP Support escalation instead, given a complete, well-evidenced reproduction now exists. Await user decision.
+
+---
+
+## Full gateway match applied (PSC-I + protocols + description + timeout) — bind retry STILL FAILS identically
+
+**Timestamp:** 2026-07-16T13:52Z–14:10Z (approx)
+**Objective:** Per direct user instruction to stop testing one variable at a time and match every discoverable gateway-level difference in one pass before concluding anything: added PSC-I (`network_config`/`google_compute_network_attachment` + dedicated `/28` subnet), removed `description`, removed `protocols = ["MCP"]`, and changed `authzExtension.timeout` from `1s` to `2s` — matching every field found to differ between t2-demo's gateway and `sreagent-cleanroom-test`'s working gateway.
+**Commands executed:**
+```bash
+# Apply 1 — PSC-I (scoped): subnet + network_attachment + gateway replace + authz policy replace
+terraform plan  -var="create_wif=false" -target=google_compute_subnetwork.agent_gateway_psc \
+  -target=google_compute_network_attachment.sre_egress -target=google_network_services_agent_gateway.sre_egress \
+  -target=time_sleep.wait_for_gateway -target=google_network_services_authz_extension.iap \
+  -target=google_network_security_authz_policy.iap -out=/tmp/psc_test3.tfplan
+terraform apply "/tmp/psc_test3.tfplan"   # Apply complete! Resources: 4 added, 0 changed, 2 destroyed.
+
+# Apply 2 — protocols/description/timeout match (scoped)
+terraform plan -var="create_wif=false" -target=google_network_services_agent_gateway.sre_egress \
+  -target=google_network_services_authz_extension.iap -target=time_sleep.wait_for_gateway \
+  -target=google_network_security_authz_policy.iap -out=/tmp/psc_test4.tfplan
+terraform apply "/tmp/psc_test4.tfplan"   # Apply complete! Resources: 1 added, 2 changed, 1 destroyed.
+
+# Bind retry
+bash scripts/attach_gateway_to_engine.sh
+```
+**Exit codes:** both applies = 0. Bind retry = 1.
+**Full output (bind retry, complete and untruncated this time — a genuine gap flagged earlier in this investigation):**
+```
+Attaching engine 8599129257987276800 to gateway projects/sreagent-t2-demo/locations/us-central1/agentGateways/sre-agent-egress (bundled with a fresh source deploy)...
+PATCH submitted (operation: projects/327234009108/locations/us-central1/reasoningEngines/8599129257987276800/operations/4190385121515274240). Polling to terminal state (this can take several minutes)...
+ERROR: operation failed: {"code": 3, "message": "The Reasoning Engine failed to be updated."}
+```
+**Result:** FAILURE — identical `error.code: 3`, identical generic message, on a gateway now matching cleanroom's on every field ever found to differ (PSC-I/networkConfig, protocols, description, authzExtension.timeout). **Confirmed: the previous log entries showing this message truncated with "..." were not actually truncated by my own logging — this generic one-sentence message is the API's complete, full response. There is no additional detail Google's API surface returns for this error.**
+**Evidence discovered:** Every field-level difference ever found between t2-demo's and cleanroom's gateway/authz-extension/authz-policy configuration has now been matched. The bind operation still fails identically. This rules out the entire class of "gateway configuration mismatch" as the root cause.
+**Facts established / hypotheses affected:**
+- REJECTED: PSC-I/`networkConfig` absence (matched, still fails).
+- REJECTED: `protocols=["MCP"]` presence (removed to match, still fails).
+- REJECTED: `description` field presence (removed to match, still fails — expected, cosmetic only).
+- REJECTED: `authzExtension.timeout` mismatch (matched to `2s`, still fails).
+- CONFIRMED: the API's error message has no hidden detail — `{"code": 3, "message": "The Reasoning Engine failed to be updated."}` is complete, not truncated.
+- Every gateway/authz-level field-by-field difference between the two projects that could be found via `describe`/REST calls has now been either matched-and-retested or previously ruled out (`iamEnforcementMode`). None remain at this layer.
+**Files modified:** `iac/agent/agent_gateway.tf` (network_attachment resource added, `description`/`protocols` removed from gateway resource, `timeout` changed to `"2s"`), `iac/agent/networking.tf` (new `agent_gateway_psc` subnet added).
+**Next action:** The two gaps flagged earlier in this investigation and never yet executed — full Cloud Audit Log detail for this specific failed operation (may carry more detail than the returned error object), and org policy / VPC Service Controls perimeter comparison between the two projects — are the only remaining unexplored avenues before this is a clean case for GCP Support escalation.
+
+---
+
+## Audit logs + container stderr + org-policy/VPC-SC investigation — SSL noise ruled out, org-policy gap unclosable from here
+
+**Timestamp:** 2026-07-16T18:10Z–18:30Z (approx, background workflow) + verification
+**Objective:** Close the two remaining gaps flagged earlier: full Cloud Audit Log detail for the failed bind operation, and org policy / VPC Service Controls comparison between the two projects.
+
+### Cloud Audit Logs
+`gcloud logging read` for the exact operation ID (`.../operations/4190385121515274240`) returns 2 entries (start + terminal, `"last": true`), both with `"status": {}` — **empty**. Confirmed: Google's own Activity audit log carries no error code/message/detail beyond what the API already returned. Searches across Data Access and System Event categories returned zero entries (confirmed only 2 log streams exist for this project in the window: `cloudaudit.googleapis.com%2Factivity` and `aiplatform.googleapis.com%2Freasoning_engine_stderr`).
+
+### Container stderr — new finding, then ruled out
+`reasoning_engine_stderr` for t2-demo, 18:10–18:25Z, showed 8x (18:18:06Z–18:18:23Z, right against the operation's 18:18:21.143Z completion):
+```
+ssl_transport_security.cc:2160] Handshake failed with error SSL_ERROR_SSL: error:1000007d:SSL routines:OPENSSL_internal:CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate
+```
+A SIGTERM to the old revision landed at 18:18:14Z, ~7s before the operation's terminal timestamp — initially looked like a strong, specific new lead (same error family as the original root cause, gRPC C-core level, tightly time-correlated).
+
+**Verification against cleanroom's own successful bind** (its engine `updateTime` = `2026-07-16T05:39:24Z`): pulled the identical `reasoning_engine_stderr` log stream for `sreagent-cleanroom-test`, window `05:25:00Z`–`05:55:00Z`. Result: **274 occurrences of the exact same `ssl_transport_security.cc` / `CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate` error**, in the same relative position of container startup (05:32:33Z, within the successful run's lifecycle).
+**REJECTED as causal.** This gRPC SSL handshake error is background noise common to both the successful and failing project's container startup — very likely an internal client (Memory Bank gRPC client, or an early health-check) retrying against a Google endpoint before some credential/trust-store warm-up step completes, self-resolving within the same container lifecycle either way. It is NOT specific to the failure.
+
+### Org policy / VPC Service Controls
+- Direct project-level org-policy overrides (`gcloud resource-manager org-policies list`): **identical** — both projects return an empty list (exit 0).
+- Effective/inherited org policy (`gcloud org-policies list`), VPC-SC perimeter membership (`gcloud access-context-manager perimeters list`), and even whether an Access Context Manager policy exists at all for the org: **all UNKNOWN** — `orgpolicy.googleapis.com` and `accesscontextmanager.googleapis.com` are disabled on both projects and on the default quota project. Cannot be queried from this account/machine without enabling those APIs (a mutating action, out of scope for a read-only check) or access from an org-admin vantage point.
+**Facts established:**
+- REJECTED: the gRPC/TLS handshake error inside the reasoning engine's own container — present in both the successful and failing project's logs, not specific to the failure.
+- CONFIRMED: Cloud Audit Logs carry no more detail than the API's own generic response for this operation.
+- Direct project-level org policy: identical (empty on both). Everything deeper (inherited policy, VPC-SC): genuinely unknowable from this vantage point right now — a real, disclosed gap, not a ruled-out candidate.
+**Files modified:** None (read-only)
+**Next action:** Every checkable candidate from this investigation — deployment code/bundling, gateway config (networkConfig/protocols/description/timeout), IAM roles, mTLS registration, iamEnforcementMode, engine creation date vs. documented cutoff, Cloud Audit Logs, container-level stderr — has now been tested-and-rejected or explained with direct evidence. The one remaining gap (inherited org policy / VPC-SC membership) cannot be closed without either enabling two currently-disabled APIs or an org-admin checking directly. This is now a complete, well-evidenced case for GCP Support escalation, or for someone with org-admin access to check the VPC-SC/org-policy angle directly.

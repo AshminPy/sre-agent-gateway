@@ -33,3 +33,20 @@ resource "google_compute_router_nat" "agent" {
   nat_ip_allocate_option             = "AUTO_ONLY"
   source_subnetwork_ip_ranges_to_nat = "ALL_SUBNETWORKS_ALL_IP_RANGES"
 }
+
+# Dedicated subnet for the Agent Gateway's PSC-Interface network attachment.
+# EXPERIMENTAL (2026-07-16): added to test whether the mere presence of
+# network_config/PSC-I on the gateway resource affects the admin-plane
+# UpdateReasoningEngine bind PATCH — see CURRENT_STATE.md "Proposed change".
+# Not used for any real data-plane traffic (the agent's actual destinations
+# are public Google APIs + GKE Remote MCP, reached over Google's backbone).
+# Must not overlap 10.0.0.0/24 (agent subnet), 10.0.1.0/24, or 10.0.2.0/24 —
+# documented Agent Gateway egress restriction.
+resource "google_compute_subnetwork" "agent_gateway_psc" {
+  count         = local.gw_count
+  project       = var.project_a_id
+  name          = "sre-agent-gateway-psc-subnet"
+  region        = var.region
+  network       = google_compute_network.agent.id
+  ip_cidr_range = "10.20.0.0/28"
+}

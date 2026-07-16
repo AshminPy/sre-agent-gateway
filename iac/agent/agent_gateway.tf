@@ -19,24 +19,46 @@ locals {
 # public Google-API + GKE Remote MCP destinations over Google's backbone; a PSC
 # egress attachment into a VPC is only for PRIVATE-VPC targets (not our case),
 # and the codelab creates none.
+#
+# EXPERIMENTAL (2026-07-16): sre-agent-egress-na + the network_config block
+# below were added to test whether PSC-I's mere presence affects the
+# admin-plane bind PATCH, per CURRENT_STATE.md "Proposed change". Not required
+# by any destination this gateway actually reaches — revert if this doesn't
+# change the bind outcome.
+
+resource "google_compute_network_attachment" "sre_egress" {
+  count                  = local.gw_count
+  project                = var.project_a_id
+  name                   = "sre-agent-egress-na"
+  region                 = var.region
+  connection_preference  = "ACCEPT_AUTOMATIC"
+  subnetworks            = [google_compute_subnetwork.agent_gateway_psc[0].id]
+}
 
 resource "google_network_services_agent_gateway" "sre_egress" {
   count = local.gw_count
 
-  project     = var.project_a_id
-  name        = "sre-agent-egress"
-  location    = var.region
-  description = "Egress gateway — SRE agent to GKE Remote MCP and Google APIs"
+  project  = var.project_a_id
+  name     = "sre-agent-egress"
+  location = var.region
+  # description and protocols=["MCP"] removed 2026-07-16 to exact-match
+  # sreagent-cleanroom-test's working gateway (which has neither field set) —
+  # see CURRENT_STATE.md "Proposed change". protocols=["MCP"] was previously
+  # believed required per the official codelab (agw-cuj-arun-egress-gmcp) for
+  # MCP request-attribute parsing; testing empirically rather than assuming,
+  # per direct instruction to match the working project exactly first.
 
   google_managed {
     governed_access_path = "AGENT_TO_ANYWHERE"
   }
 
-  # protocols=[MCP] per the official codelab: the gateway parses MCP request
-  # attributes for authorization.
-  protocols = ["MCP"]
-
   registries = [local.registry_uri]
+
+  network_config {
+    egress {
+      network_attachment = google_compute_network_attachment.sre_egress[0].id
+    }
+  }
 
   depends_on = [google_project_service.apis]
 }
@@ -66,7 +88,7 @@ resource "google_network_services_authz_extension" "iap" {
   name      = "sre-agent-iap-authz"
   location  = var.region
   service   = "iap.googleapis.com"
-  timeout   = "1s"
+  timeout   = "2s" # was "1s" — exact-matched to sreagent-cleanroom-test 2026-07-16
   fail_open = var.authz_fail_open
 
   metadata = merge(

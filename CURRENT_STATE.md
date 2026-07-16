@@ -98,7 +98,88 @@ same cert-provisioning pipeline.
    **Recommendation: do NOT build PSC-I in t2-demo** (no evidence it fixes
    an admin-plane failure; real added infra for a documented optional-only
    feature). Recommend GCP Support escalation with the full reproduction
-   instead. Awaiting user decision.
+   instead. **User decision (2026-07-16): test it empirically anyway** —
+   cheap and reversible, and rules the candidate out definitively either way.
+
+## Proposed change (2026-07-16)
+**Hypothesis being addressed:** low-confidence — that the mere presence of
+`network_config`/PSC-I on the gateway resource (independent of whether any
+traffic actually routes through it) affects whether the admin-plane
+`UpdateReasoningEngine` bind PATCH succeeds. Evidence so far argues against
+this (PSC-I is documented optional/VPC-only, and t2-demo's real traffic is
+public-endpoint), but it is the last untested candidate and the test is cheap.
+**Evidence supporting the change:** see TROUBLESHOOTING_LOG.md "networkConfig/PSC-I
+deep-dive" entry — real, confirmed structural difference between the two
+gateways, never empirically tested as a fix until now.
+**Files expected to change:**
+- `iac/agent/networking.tf` — add a dedicated `/28` subnet for the PSC-I
+  network attachment (mirrors the codelab's own networking module).
+- `iac/agent/agent_gateway.tf` — add `google_compute_network_attachment` and
+  wire a `network_config { egress { ... } }` block into the existing
+  `google_network_services_agent_gateway.sre_egress` resource.
+**Expected result:** re-run `attach_gateway_to_engine.sh` after apply; either
+the bind succeeds (networkConfig was in fact required, contradicting the
+documented "optional" claim) or fails identically (confirms it's unrelated,
+closing out the last open candidate from the full investigation).
+**Rollback method:** `terraform destroy -target` the two new resources (no
+dependents outside this stack); the existing gateway resource's
+`network_config` block can be removed and re-applied to fully revert.
+
+## Correction (2026-07-16): match everything in one pass, not one variable at a time
+User called out — correctly — that testing PSC-I alone and rationalizing away
+`protocols`/`description`/`timeout` differences as "probably not relevant"
+repeats the exact piecemeal approach already rejected earlier this
+investigation. Standing instruction from the start: match t2-demo to
+cleanroom completely, then test once. Re-pulled the authz extension/policy
+live REST config for both projects (raw JSON, not `gcloud alpha` — that
+subcommand group doesn't exist) and found ONE genuinely new, previously
+unflagged difference: `authzExtension.timeout` = `1s` (t2-demo) vs `2s`
+(cleanroom). Combined with the already-known `protocols`/`description` gaps,
+all three are now being matched in the same apply as PSC-I:
+- `agent_gateway.tf`: removed `description` and `protocols = ["MCP"]` from
+  the gateway resource (exact match to cleanroom, which sets neither).
+- `agent_gateway.tf`: `authz_extension.iap.timeout` changed `"1s"` → `"2s"`.
+- PSC-I network_config (previous entry) — apply already in flight when this
+  was found; will be combined with these via a second scoped apply
+  immediately after the first completes, before any bind-retry test runs.
+**Known, intentionally NOT matched** (structurally impossible — Google
+auto-provisions these per-project, not controllable via Terraform):
+`agentGatewayCard.mtlsEndpoint` tenant project, `serviceExtensionsServiceAccount`,
+`rootCertificates` instance. Flagged, not silently ignored.
+
+## Result: full match applied, bind STILL fails identically (2026-07-16)
+Both applies succeeded (PSC-I: 4 added/2 destroyed; protocols+description+timeout:
+1 added/2 changed/1 destroyed). Re-ran `attach_gateway_to_engine.sh` against the
+now fully-matched gateway. **Identical failure**: `{"code": 3, "message": "The
+Reasoning Engine failed to be updated."}` — and this generic message is now
+confirmed to be the API's COMPLETE response, not truncated by our own logging.
+**Every gateway/authz-level field difference ever found between t2-demo and
+cleanroom is now either matched-and-retested-and-rejected, or previously
+ruled out (`iamEnforcementMode`).** None remain at this layer.
+Remaining unexplored (flagged earlier, not yet executed): full Cloud Audit
+Log detail for this specific failed operation ID, and org
+policy/VPC-Service-Controls perimeter comparison between the two projects.
+Running these now before any GCP Support escalation.
+
+## Audit logs + stderr + org-policy check complete (2026-07-16)
+- Cloud Audit Log for the failed operation: `status: {}` empty on both start
+  and terminal entries — Google's own audit trail has no more detail than
+  the generic API response already seen.
+- Container stderr showed a promising new lead (gRPC `CERTIFICATE_VERIFY_FAILED:
+  unable to get local issuer certificate`, 8x, tightly time-correlated with
+  the operation's completion) — **directly verified against cleanroom's own
+  successful bind and found the identical error 274 times there too, same
+  relative position in container startup. RULED OUT as noise, not causal.**
+- Org policy: direct project-level overrides identical (both empty). Deeper
+  checks (inherited policy, VPC-SC perimeter membership) are **UNKNOWN, not
+  ruled out** — `orgpolicy.googleapis.com`/`accesscontextmanager.googleapis.com`
+  disabled on both projects; cannot be queried from this account without
+  enabling APIs (mutating, out of scope) or org-admin access.
+
+**Status: every checkable candidate now tested-and-rejected or explained.**
+Only unclosable gap: inherited org policy / VPC-SC membership, which needs
+either API enablement or an org-admin to check directly. Complete case for
+GCP Support escalation now assembled.
 3. Separate, smaller finding from this session: `terraform apply` on the
    reasoning engine silently wipes any out-of-band field it doesn't manage
    (confirmed for both `agentGatewayConfig` and env vars like
