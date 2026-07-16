@@ -45,16 +45,9 @@ same cert-provisioning pipeline.
   hygiene, but the bundling was the operative fix, not these alone).
 
 ## What's still open
-1. **`scripts/attach_gateway_to_engine.sh` needs fixing** — its design (a
-   narrow, standalone `agentGatewayConfig`-only PATCH, run separately from
-   source deployment) is fundamentally the wrong shape. Needs to bundle
-   with a source deploy, or the deploy process needs restructuring so
-   Terraform's source push and the gateway attach happen atomically.
-2. **`sreagent-t2-demo` itself is not yet re-fixed** — this whole
-   investigation moved to the clean-room project after 8/8 failures there.
-   This root cause fully explains why: every attempt used the same
-   narrow-PATCH script. Applying the same bundled fix there should resolve
-   it, but hasn't been done yet.
+1. ✅ DONE — `scripts/attach_gateway_to_engine.sh` rewritten to bundle source+gateway, poll to real completion, fail loudly. Merged to `main` (PR #24).
+2. ⚠️ **`sreagent-t2-demo` still NOT fixed — and the reason is now more specific.** Applied the fix there (fresh code deploy + fresh gateway recreate + the corrected bundled attach, run immediately after gateway creation, exactly matching the clean-room's successful sequence) — **still fails identically** (`error.code: 3`). This rules out "gateway freshness" as the differentiator. Something about the project `sreagent-t2-demo` or its long-lived engine (`8599129257987276800`, survived 8+ failed binds and many applies across this whole investigation) differs from a truly fresh project. Candidate: `iap_iam_enforcement_mode = ENFORCE` here vs `DRY_RUN` on the clean-room gateway (weak candidate — IAP governs gateway data-plane traffic, not the admin API call that's failing — but untested). Stronger candidate: the ENGINE itself carries accumulated state, not just the gateway — would need an engine recreation (bigger, more disruptive) to test.
+   **This is now a strong, precise case for a GCP support ticket**: identical code, identical procedure, fresh gateway — works immediately on one project, fails immediately on another.
 3. Separate, smaller finding from this session: `terraform apply` on the
    reasoning engine silently wipes any out-of-band field it doesn't manage
    (confirmed for both `agentGatewayConfig` and env vars like

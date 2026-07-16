@@ -1073,3 +1073,65 @@ The Agent Gateway performs TLS inspection (Secure Web Proxy) using a dynamically
 - **This likely also fully explains the ORIGINAL `sreagent-t2-demo` mystery from earlier in this investigation** — every attach attempt there used the same narrow, standalone-PATCH script.
 **Files modified this round:** `agent/gemini_client.py`, `agent/__init__.py`, `agent/requirements.txt` (all committed changes, now live-verified working).
 **Next action:** Report to user in the exact format requested. Fix `scripts/attach_gateway_to_engine.sh` to bundle source+gateway (or clearly document that it must never be used standalone after a Terraform source deploy). Apply the same bundled approach to `sreagent-t2-demo` to confirm this closes out the original investigation too.
+
+---
+
+## Bundled fix applied to sreagent-t2-demo — still fails, gateway-instance-specific
+
+**Timestamp:** 2026-07-16T08:00Z–08:20:43Z
+**Objective:** After merging the fix to `main` (PR #24), apply it to the original deployment: rebuild `agent.tar.gz` from fixed code, `terraform apply` to push the code (re-pointed at `sreagent-t2-demo`'s own backend/tfvars), then run the newly-fixed `attach_gateway_to_engine.sh` (which now bundles source+gateway and actually checks its own result).
+**Command executed:**
+```bash
+bash scripts/package_agent.sh
+cd iac/agent && terraform init -reconfigure -backend-config="bucket=sreagent-t2-demo-tfstate" -backend-config="prefix=agent"
+terraform plan -var="create_wif=false"    # Plan: 0 to add, 1 to change, 0 to destroy — source_code_spec only
+terraform apply -auto-approve -var="create_wif=false"    # succeeded
+cd ../..
+bash scripts/attach_gateway_to_engine.sh
+```
+**Exit code:** 1 (script correctly failed and reported it — the script-level fix is working)
+**Relevant output:**
+```
+PATCH submitted (operation: .../operations/3905718262549184512). Polling to terminal state...
+ERROR: operation failed: {"code": 3, "message": "The Reasoning Engine failed to be updated. ..."}
+```
+**Result:** FAILURE — same generic `error.code: 3` seen in all 8 prior attempts against this specific project/gateway.
+**Evidence discovered:** The exact same bundled approach that worked immediately and cleanly on `sreagent-cleanroom-test`'s gateway fails identically on `sreagent-t2-demo`'s gateway (`sre-agent-egress`).
+**Interpretation:** This is strong confirmation of the earlier (pre-clean-room) finding: `sreagent-t2-demo`'s specific gateway instance carries some accumulated bad state (from repeated destroy/recreate churn across this whole investigation — PR #19's recreate, this session's earlier "Option C"-style recreate attempts, 8+ prior failed attach calls) that the correct bundled-deploy approach cannot work around. The FIX ITSELF is proven correct (clean-room evidence stands); this specific gateway resource on `sreagent-t2-demo` most likely needs to be destroyed and recreated fresh, THEN immediately bound using the now-fixed bundled script (its very first bind, matching every historical success pattern in this investigation).
+**Facts established / hypotheses affected:**
+- CONFIRMED: the bundled-deploy fix does not unstick an already-poisoned gateway instance — it's the correct approach for engines/gateways that haven't accumulated this specific stale state, not a universal unstick-anything fix.
+- REOPENED (with much higher confidence than before): `sreagent-t2-demo`'s gateway needs to be recreated fresh, this time immediately followed by the bundled attach (not a standalone one) — the same recreate action tried once earlier this session, but that earlier attempt used the OLD, broken standalone-attach script, so it was never actually a fair test of "fresh gateway + correct bundled attach."
+**Files modified:** None this round (infra only; code already correct)
+**Next action:** Get explicit user confirmation before recreating `sreagent-t2-demo`'s gateway again (destructive, same class of action already approved once this session) — do not proceed without asking, per "don't mess anything up" instruction.
+
+---
+
+## Fresh gateway + correct bundled fix STILL fails on sreagent-t2-demo — theory revised
+
+**Timestamp:** 2026-07-16T08:20Z–08:45:35Z
+**Objective:** User approved recreating `sreagent-t2-demo`'s gateway fresh, then immediately binding with the now-fixed bundled script — testing whether "gateway freshness" was the missing variable, matching every historical success pattern.
+**Command executed:**
+```bash
+terraform taint 'google_network_services_agent_gateway.sre_egress[0]'
+terraform plan -target=[gateway+authz policy+extension+time_sleep] -var="create_wif=false"   # 2 to add, 2 to destroy, reviewed
+terraform apply -auto-approve [same targets]   # succeeded: 2 added, 2 destroyed
+bash scripts/attach_gateway_to_engine.sh   # run IMMEDIATELY after, on the fresh gateway
+```
+**Exit code:** 1
+**Relevant output:**
+```
+Apply complete! Resources: 2 added, 0 changed, 2 destroyed.
+...
+Attaching engine 8599129257987276800 to gateway .../agentGateways/sre-agent-egress (bundled with a fresh source deploy)...
+PATCH submitted (operation: .../operations/6070911744337772544). Polling to terminal state...
+ERROR: operation failed: {"code": 3, "message": "The Reasoning Engine failed to be updated. ..."}
+```
+**Result:** FAILURE — identical error, on a genuinely fresh gateway (created minutes earlier), using the confirmed-correct bundled approach.
+**Evidence discovered:** "Gateway freshness" is NOT the differentiating variable between `sreagent-t2-demo` and `sreagent-cleanroom-test` — a fresh gateway here still fails immediately, while the clean-room's fresh gateway succeeded immediately. Something about the PROJECT `sreagent-t2-demo` itself (not the gateway resource specifically) differs.
+**Interpretation:** Candidate project-level differences (not yet tested): `sreagent-t2-demo` uses `iap_iam_enforcement_mode = null` (ENFORCE mode, changed from DRY_RUN on 2026-07-14) vs. the clean-room gateway's DRY_RUN default — though IAP REQUEST_AUTHZ governs gateway *data-plane* traffic, not the admin-plane `UpdateReasoningEngine` API call, so this is a weak candidate, not a strong one. The reasoning engine itself (`8599129257987276800`) has been through 8+ failed bind attempts, multiple terraform applies, and model changes across this entire investigation — unlike the clean-room's freshly-created engine — so accumulated ENGINE-side state (not gateway-side) is now a more plausible candidate than before, though not yet isolated.
+**Facts established / hypotheses affected:**
+- REJECTED: "a fresh gateway alone resolves this" — directly disproven by this test.
+- CONFIRMED (stronger than before): the fix (bundled deploy) is correct and works reliably on `sreagent-cleanroom-test`; the persistent failure is specific to something about `sreagent-t2-demo` as a project or its specific long-lived engine resource, not the gateway resource's own history.
+- NEW CANDIDATE (untested): the reasoning ENGINE itself, not just the gateway, may carry accumulated bad state from this investigation's history — would require recreating the ENGINE too (a much bigger, more disruptive action: new engine ID, reconfiguring IAM bindings, likely reconfiguring `iap_iam_enforcement_mode` back to DRY_RUN to match the one variable we haven't controlled for) to test.
+**Files modified:** None
+**Next action:** This is a strong, well-evidenced case for a GCP support ticket — identical code, identical procedure, fresh gateway, works immediately on one project and fails immediately on another. Report to user plainly: recommend either (a) escalating to Google with this precise reproduction, (b) testing an engine recreation as one more internal experiment (bigger, more disruptive, not yet approved), or (c) treating `sreagent-cleanroom-test` as the reference/production path forward and deprioritizing further `sreagent-t2-demo` debugging given a working alternative already exists.
