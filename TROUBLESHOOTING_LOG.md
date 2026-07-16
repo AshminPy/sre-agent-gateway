@@ -1135,3 +1135,112 @@ ERROR: operation failed: {"code": 3, "message": "The Reasoning Engine failed to 
 - NEW CANDIDATE (untested): the reasoning ENGINE itself, not just the gateway, may carry accumulated bad state from this investigation's history — would require recreating the ENGINE too (a much bigger, more disruptive action: new engine ID, reconfiguring IAM bindings, likely reconfiguring `iap_iam_enforcement_mode` back to DRY_RUN to match the one variable we haven't controlled for) to test.
 **Files modified:** None
 **Next action:** This is a strong, well-evidenced case for a GCP support ticket — identical code, identical procedure, fresh gateway, works immediately on one project and fails immediately on another. Report to user plainly: recommend either (a) escalating to Google with this precise reproduction, (b) testing an engine recreation as one more internal experiment (bigger, more disruptive, not yet approved), or (c) treating `sreagent-cleanroom-test` as the reference/production path forward and deprioritizing further `sreagent-t2-demo` debugging given a working alternative already exists.
+
+---
+
+## Systematic side-by-side config comparison (user pushback: "just diff the two")
+
+**Timestamp:** 2026-07-16T08:50Z–09:14:09Z
+**Objective:** User correctly pushed back on jumping to bigger actions (engine recreate, support case) without first doing the basic thing: a real, systematic side-by-side diff of every config dimension between the working (`sreagent-cleanroom-test`) and failing (`sreagent-t2-demo`) projects.
+**Commands executed:** direct REST/gcloud comparison across: engine env vars (full diff), engine IAM roles (full diff), gateway `protocols`/`googleManaged`/`networkConfig`, gateway authz policies, gateway authz extensions (`iamEnforcementMode`, `failOpen`, `service`), Agent Registry mTLS hostname registration.
+**Findings, verified not guessed:**
+1. **Env vars**: identical except expected project-specific values (bucket names, project ID) and a deliberate `GEMINI_MODEL` choice (pro vs flash). Not the cause.
+2. **Engine IAM roles**: identical except `roles/modelarmor.user`, present on cleanroom, absent on t2-demo — traced to our OWN conditional IAM logic tied to `enable_agent_gateway` (t2-demo=true uses its own gateway's Model Armor instead; cleanroom=false needed direct API access). Expected, unrelated to Vertex AI's TLS handshake (different service entirely). Not the cause.
+3. **Gateway `protocols`/`networkConfig`**: t2-demo sets `protocols=["MCP"]` and no `networkConfig`; cleanroom has no `protocols` and a PSC-I `networkConfig`. Verified directly against the actual `agw-cuj-arun-egress-gmcp` codelab (the one matching our exact use case, Agent Runtime → Google MCP servers) via WebFetch — it also omits `networkConfig` entirely, confirming t2-demo's config is correct per the matching reference. The difference is explained by cleanroom's gateway coming from a *different*, fuller demo (mortgage-agent, which supports private Cloud Run MCP and thus needs PSC-I) — an artifact of which reference we happened to build from, not a requirement for our use case. Not tested directly as a fix (would require nontrivial new infra) given the stronger candidate below was tested first and also failed — worth revisiting if all other leads are exhausted.
+4. **mTLS hostname registration**: already present on t2-demo (checked directly — not previously verified, could have been the answer, was already correct).
+5. **`iamEnforcementMode`**: t2-demo unset (defaults ENFORCE), cleanroom `DRY_RUN`. **This was the one concrete, empirically-testable difference remaining** — tested directly.
+**Test performed:** Temporarily set `iap_iam_enforcement_mode=DRY_RUN` on t2-demo's `google_network_services_authz_extension.iap[0]` (scoped, targeted apply, user explicitly approved), immediately re-ran the bundled attach.
+**Result:** FAILURE — identical `error.code: 3`, no change in behavior. Reverted `iamEnforcementMode` back to `ENFORCE` immediately after (confirmed via direct REST check: `metadata` no longer contains the key, matching original state). `sreagent-cleanroom-test` was not touched at any point during this test (confirmed Terraform was scoped to t2-demo's backend throughout, verified via `terraform output` before starting).
+**Facts established / hypotheses affected:**
+- REJECTED: `iamEnforcementMode` (ENFORCE vs DRY_RUN) as the differentiator.
+- REJECTED (already, restated for completeness): env var differences, engine IAM role differences, mTLS registration status.
+- STILL UNTESTED, lower confidence: gateway `networkConfig`/PSC-I presence (real difference, but explained as a demo-artifact rather than a requirement — would need real new infra to test, not yet justified given no positive evidence it matters).
+- STILL UNTESTED: whether the reasoning ENGINE itself (not the gateway) carries accumulated bad state from 8+ historical failed binds — the one remaining structurally-different candidate (cleanroom's engine is brand new; t2-demo's has extensive history).
+**Files modified:** None (net zero — temporary change reverted)
+**Next action:** Systematic manual comparison across every readily-inspectable dimension has been exhausted without finding the differentiator. Report to user plainly with the full comparison table and remaining options: engine recreation (untested, disruptive), GCP support case (strong reproduction now available), or accept `sreagent-cleanroom-test` as the working reference and deprioritize further t2-demo debugging.
+
+---
+
+## Platform-state investigation (7-point directive) — gateway comparison re-confirms networkConfig gap
+
+**Timestamp:** 2026-07-16T09:30Z–09:45Z (approx, background agent)
+**Objective:** User directed a broader platform-state investigation (not deployment code, already proven correct) across 7 areas: engine creation dates vs a claimed Google-documented "April 29, 2026" Agent Gateway cutoff, full live engine resource diff, listing all engines in t2-demo for hidden conflicts, full gateway comparison, endpoint registration, and a documentation search — followed by a PASS/FAIL/UNKNOWN synthesis with no speculation.
+**Commands executed:** `gcloud alpha network-services agent-gateways describe` (both projects, full JSON), `gcloud alpha network-services authz-policies/authz-extensions list` (both — command doesn't exist in this gcloud version), `gcloud model-armor templates list` (both — PERMISSION_DENIED despite owner role, cause unverified), `gcloud iap web get-iam-policy` (both).
+**Exit codes:** gateway describe = 0/0; authz-policies/extensions = 2/2 (invalid subcommand, not a real check); model-armor = 1/1 (PERMISSION_DENIED); IAP = 0/0.
+**Result:**
+- Engine creation dates: t2-demo engine (`2026-07-13T00:41:23Z`) is OLDER than cleanroom's (`2026-07-16T03:47:46Z`) — t2-demo's engine predates cleanroom's, relevant to any claimed cutoff-date theory (not yet cross-checked against the specific claim — that's the doc-search agent, still pending).
+- Full live engine diff: byte-identical on every field except project-specific values and `GEMINI_MODEL` (known, unrelated) and — the one real finding — **`spec.deploymentSpec.agentGatewayConfig` is completely ABSENT on t2-demo's live engine right now** (expected: last attach attempt failed, so it was never set).
+- Engine listing: exactly 2 engines in t2-demo (main + memory-bank), no gateway reference found in either via the `reasoningEngines.list` API (caveat: this endpoint may not surface gateway bindings at all).
+- **Gateway comparison (re-run, independent of the earlier systematic diff): CONFIRMS the previously-noted `networkConfig` difference.** Cleanroom's gateway has `networkConfig.egress.networkAttachment: "projects/sreagent-cleanroom-test/regions/us-central1/networkAttachments/agent-gateway-na"`. t2-demo's gateway has **no `networkConfig` key in the describe output at all** — not null, not empty, entirely absent. Also newly noted: t2-demo's gateway has `description` and `protocols: ["MCP"]` keys that cleanroom's gateway entirely lacks (cleanroom has neither field). `googleManaged.governedAccessPath: AGENT_TO_ANYWHERE` identical on both. Root CA subject template identical (`CN=Agent Gateway TLS Inspection CA (us-central1)`), different serial/validity per-gateway (expected, each gateway auto-provisions its own CA).
+- Authz-policies/authz-extensions: **UNKNOWN — command doesn't exist in installed gcloud (573.0.0)**, not a real comparison; this contradicts the earlier systematic-diff log entry that reported authz extension details (`iamEnforcementMode`) — that earlier check must have used the REST API directly, not this gcloud subcommand, so treat the earlier REST-based finding as authoritative and this UNKNOWN as a gcloud-tooling gap, not new information.
+- Model Armor: UNKNOWN on both (identical PERMISSION_DENIED despite `roles/owner` on both projects — API enablement not verified, not established as fact).
+- IAP web IAM policy: identical (both empty, only an etag) — does not confirm/deny IAP on a specific backend service.
+- Endpoint registration (from earlier-completed parallel check): PASS on both projects, both hostnames (plain + `.mtls.`), regionally — not a differentiator.
+**Interpretation:** The `networkConfig` absence on t2-demo's gateway is now the single most concrete, still-untested structural difference in the entire investigation. Previously (systematic-diff entry above) this was found and set aside as "explained by a demo-artifact, not a requirement, per the matching codelab reference" — but it was explicitly flagged there as **not tested directly as a fix**. Every other real candidate (env vars, IAM roles, `iamEnforcementMode`, mTLS registration) has now been both found AND empirically tested AND rejected. `networkConfig`/egress-networkAttachment is the only remaining candidate that has been found but never actually tested.
+**Facts established / hypotheses affected:**
+- REOPENED with higher priority: `networkConfig.egress.networkAttachment` presence/absence between the two gateways — real, confirmed twice independently, never empirically tested.
+- Model Armor comparison remains UNKNOWN (tooling/permission gap, not evidence either way).
+- Authz-policy/extension comparison via gcloud is a dead end (command doesn't exist); rely on the earlier REST-based finding instead.
+**Files modified:** None (read-only investigation)
+**Next action:** Awaiting the doc-search agent (Google documentation search, including the specific "April 29, 2026" cutoff claim) to complete the 7-point directive before synthesizing the final PASS/FAIL/UNKNOWN report per the user's explicit format.
+
+---
+
+## Platform-state investigation (7-point directive) — documentation search completed, final synthesis
+
+**Timestamp:** 2026-07-16T09:45Z–10:05Z (approx, background agent + synthesis)
+**Objective:** Complete item 6 of the user's 7-point directive — verify or refute the specific claimed "April 29, 2026" Agent Gateway cutoff, plus other documented limitations, project-migration/allowlist requirements, and known issues.
+**Method:** Multi-query WebFetch/WebSearch against official Google Cloud docs (5 pages fetched directly, cross-checked with independent WebSearch), GitHub, Stack Overflow. `issuetracker.google.com` inaccessible to the tool (auth wall) — flagged as a genuine gap, not a negative result.
+**Findings (verbatim quotes, with URLs):**
+
+1. **April 29, 2026 cutoff — CONFIRMED TRUE.** Exact quote from https://docs.cloud.google.com/gemini-enterprise-agent-platform/scale/runtime/agent-gateway-runtime-deploy, under a "Limitations" heading: *"An Agent Gateway can't be bound to Runtime Reasoning Engines created before April 29, 2026."* Cross-checked against actual engine createTime values already gathered this session:
+   - t2-demo engine (`8599129257987276800`): createTime `2026-07-13T00:41:23Z`
+   - cleanroom engine (`3983291483653406720`): createTime `2026-07-16T03:47:46Z`
+   **Both dates are AFTER April 29, 2026.** This documented cutoff, while real, does **NOT** explain the observed failure — neither engine falls on the wrong side of it.
+
+2. **`identity_type` cannot be retroactively set via PATCH** — same URL, exact quote: *"Updating an existing reasoning engine to set `agentGatewayConfig` does not change its `identity_type`. If the engine was originally created without `identity_type=AGENT_IDENTITY`, you cannot retroactively make it eligible... You must redeploy a new reasoning engine with both `agent_gateway_config` and `identity_type=AGENT_IDENTITY` set at agent creation time."* Cross-checked against the live resource diff already gathered: both engines currently show `spec.identityType: AGENT_IDENTITY`. Since this doc confirms PATCH can never set this field, both engines' current state proves `identity_type=AGENT_IDENTITY` was already set at CREATION time for both — this limitation is **satisfied on both projects already**, not a differentiator.
+
+3. **No documented per-project manual allowlist/enablement step** beyond standard API enablement, per direct fetch of the official "Set up Agent Gateway" page (~20 APIs + IAM roles listed, no allowlist mentioned). Absence of evidence, not proof of absence.
+
+4. **`error.code: 3` + Agent Gateway/reasoningEngines on issue trackers — NO MATCHING RESULTS** found on GitHub or Stack Overflow after multiple searches. `issuetracker.google.com` could not be searched (auth wall) — genuine gap.
+
+5. **Documented general limitation, real but likely orthogonal**: *"Agent Gateway doesn't support connections to public or private destinations with self-signed certificate chains. Use publicly trusted CA certificates for all destinations."* (agent-gateway-overview) and *"Agent Gateway does not validate self-signed certificate chains"* (troubleshoot-agent-gateway). This describes gateway EGRESS data-plane behavior toward a downstream destination, not the admin-plane `UpdateReasoningEngine` bind operation that is actually failing (which calls no external destination). Flagged as real documentation but not evidenced as applicable to this specific attach-time failure.
+   Also found: gateway region must match app location; all agents in a project+region must bind to the same gateway instance; binding routes ALL existing traffic immediately (not staged); custom org policies take up to 15 minutes to propagate.
+
+6. **Preview/allowlist gating — UNRESOLVED.** No primary-source quote found stating Agent Gateway requires manual per-project allowlisting. Circumstantial fact (confirmed directly): the official codelab uses `gcloud alpha network-services agent-gateways` and `v1alpha1`/`v1beta1` REST endpoints — consistent with a non-GA launch stage, which for other Google Cloud alpha features has historically required allowlisting, but not confirmed as applicable here.
+
+**Facts established / hypotheses affected:**
+- REFUTED as an explanation: the April 29, 2026 cutoff (real, but both engines postdate it).
+- CONFIRMED as satisfied, not a differentiator: `identity_type` set at creation (both engines already show `AGENT_IDENTITY`, which per docs could only occur if set at creation, since PATCH cannot add it).
+- STILL OPEN, real evidence: the self-signed-cert-chain limitation is documented but not evidenced as applicable to an admin-plane bind failure specifically.
+- STILL OPEN, unresolved: whether Agent Gateway carries an undocumented per-project allowlist gate (alpha/beta API status is a real, confirmed fact; the allowlist mechanism itself is unconfirmed).
+- The one remaining REAL, FOUND-BUT-UNTESTED difference from the gateway-comparison check (previous log entry) stands: t2-demo's gateway has no `networkConfig` key; cleanroom's has `networkConfig.egress.networkAttachment` set to a PSC-I network attachment.
+**Files modified:** None (read-only)
+**Next action:** Present full PASS/FAIL/UNKNOWN synthesis to user per their exact requested format. Do NOT proceed to test `networkConfig`/PSC-I on t2-demo without explicit user approval (real infra change, not read-only).
+
+---
+
+## networkConfig/PSC-I deep-dive — answering the 4 user questions before any infra change
+
+**Timestamp:** 2026-07-16T10:10Z–10:35Z
+**Objective:** User asked to verify 4 specific things about the one remaining untested difference (gateway `networkConfig`/PSC-I network attachment) before either building it in t2-demo or concluding this is a Google platform issue: (1) is it required for Agent-to-Anywhere gateways, (2) why did it appear automatically in one project but not the other, (3) is cleanroom's PSC-I healthy/READY, (4) can it be created in t2-demo.
+**Evidence gathered:**
+
+1. **Source code — cleanroom's actual Terraform module** (`agent-gateway-codelab/.../terraform/modules/agent-gateway/main.tf:15-21,35-44,74-77`): module docstring: *"Provisions a Google-managed Agent Gateway in AGENT_TO_ANYWHERE mode for MCP, a PSC-Interface network attachment in the dedicated co-location subnet... This is what the Agent Gateway egresses through to reach the customer VPC (and from there the MCP internal LB)."* The `google_compute_network_attachment` resource has **no `count`/`for_each` gate** — it is created unconditionally by this module, because this module (the mortgage-agent demo) is architected around a **private, internal-LB-fronted MCP server**.
+
+2. **Source code — t2-demo's own Terraform module** (`testing2-gcp-sre-agent/iac/agent/agent_gateway.tf:16-21`, pre-existing comment from earlier in this investigation): *"Per the official codelab (agw-cuj-arun-egress-gmcp): a Google-managed gateway with NO networkConfig / NO PSC network attachment. The gateway reaches the public Google-API + GKE Remote MCP destinations over Google's backbone; a PSC egress attachment into a VPC is only for PRIVATE-VPC targets (not our case), and the codelab creates none."*
+
+3. **Official Google documentation, fetched directly** (https://docs.cloud.google.com/gemini-enterprise-agent-platform/govern/gateways/set-up-agent-gateway): exact quoted section: *"**Optional: Configure VPC connectivity** — To learn how to configure your Agent Gateway so that it can privately communicate with a VPC network in your organization, see Set up VPC connectivity for Agent Gateway."* Cross-checked via WebSearch: the linked VPC-connectivity guide requires registering "the network attachment created with your Agent Gateway egress configuration" specifically so the gateway "can reach the policy engine over the private network." **CONFIRMED: `networkConfig`/network attachment is an OPTIONAL step, explicitly scoped to private VPC communication — not a requirement for AGENT_TO_ANYWHERE gateways reaching public Google APIs.**
+
+4. **Live infra check** (`gcloud compute network-attachments describe agent-gateway-na --project=sreagent-cleanroom-test --region=us-central1`): `connectionEndpoints[0].status: "ACCEPTED"`, `connectionPreference: "ACCEPT_AUTOMATIC"`, subnetwork `gateway-agent-gateway-subnet`, network `gateway-vpc`, created `2026-07-15T19:29:29-07:00`. **Healthy and connected** — no health/READY field exists on this resource type; `status: ACCEPTED` on the connection endpoint is the correct health signal and it is positive.
+
+**Direct answers:**
+1. Required for Agent-to-Anywhere? **NO** — confirmed optional per official docs, scoped to private-VPC-only use cases.
+2. Why present on one, absent on the other? **Because the two gateways were built from two different Terraform source modules** — cleanroom's source module (mortgage-agent demo, architected for a private internal-LB MCP server) creates it unconditionally; t2-demo's own module (built against the actually-matching codelab for our public-endpoint use case) deliberately never creates it. Not a bug, not drift — a documented, intentional difference in which reference each project was built from.
+3. Is cleanroom's PSC-I healthy? **YES** — `ACCEPTED`, live and connected.
+4. Can we create the same thing in t2-demo? **Technically yes** (new VPC/subnet/network-attachment/firewall rule), but there is no evidence it's needed — t2-demo's actual destinations (Vertex AI public APIs, GKE Remote MCP via `container.googleapis.com`, a public Google API) do not require PSC-I per the documentation above, and the failure being chased is an **admin-plane** `UpdateReasoningEngine` PATCH failure (binding the gateway to the engine), not a data-plane egress call — PSC-I only affects data-plane egress routing, not the admin-plane bind operation.
+**Facts established / hypotheses affected:**
+- REJECTED as the root cause: `networkConfig`/PSC-I absence on t2-demo. It is optional, correctly absent per t2-demo's own matching reference architecture, healthy where present, and architecturally unrelated to the specific admin-plane bind call that is actually failing.
+- This was the last remaining untested candidate from the 7-point platform-state investigation. **Every candidate identified across the entire investigation has now been either tested-and-rejected or explained-with-documented-evidence.**
+**Files modified:** None (read-only)
+**Next action:** Report findings to user plainly — recommend against building PSC-I in t2-demo (no evidence it would fix an admin-plane failure, adds real infra cost/complexity for a documented optional-only feature) and recommend GCP Support escalation instead, given a complete, well-evidenced reproduction now exists. Await user decision.

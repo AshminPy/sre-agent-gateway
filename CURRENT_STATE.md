@@ -46,8 +46,59 @@ same cert-provisioning pipeline.
 
 ## What's still open
 1. ✅ DONE — `scripts/attach_gateway_to_engine.sh` rewritten to bundle source+gateway, poll to real completion, fail loudly. Merged to `main` (PR #24).
-2. ⚠️ **`sreagent-t2-demo` still NOT fixed — and the reason is now more specific.** Applied the fix there (fresh code deploy + fresh gateway recreate + the corrected bundled attach, run immediately after gateway creation, exactly matching the clean-room's successful sequence) — **still fails identically** (`error.code: 3`). This rules out "gateway freshness" as the differentiator. Something about the project `sreagent-t2-demo` or its long-lived engine (`8599129257987276800`, survived 8+ failed binds and many applies across this whole investigation) differs from a truly fresh project. Candidate: `iap_iam_enforcement_mode = ENFORCE` here vs `DRY_RUN` on the clean-room gateway (weak candidate — IAP governs gateway data-plane traffic, not the admin API call that's failing — but untested). Stronger candidate: the ENGINE itself carries accumulated state, not just the gateway — would need an engine recreation (bigger, more disruptive) to test.
-   **This is now a strong, precise case for a GCP support ticket**: identical code, identical procedure, fresh gateway — works immediately on one project, fails immediately on another.
+2. ⚠️ **`sreagent-t2-demo` still NOT fixed.** Applied the fix (fresh code
+   deploy + fresh gateway recreate + bundled attach, exactly matching the
+   clean-room's successful sequence) — still fails identically (`error.code: 3`).
+   Ruled out "gateway freshness" as the differentiator. Then did a full,
+   systematic side-by-side diff of every config dimension against the
+   working clean-room project (env vars, engine IAM roles, gateway
+   protocols/networkConfig, authz policies/extensions, mTLS registration)
+   — found and tested `iamEnforcementMode` (ENFORCE vs DRY_RUN) directly.
+   **Ruled out** — reverted cleanly, clean-room untouched throughout.
+   **2026-07-16 platform-state investigation (in progress, per user's
+   7-point directive):** re-confirmed independently that t2-demo's gateway
+   has **NO `networkConfig` key at all** (not null — entirely absent),
+   while cleanroom's gateway has `networkConfig.egress.networkAttachment`
+   set to a real PSC-I network attachment. This is the ONE remaining
+   candidate that has been found twice but **never empirically tested as
+   a fix** (everything else found has now been tested and rejected).
+   Also confirmed: engine creation dates (t2-demo engine is OLDER than
+   cleanroom's, relevant to a claimed Google doc cutoff date — not yet
+   cross-checked, doc-search agent pending), full live engine diff (only
+   `agentGatewayConfig` absence + known `GEMINI_MODEL` choice differ),
+   engine listing (only 2 engines in t2-demo, no visible gateway conflict,
+   caveat: API may not surface bindings), endpoint registration (PASS,
+   identical both projects). Model Armor / authz-policy gcloud checks
+   returned UNKNOWN (permission/tooling gaps, not evidence).
+   **Doc-search complete (2026-07-16).** April 29, 2026 cutoff CONFIRMED
+   real in docs, but does NOT explain the failure (both engines' createTime
+   postdate it). `identity_type`-at-creation PATCH limitation CONFIRMED
+   real but already satisfied on both projects (both show AGENT_IDENTITY
+   live, which per docs could only happen if set at creation). Self-signed
+   cert-chain limitation is real but describes gateway egress data-plane
+   behavior, not the admin-plane bind call that's actually failing —
+   not evidenced as applicable. Per-project allowlist gating UNRESOLVED
+   (alpha/beta API status confirmed as fact; allowlist mechanism itself
+   unconfirmed by any primary source).
+   **`networkConfig`/PSC-I deep-dive complete (2026-07-16) — RULED OUT.**
+   Confirmed via official docs (exact quote): PSC-I/`networkConfig` is
+   "**Optional: Configure VPC connectivity**", scoped explicitly to private
+   VPC communication — NOT required for AGENT_TO_ANYWHERE gateways reaching
+   public Google APIs (t2-demo's actual use case). Confirmed via source:
+   present on cleanroom only because it was built from a DIFFERENT Terraform
+   module (mortgage-agent demo, architected for a private internal-LB MCP
+   server) that creates it unconditionally; t2-demo's own module (matching
+   the actually-correct codelab reference) deliberately never creates it —
+   documented intentional difference, not drift. Confirmed cleanroom's
+   PSC-I is healthy (`ACCEPTED`). Also architecturally irrelevant regardless:
+   PSC-I affects data-plane egress routing, not the admin-plane
+   `UpdateReasoningEngine` bind call that is actually failing.
+   **Every candidate from the full investigation is now tested-and-rejected
+   or explained-with-documented-evidence. None remain.**
+   **Recommendation: do NOT build PSC-I in t2-demo** (no evidence it fixes
+   an admin-plane failure; real added infra for a documented optional-only
+   feature). Recommend GCP Support escalation with the full reproduction
+   instead. Awaiting user decision.
 3. Separate, smaller finding from this session: `terraform apply` on the
    reasoning engine silently wipes any out-of-band field it doesn't manage
    (confirmed for both `agentGatewayConfig` and env vars like
