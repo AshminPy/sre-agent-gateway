@@ -9,8 +9,10 @@ import os
 import json
 import logging
 import re
+import sys
 import time
 
+import certifi
 from google import genai
 from google.genai import types
 
@@ -47,28 +49,40 @@ _session_calls         = 0
 def _get_client():
     global _client
     if _client is None:
-        # Pin the PLAIN (non-mTLS) Vertex endpoint. Under Agent Identity
-        # (identity_type=AGENT_IDENTITY), google-genai auto-selects the mTLS
-        # endpoint (aiplatform.mtls.googleapis.com) — confirmed via live Agent
-        # Gateway logs that this trips the gateway's OWN front-door mTLS check
-        # (clientCertError=client_cert_validation_not_performed), which then
-        # hits its default_denied rule (CERTIFICATE_VERIFY_FAILED / Unexpected
-        # EOF client-side). GOOGLE_API_USE_MTLS_ENDPOINT is ignored by this SDK.
-        # IAP REQUEST_AUTHZ authorizes at the HTTP layer and does no TLS
-        # inspection, so the plain endpoint needs no special cert trust.
-        base_url = (
-            "https://aiplatform.googleapis.com"
-            if MODEL_ENDPOINT_LOCATION == "global"
-            else f"https://{MODEL_ENDPOINT_LOCATION}-aiplatform.googleapis.com"
-        )
+        # No base_url override. google-genai hardcodes the plain endpoint
+        # (aiplatform.googleapis.com) with no mTLS branch at all — verified
+        # directly against the installed source (_api_client.py), so an mTLS
+        # hostname substitution, if it happens, happens below this library,
+        # not because of anything set here. See TROUBLESHOOTING_LOG.md,
+        # 2026-07-16, for the full evidence trail.
         _client = genai.Client(
             vertexai=True,
             project=PROJECT_ID,
             location=MODEL_ENDPOINT_LOCATION,
-            http_options=types.HttpOptions(base_url=base_url),
         )
-        log.info("Gemini client initialized via Vertex AI: %s in %s/%s (endpoint %s)",
-                 MODEL, PROJECT_ID, MODEL_ENDPOINT_LOCATION, base_url)
+        log.info("Gemini client initialized via Vertex AI: %s in %s/%s",
+                 MODEL, PROJECT_ID, MODEL_ENDPOINT_LOCATION)
+
+        # Temporary startup diagnostics for the mTLS endpoint-selection
+        # investigation (TROUBLESHOOTING_LOG.md, 2026-07-16). No credentials
+        # or certificate contents are logged, only metadata.
+        try:
+            resolved_base_url = getattr(
+                getattr(_client, "_api_client", None), "_http_options", None
+            )
+            resolved_base_url = getattr(resolved_base_url, "base_url", "unknown")
+            log.info(
+                "[mtls-diag] python=%s resolved_base_url=%s "
+                "GOOGLE_API_USE_MTLS_ENDPOINT=%s GOOGLE_API_USE_CLIENT_CERTIFICATE=%s "
+                "certifi.where()=%s",
+                sys.version.split()[0],
+                resolved_base_url,
+                os.environ.get("GOOGLE_API_USE_MTLS_ENDPOINT", "<unset>"),
+                os.environ.get("GOOGLE_API_USE_CLIENT_CERTIFICATE", "<unset>"),
+                certifi.where(),
+            )
+        except Exception as exc:
+            log.warning("[mtls-diag] failed to collect diagnostics: %s", exc)
     return _client
 
 

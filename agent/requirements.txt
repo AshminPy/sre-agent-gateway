@@ -1,12 +1,13 @@
 langgraph>=0.2.0,<1.0.0
 langchain-core>=0.3.0,<1.0.0
-google-cloud-aiplatform[agent_engines]>=1.52.0
+google-cloud-aiplatform[agent_engines]>=1.160.0
 google-cloud-modelarmor>=0.7.0
 google-genai>=1.0.0
 google-cloud-storage>=2.16.0
 google-cloud-logging>=3.10.0
-google-auth>=2.29.0
+google-auth>=2.56.0
 google-auth-httplib2>=0.2.0
+certifi>=2026.6.17
 httpx>=0.28.1
 pydantic>=2.7.2
 python-dotenv>=1.0.0
