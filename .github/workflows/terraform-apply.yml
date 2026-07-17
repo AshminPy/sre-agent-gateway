@@ -83,3 +83,17 @@ jobs:
       - name: Attach gateway to engine
         run: bash scripts/attach_gateway_to_engine.sh
         working-directory: .
+
+      # Real end-to-end proof, not just "the PATCH call succeeded": invokes
+      # the deployed agent on a live fixture (k8s/imagepull-pod.yaml, a
+      # standing ImagePullBackOff pod in the Project B test cluster) and
+      # fails the job if it doesn't get back a well-formed RCA. The gateway
+      # bind operation can report done=true while the runtime connection is
+      # still broken (this is exactly how the original mTLS failure hid —
+      # see TROUBLESHOOTING_LOG.md) — this step is what would have caught it
+      # in CI instead of requiring manual investigation.
+      - name: Smoke test — verify the agent responds through the gateway
+        run: |
+          pip install --quiet "google-cloud-aiplatform[agent_engines]>=1.160.0"
+          bash scripts/smoke_test.sh
+        working-directory: .
