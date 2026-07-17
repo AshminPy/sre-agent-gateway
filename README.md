@@ -10,6 +10,11 @@ Everything is Terraform. The agent runs in **Project A**; the GKE cluster it
 investigates lives in **Project B** (yours, existing or demo). Clone, fill in two
 project IDs, and deploy.
 
+**Proven working end-to-end, including the governed Agent Gateway path** —
+see [`RCA_REPORT.md`](RCA_REPORT.md) for the full investigation and fix if
+you hit a gateway-binding failure (`error.code: 3` on the attach step). The
+short version is in [Troubleshooting](#troubleshooting) below.
+
 ![Architecture](docs/architecture.png)
 
 ---
@@ -171,6 +176,60 @@ python eval.py --project $PROJECT_ID --region $REGION --engine-id $REASONING_ENG
 make fmt        # terraform fmt both stacks
 make validate   # terraform validate both stacks
 ```
+
+## Troubleshooting
+
+### Gateway binding fails with `error.code: 3`
+
+If `make attach-gateway` (or `scripts/attach_gateway_to_engine.sh` directly)
+fails with `{"code": 3, "message": "The Reasoning Engine failed to be
+updated."}`, work through these in order — this exact sequence resolved a
+real, multi-day production incident (full writeup: [`RCA_REPORT.md`](RCA_REPORT.md)):
+
+1. **Confirm the script bundles source + gateway config in one call.**
+   `scripts/attach_gateway_to_engine.sh` does this correctly as shipped —
+   the reasoning engine only trusts the gateway's TLS-inspection
+   certificate when the source deployment and `agentGatewayConfig` are
+   submitted together, in one atomic `PATCH`. Two sequential calls (even
+   seconds apart) do not work. If you've modified the script, verify this
+   didn't regress.
+2. **Re-run after every `terraform apply` that touches the engine.**
+   Terraform doesn't manage `agentGatewayConfig` (not yet exposed by the
+   provider), so any apply on the engine resource silently wipes the
+   binding. Always re-run the attach script immediately after.
+3. **Check the script's own pre-flight diagnostics.** It fetches and
+   prints the live engine and gateway state, checks required APIs,
+   endpoint registration, and IAM service agents before attempting the
+   bind — read that output first; it usually rules things in or out
+   directly.
+4. **If every check passes and it still fails identically, suspect the
+   engine resource itself, not its configuration.** A reasoning engine
+   that has failed several bind attempts can accumulate internal state
+   that blocks all further attempts, independent of what configuration is
+   applied to it. The fix: recreate it —
+   ```bash
+   terraform apply -replace='google_vertex_ai_reasoning_engine.sre_agent' -var="create_wif=false"
+   bash scripts/attach_gateway_to_engine.sh
+   ```
+   This is a clean, Terraform-tracked destroy+recreate — every dependent
+   IAM/registry binding that references the engine's identity is
+   automatically replaced along with it, and nothing in this codebase
+   hardcodes the engine ID (everything is looked up dynamically via
+   `terraform output`), so no other files need updating afterward.
+
+### Isolating whether it's your code, your project, or your gateway
+
+If you're debugging a similar failure and want to isolate the variable,
+the two tests that actually settled it in production:
+
+- **Is it your code?** Deploy `iac/agent` fresh into a brand-new,
+  untouched project, changing nothing but the project ID. If it binds,
+  your Terraform/code is fine.
+- **Is it your project or your gateway?** Create a second, temporary
+  reasoning engine (a standalone REST `POST`, not added to Terraform state)
+  inside the *same* project, and try binding *it* to your existing gateway.
+  If that succeeds, the project and gateway are both fine — the problem is
+  specific to the original engine resource (see step 4 above).
 
 ## Clean up
 
