@@ -35,11 +35,13 @@ resource "google_compute_router_nat" "agent" {
 }
 
 # Dedicated subnet for the Agent Gateway's PSC-Interface network attachment.
-# EXPERIMENTAL (2026-07-16): added to test whether the mere presence of
-# network_config/PSC-I on the gateway resource affects the admin-plane
-# UpdateReasoningEngine bind PATCH — see CURRENT_STATE.md "Proposed change".
-# Not used for any real data-plane traffic (the agent's actual destinations
-# are public Google APIs + GKE Remote MCP, reached over Google's backbone).
+# Added 2026-07-16 to test whether PSC-I's presence affected the gateway-bind
+# failure under investigation. Confirmed NOT the cause (see FINAL_RCA.md) —
+# the actual fix was unrelated (engine recreation). Not used for any real
+# data-plane traffic (the agent's actual destinations are public Google APIs
+# + GKE Remote MCP, reached over Google's backbone); kept because it's
+# harmless and matches the vendored codelab reference's own module, which
+# creates this unconditionally.
 # Must not overlap 10.0.0.0/24 (agent subnet), 10.0.1.0/24, or 10.0.2.0/24 —
 # documented Agent Gateway egress restriction.
 resource "google_compute_subnetwork" "agent_gateway_psc" {

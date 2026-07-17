@@ -38,13 +38,28 @@ serves traffic — during which egress calls can fail silently. If the agent's
 calls fail right after enabling the gateway, wait and retry before debugging
 config.
 
-> **Caveat (2026-07-13):** we initially attributed a persistent
-> `certificate verify failed` on the agent→Vertex mTLS endpoint
-> (`us-central1-aiplatform.mtls.googleapis.com`) to this async warmth. That
-> explanation no longer holds — see "Open item" below. Do not treat cert-verify
-> failures as merely "not warm yet."
+> **Update (2026-07-17): RESOLVED.** The `certificate verify failed` issue
+> described below (originally logged 2026-07-13) is fixed and verified
+> end-to-end. Two unrelated root causes, both closed — full writeup in
+> [`FINAL_RCA.md`](../FINAL_RCA.md) and the management-facing
+> [`RCA_REPORT.md`](../RCA_REPORT.md). Short version:
+> 1. **The actual cause was never client-library choice** (the raw-genai-client
+>    hypothesis below was a reasonable lead at the time, but wrong). The
+>    gateway's TLS-inspection certificate is only trusted when the source
+>    deploy and the `agentGatewayConfig` PATCH are submitted as one atomic
+>    call — not two sequential calls, however close together. Confirmed via
+>    Google's own reference `deploy_agent.py` pattern and a clean A/B test.
+> 2. **`sreagent-t2-demo` needed a second, unrelated fix** even after #1 was
+>    applied: the original engine resource had accumulated bad state from
+>    repeated failed bind attempts made while #1 was still undiagnosed.
+>    Fixed by recreating the engine (`terraform apply -replace=`).
+> The "decisive next test" proposed below **was** eventually run (twice, in
+> two different forms) — see `FINAL_RCA.md`'s "t2-demo addendum" — and
+> confirmed neither our code, our project, nor our gateway was at fault.
+> The section below is preserved as the historical record of the
+> investigation as it stood on 2026-07-13, not current guidance.
 
-## Open item: agent→Vertex mTLS `certificate verify failed` (2026-07-13)
+## Historical: agent→Vertex mTLS `certificate verify failed` (2026-07-13, resolved 2026-07-17)
 
 Live validation into `sreagent-t2-demo` (gateway ON) hit a persistent TLS
 `certificate verify failed` / `self signed certificate in certificate chain`
@@ -54,7 +69,8 @@ endpoint, PSC→no-PSC) **and** a fresh, churn-free gateway warmed ~3 hours. The
 earlier "cold data plane, just wait" reading is therefore **not supported** by the
 evidence.
 
-What the evidence now says:
+What the evidence said at the time (2026-07-13) — since resolved, see the
+update above:
 
 - **No online footprint.** There is no public trace of this exact error anywhere.
   A universal Google bug in a documented combo (Agent Gateway + Agent Identity +
@@ -70,16 +86,9 @@ What the evidence now says:
 - **The one genuinely-unique factor left:** this agent calls Vertex via a raw
   `genai.Client(vertexai=True, …)` (`agent/gemini_client.py`), whereas the proven
   codelab uses ADK `Agent(model=…)`. Almost nobody runs a raw google-genai client
-  behind this gateway — which fits the zero-traces observation.
-
-**Leading hypothesis:** the cert-verify is a property of *our* client
-configuration, not Google-side data-plane warmth.
-
-**Decisive next test (not yet run):** deploy this same repo into a brand-new
-Project A. If it works there, the fault is specific to the `sreagent-t2-demo`
-project's state; if it fails there too, the fault is our config/code (the
-raw-genai-client hypothesis) and the fix lands in this repo. Until that test runs,
-this item is **open**, not "expected platform behaviour."
+  behind this gateway — which fits the zero-traces observation. *(This lead was
+  investigated further and ruled out — see the update above; the real cause was
+  the atomic-PATCH requirement, unrelated to client library choice.)*
 
 The gateway-free path (`enable_agent_gateway=false`) is unaffected and works
 immediately — which is why the repo keeps it as a first-class, tested mode.

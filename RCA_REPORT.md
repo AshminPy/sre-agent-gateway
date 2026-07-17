@@ -128,7 +128,7 @@ A broader implementation audit, run alongside the final stages of this investiga
 - Two real code correctness issues in the agent's own logic (a response-parsing edge case, and a content-safety check whose result wasn't being acted on).
 - A handful of diagnostic/tooling improvements to our deployment script.
 
-Filed as GitHub issues [#29](https://github.com/AshminPy/testing2-gcp-sre-agent/issues/29)–[#36](https://github.com/AshminPy/testing2-gcp-sre-agent/issues/36) for follow-up.
+Filed as GitHub issues [#29](https://github.com/AshminPy/sre-agent-gateway/issues/29)–[#36](https://github.com/AshminPy/sre-agent-gateway/issues/36) for follow-up.
 
 ---
 

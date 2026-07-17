@@ -20,14 +20,12 @@
 # state — always re-run this script after ANY terraform apply touching the
 # engine resource).
 #
-# WHICH GATEWAY: this script looks for the gateway in two places. First
-# iac/agent's own gateway (enable_agent_gateway=true there). If that has no
-# output, it falls back to iac/gateway-codelab's separately-deployed gateway
-# (used when iac/agent's own gateway is disabled and Google's reference
-# gateway module is used instead). The gateway's resource path is used
-# EXACTLY as Terraform output it — never reconstructed from the engine's own
-# project/region — so a real project/region mismatch is caught as an error
-# instead of silently producing a wrong (and possibly nonexistent) path.
+# WHICH GATEWAY: this script uses iac/agent's own gateway resource
+# (enable_agent_gateway=true there, the default — see iac/agent/agent_gateway.tf).
+# The gateway's resource path is used EXACTLY as Terraform output it — never
+# reconstructed from the engine's own project/region — so a real
+# project/region mismatch is caught as an error instead of silently
+# producing a wrong (and possibly nonexistent) path.
 #
 # DIAGNOSTICS (2026-07-16 review, tightened same day): this script does NOT
 # change agent code or gateway configuration. It only adds visibility into an
@@ -42,12 +40,12 @@
 # produces is saved under the path printed as "Diagnostics dir" below —
 # check there first when debugging a failure, before re-running anything.
 #
-# Run after `terraform apply` in iac/agent (and iac/gateway-codelab, if that's
-# where the gateway comes from), and after any subsequent terraform apply
-# touching the engine resource. Idempotent (re-sends the same source
-# unchanged if code hasn't moved). Requires: gcloud (authenticated), curl,
-# jq, python3, and either sha256sum or shasum. Polls to a real terminal
-# state and fails loudly on error — does not just submit-and-hope.
+# Run after `terraform apply` in iac/agent, and after any subsequent
+# terraform apply touching the engine resource. Idempotent (re-sends the
+# same source unchanged if code hasn't moved). Requires: gcloud
+# (authenticated), curl, jq, python3, and either sha256sum or shasum. Polls
+# to a real terminal state and fails loudly on error — does not just
+# submit-and-hope.
 set -euo pipefail
 
 sha256_of() {
@@ -60,7 +58,6 @@ sha256_of() {
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TF="terraform -chdir=${REPO_ROOT}/iac/agent"
-TF_GATEWAY="terraform -chdir=${REPO_ROOT}/iac/gateway-codelab"
 
 DIAG_DIR="$(mktemp -d)"
 echo "Diagnostics dir (all raw responses saved here): ${DIAG_DIR}"
@@ -69,19 +66,10 @@ PROJECT_ID="$($TF output -raw project_a_id)"
 REGION="$($TF output -raw region)"
 ENGINE_ID="$($TF output -raw reasoning_engine_id)"
 
-# The gateway can come from either place: iac/agent's own gateway resource
-# (enable_agent_gateway=true there — the testing2/t2-demo pattern), or
-# iac/gateway-codelab's separately-deployed gateway (this project's pattern,
-# enable_agent_gateway=false on iac/agent). Try iac/agent first so the
-# original pattern is unchanged; fall back to iac/gateway-codelab only if
-# iac/agent has no gateway output.
 GATEWAY_ID="$($TF output -raw agent_gateway_id 2>/dev/null || echo '')"
-if [ -z "$GATEWAY_ID" ] || [ "$GATEWAY_ID" = "null" ]; then
-  GATEWAY_ID="$($TF_GATEWAY output -raw agent_gateway_id 2>/dev/null || echo '')"
-fi
 
 if [ -z "$GATEWAY_ID" ] || [ "$GATEWAY_ID" = "null" ]; then
-  echo "No agent_gateway_id output from iac/agent or iac/gateway-codelab. Nothing to attach."
+  echo "No agent_gateway_id output — the gateway is disabled (enable_agent_gateway=false). Nothing to attach."
   exit 0
 fi
 

@@ -150,6 +150,7 @@ make attach-gateway        # bind the reasoning engine to the gateway (REST PATC
 
 ```bash
 source scripts/init-env.sh                      # writes agent/.env, exports engine id
+kubectl apply -f k8s/namespace.yaml             # create the test-incidents namespace (first time only)
 kubectl apply -f k8s/imagepull-pod.yaml         # create a failing pod in Project B's cluster
 make smoke                                      # invoke the agent, assert an RCA
 ```

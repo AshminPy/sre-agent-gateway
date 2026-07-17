@@ -15,24 +15,29 @@ locals {
 
 # ── The gateway ────────────────────────────────────────────────────────────
 # Per the official codelab (agw-cuj-arun-egress-gmcp): a Google-managed gateway
-# with NO networkConfig / NO PSC network attachment. The gateway reaches the
-# public Google-API + GKE Remote MCP destinations over Google's backbone; a PSC
-# egress attachment into a VPC is only for PRIVATE-VPC targets (not our case),
-# and the codelab creates none.
+# reaching the public Google-API + GKE Remote MCP destinations over Google's
+# backbone. A PSC egress attachment into a VPC is Google-documented as
+# OPTIONAL ("Optional: Configure VPC connectivity" — set-up-agent-gateway
+# docs), scoped to private-VPC targets only, which this deployment doesn't
+# use — the codelab reference itself creates none.
 #
-# EXPERIMENTAL (2026-07-16): sre-agent-egress-na + the network_config block
-# below were added to test whether PSC-I's mere presence affects the
-# admin-plane bind PATCH, per CURRENT_STATE.md "Proposed change". Not required
-# by any destination this gateway actually reaches — revert if this doesn't
-# change the bind outcome.
+# sre-agent-egress-na + the network_config block below were added during the
+# 2026-07-16/17 gateway-bind investigation to test whether PSC-I's presence
+# affected the failure. It didn't: tested directly (RCA in FINAL_RCA.md /
+# TROUBLESHOOTING_LOG.md), confirmed NOT the cause — the real root cause was
+# unrelated accumulated engine-side state, fixed by engine recreation. Left
+# in place: harmless (confirmed via a live bind succeeding on this exact
+# gateway with PSC-I present), matches the vendored codelab reference's own
+# module (which creates PSC-I unconditionally), and removing it now would
+# mean an unnecessary destroy/recreate cycle on a currently-working resource.
 
 resource "google_compute_network_attachment" "sre_egress" {
-  count                  = local.gw_count
-  project                = var.project_a_id
-  name                   = "sre-agent-egress-na"
-  region                 = var.region
-  connection_preference  = "ACCEPT_AUTOMATIC"
-  subnetworks            = [google_compute_subnetwork.agent_gateway_psc[0].id]
+  count                 = local.gw_count
+  project               = var.project_a_id
+  name                  = "sre-agent-egress-na"
+  region                = var.region
+  connection_preference = "ACCEPT_AUTOMATIC"
+  subnetworks           = [google_compute_subnetwork.agent_gateway_psc[0].id]
 }
 
 resource "google_network_services_agent_gateway" "sre_egress" {
