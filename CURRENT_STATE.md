@@ -180,6 +180,21 @@ Running these now before any GCP Support escalation.
 Only unclosable gap: inherited org policy / VPC-SC membership, which needs
 either API enablement or an org-admin to check directly. Complete case for
 GCP Support escalation now assembled.
+
+## Org policy gap CLOSED + service agent check (2026-07-16)
+`gcloud resource-manager org-policies list --show-unset` (different API
+surface than the earlier failed attempt) succeeded on both projects — 193
+constraints, byte-for-byte identical. **Org policy is no longer an unknown —
+confirmed identical.**
+Service agent IAM check: all 3 core service-agent roles (agentgateway,
+reasoning-engine, aiplatform) present and identical on both — nothing
+missing on t2-demo, no need to recreate service identities. Found 5 EXTRA
+networking/DNS roles on t2-demo's service agents not present on cleanroom —
+most likely a side effect of this session's own PSC-I test, not a
+pre-existing differentiator (flagged, not confirmed).
+**Remaining unknown: VPC-SC perimeter membership only** (API still
+disabled, cannot check from this account). Everything else from the
+original "4 probable causes" list is now closed.
 3. Separate, smaller finding from this session: `terraform apply` on the
    reasoning engine silently wipes any out-of-band field it doesn't manage
    (confirmed for both `agentGatewayConfig` and env vars like

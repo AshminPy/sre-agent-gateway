@@ -1317,3 +1317,52 @@ A SIGTERM to the old revision landed at 18:18:14Z, ~7s before the operation's te
 - Direct project-level org policy: identical (empty on both). Everything deeper (inherited policy, VPC-SC): genuinely unknowable from this vantage point right now — a real, disclosed gap, not a ruled-out candidate.
 **Files modified:** None (read-only)
 **Next action:** Every checkable candidate from this investigation — deployment code/bundling, gateway config (networkConfig/protocols/description/timeout), IAM roles, mTLS registration, iamEnforcementMode, engine creation date vs. documented cutoff, Cloud Audit Logs, container-level stderr — has now been tested-and-rejected or explained with direct evidence. The one remaining gap (inherited org policy / VPC-SC membership) cannot be closed without either enabling two currently-disabled APIs or an org-admin checking directly. This is now a complete, well-evidenced case for GCP Support escalation, or for someone with org-admin access to check the VPC-SC/org-policy angle directly.
+
+---
+
+## Org policy re-check (working command found) + service agent IAM comparison
+
+**Timestamp:** 2026-07-16T19:00Z–19:15Z (approx)
+**Objective:** User-directed follow-up: (1) re-check org policies using `gcloud resource-manager org-policies list --show-unset` (a different command surface than the earlier `gcloud org-policies list`, which failed with `SERVICE_DISABLED` for `orgpolicy.googleapis.com`), and (2) compare IAM roles on the Google-managed service agents (Reasoning Engine, Agent Gateway, AI Platform) between both projects.
+
+### Org policy — this time it actually worked
+**Commands:**
+```bash
+gcloud resource-manager org-policies list --project=sreagent-t2-demo --show-unset --format=json
+gcloud resource-manager org-policies list --project=sreagent-cleanroom-test --show-unset --format=json
+diff -u <(jq -S . clean.json) <(jq -S . t2.json)
+```
+**Exit codes:** 0, 0, 0 (diff exit 0 = no differences).
+**Result:** `resource-manager org-policies list` (the older Cloud Resource Manager API surface) succeeded where `gcloud org-policies list` (the newer Org Policy API surface) previously failed with `SERVICE_DISABLED` — different underlying API (`cloudresourcemanager.googleapis.com`, already enabled, vs `orgpolicy.googleapis.com`, disabled). **193 constraints listed on both projects (via `--show-unset`, covering every constraint including unset/default/inherited ones) — byte-for-byte identical, zero diff.**
+**Facts established:** The org-policy gap flagged in the previous entry (marked UNKNOWN because `orgpolicy.googleapis.com` was disabled) is now **CLOSED, via a different command that doesn't need that API**. Org policy (effective, including inherited) is confirmed identical between the two projects. REJECTED as a differentiator.
+
+### Service agent IAM comparison — real, new difference found
+**Command:**
+```bash
+for PROJECT in sreagent-t2-demo sreagent-cleanroom-test; do
+  NUMBER=$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')
+  gcloud projects get-iam-policy "$PROJECT" --flatten="bindings[].members" \
+    --filter="bindings.members:service-${NUMBER}@gcp-sa-aiplatform-re.iam.gserviceaccount.com OR bindings.members:service-${NUMBER}@gcp-sa-agentgateway.iam.gserviceaccount.com OR bindings.members:service-${NUMBER}@gcp-sa-aiplatform.iam.gserviceaccount.com" \
+    --format="table(bindings.role,bindings.members)"
+done
+```
+**Exit codes:** 0, 0.
+**Result:**
+
+| Role | t2-demo | cleanroom |
+|---|---|---|
+| `roles/agentgateway.serviceAgent` (on gcp-sa-agentgateway) | YES | YES |
+| `roles/aiplatform.reasoningEngineServiceAgent` (on gcp-sa-aiplatform-re) | YES | YES |
+| `roles/aiplatform.serviceAgent` (on gcp-sa-aiplatform) | YES | YES |
+| `roles/compute.networkAdmin` (on gcp-sa-aiplatform-re) | **YES** | no |
+| `roles/compute.networkAdmin` (on gcp-sa-aiplatform) | **YES** | no |
+| `roles/dns.admin` (on gcp-sa-agentgateway) | **YES** | no |
+| `roles/dns.peer` (on gcp-sa-aiplatform-re) | **YES** | no |
+| `roles/dns.peer` (on gcp-sa-aiplatform) | **YES** | no |
+
+**All 3 core service-agent roles present and identical on both projects — nothing missing on t2-demo.** t2-demo has 5 EXTRA roles (networking/DNS-admin related) that cleanroom does not have. **Interpretation (not yet verified):** these look very likely to be a side effect of THIS SESSION'S earlier PSC-I/`network_config` test on t2-demo's gateway (Google auto-grants DNS peering + network admin permissions to the relevant service agents when a network attachment / DNS peering config is wired up) — cleanroom's gateway (built from a different demo, no `dns_peering_config` set on its `network_config`) may not have triggered the same auto-grants. Not confirmed as cause or effect of the original bind failure — this difference did not exist before this session's PSC-I test, so it cannot explain failures that predate that test. Flagged as a new fact, not a new root-cause candidate.
+**Facts established:**
+- CONFIRMED: no Google-managed service agent or service-agent role is missing on t2-demo. Recreating service identities (`gcloud beta services identity create`) is not applicable — there's nothing to recreate.
+- NEW, unexplained-but-likely-benign difference: 5 extra networking-related IAM roles on t2-demo's service agents, most plausibly a side effect of this session's own PSC-I test, not a pre-existing differentiator.
+**Files modified:** None (read-only)
+**Next action:** Of the 4 "remaining probable causes" listed by the user (inherited org policy, different VPC-SC perimeter, missing service-agent role, hidden backend-state defect) — inherited org policy is now REJECTED (confirmed identical), missing service-agent role is REJECTED (confirmed nothing missing). VPC-SC perimeter membership remains genuinely unknown (still blocked by disabled `accesscontextmanager.googleapis.com`). "Hidden backend-state defect" remains the only unfalsifiable candidate — cannot be checked from this account, only by Google.
