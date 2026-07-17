@@ -24,17 +24,31 @@
 #
 # USAGE:
 #   PROJECT_A_ID=my-agent-proj \
-#   GITHUB_REPO=my-org/testing2-gcp-sre-agent \
+#   GITHUB_REPO=my-org/sre-agent-gateway \
 #   TFSTATE_BUCKET=my-agent-proj-tfstate \
 #   bash scripts/bootstrap_wif.sh
 #
 # Requires: gcloud, authenticated as a principal with Owner or the equivalent
 #   IAM-admin rights on Project A. Idempotent — safe to re-run.
+#
+# IF YOU RENAME THE GITHUB REPO: this script is NOT enough on its own — it
+# only skips-if-exists (it won't update an existing provider's
+# attribute-condition) and only ADDS an IAM binding for the new repo name
+# (it won't remove the old one). Confirmed the hard way: a rename left CI
+# authenticating with a stale attribute-condition and a stale IAM binding
+# both still pointing at the old repo name, breaking every workflow run
+# until both were fixed manually. After a rename, also run:
+#   gcloud iam workload-identity-pools providers update-oidc PROVIDER_ID \
+#     --workload-identity-pool=POOL_ID --location=global --project=PROJECT_A_ID \
+#     --attribute-condition="assertion.repository == 'NEW_OWNER/NEW_REPO'"
+#   gcloud iam service-accounts remove-iam-policy-binding SA_EMAIL \
+#     --project=PROJECT_A_ID --role=roles/iam.workloadIdentityUser \
+#     --member="principalSet://iam.googleapis.com/POOL_NAME/attribute.repository/OLD_OWNER/OLD_REPO"
 # ============================================================================
 set -euo pipefail
 
 : "${PROJECT_A_ID:?set PROJECT_A_ID (the agent project)}"
-: "${GITHUB_REPO:?set GITHUB_REPO as owner/name, e.g. my-org/testing2-gcp-sre-agent}"
+: "${GITHUB_REPO:?set GITHUB_REPO as owner/name, e.g. my-org/sre-agent-gateway}"
 TFSTATE_BUCKET="${TFSTATE_BUCKET:-}"
 
 SA_ID="sre-agent-deployer"
