@@ -1,114 +1,89 @@
 # Current problem
-`sreagent-t2-demo`'s Reasoning Engine (`8599129257987276800`) cannot bind to
-its Agent Gateway. Every `UpdateReasoningEngine` PATCH attempt (bundled
-`sourceCodeSpec` + `agentGatewayConfig`, the proven-correct pattern) fails
-identically: `{"code": 3, "message": "The Reasoning Engine failed to be
-updated."}`. No further detail available from Cloud Audit Logs or the
-operation's own error object — confirmed complete, not truncated.
+None — RESOLVED. `sreagent-t2-demo`'s Reasoning Engine could not bind to
+its Agent Gateway (`UpdateReasoningEngine` PATCH returning
+`{"code": 3, "message": "The Reasoning Engine failed to be updated."}`
+on every attempt). Fixed 2026-07-17 by recreating the engine resource.
 
 # Current status
-✅ The underlying mTLS/gateway-binding **mechanism** is fixed and proven —
-verified end-to-end three separate times now (see "What's proven working"
-below). ⚠️ `sreagent-t2-demo`'s specific, original engine still cannot bind,
-and as of 2026-07-17 every alternative explanation has been directly,
-empirically eliminated except one.
+✅ **FULLY RESOLVED AND VERIFIED END-TO-END**, on both projects.
+- `sreagent-cleanroom-test`: working since 2026-07-16.
+- `sreagent-t2-demo`: working since 2026-07-17T09:44Z, using its own real
+  project, its own real (previously always-failing) gateway, its own real
+  code — engine ID `6299408329517039616` (recreated; old engine
+  `8599129257987276800` had accumulated bad state from 8+ historical
+  failed bind attempts and was destroyed).
 
-## The fix (mechanism — proven, not in question)
+## The fix (mechanism)
 Bundle `spec.sourceCodeSpec` + `spec.deploymentSpec.agentGatewayConfig` in
 ONE atomic `UpdateReasoningEngine` PATCH — the Agent Gateway's self-signed
 TLS-inspection CA only gets baked into the engine's trust store when both
-are submitted together. Implemented in `scripts/attach_gateway_to_engine.sh`
-(hardened with full pre-flight diagnostics, hard-fail gates, SHA-256
-artifact hashing — see PRs #24, and the diagnostics-hardening PRs on
-`sreagent-gateway-verified` #1/#2, ported back here in #26).
+are submitted together. Implemented in `scripts/attach_gateway_to_engine.sh`.
 
-## What's proven working (3 independent confirmations)
-1. **`sreagent-cleanroom-test`** — codelab's gateway module + our engine
-   code. Full agent → gateway → GKE Remote MCP (cross-project) → Gemini →
-   RCA pipeline, confidence 0.9. (2026-07-16)
-2. **`agent-works-502620`** (torn down 2026-07-17 after proof captured) —
-   **our own** `iac/agent/agent_gateway.tf` module, deployed fresh. Bound
-   first try, full functional test passed, confidence 1.0. **This is the
-   test that rules out our own Terraform module as the cause.**
-3. **A brand-new temporary engine inside `sreagent-t2-demo` itself** —
-   created via standalone REST call, bound to t2-demo's real, existing,
-   always-failing gateway (`sre-agent-egress`) on the first attempt, zero
-   errors. **This rules out the project and the gateway as the cause.**
-   (Runtime call hit an unrelated, expected 403 — the temp engine's own
-   principal was never granted `iap.egressor`; not comparable to the
-   original engine's admin-plane failure. Temp engine deleted after the
-   test; original engine never touched.)
+## The fix (t2-demo specifically)
+The bundling mechanism above was correct from the start, but t2-demo's
+*original* engine resource (`8599129257987276800`) had accumulated some
+form of backend state — plausibly from 8+ historical failed
+`UpdateReasoningEngine` attempts across this investigation — that blocked
+every subsequent bind attempt regardless of configuration. Proven via three
+independent controlled experiments (2026-07-17), each holding everything
+else constant:
+1. **Module** — our own `iac/agent/agent_gateway.tf`, deployed fresh into
+   `agent-works-502620` → bound first try. Rules out the module.
+2. **Project + gateway** — a temporary new engine created inside
+   `sreagent-t2-demo` itself, bound to the real, existing, always-failing
+   gateway (`sre-agent-egress`) → bound first try. Rules out the project
+   and the gateway.
+3. **Engine identity** — recreated the *original* engine resource via
+   `terraform apply -replace='google_vertex_ai_reasoning_engine.sre_agent'`
+   (16 resources: the engine + 15 dependent IAM/registry bindings that
+   reference its identity, all correctly cascaded by Terraform) → bound
+   first try, full functional test passed.
 
-## What this leaves: one remaining candidate
-Module — cleared. Project — cleared. Gateway — cleared. IAM (deep-dived,
-nothing maps to an admin-plane PATCH) — cleared. Org policy — cleared
-(193 constraints, identical). VPC-SC — still genuinely UNKNOWN (the one
-thing that can't be checked from this account; needs org-admin access or
-enabling a currently-disabled API). Everything else from the original
-investigation — tested and rejected (see TROUBLESHOOTING_LOG.md for the
-full history: `networkConfig`/PSC-I, `protocols`/`description`/`timeout`,
-`iamEnforcementMode`, container-level SSL noise, engine creation date vs.
-documented cutoff, all ruled out with direct evidence).
+**Fix for any future recurrence of this failure mode:** recreate the engine
+resource. Nothing in this codebase hardcodes the engine ID — everything
+(the attach script, `invoke_agent.py`) looks it up dynamically via
+`terraform output`, so recreation requires no other code changes.
 
-**The only remaining candidate: the original engine resource
-(`8599129257987276800`) itself carries accumulated backend state from 8+
-historical failed bind attempts that a fresh engine — same project, same
-gateway — does not carry.** Not yet confirmed as a Google backend defect
-(per explicit instruction, not claiming this without direct proof). The one
-untested experiment that would confirm it: recreate the original engine
-itself. Disruptive, real action on the actual production-path resource —
-not yet approved, not yet run.
-
-## Full audit (separate, broader effort)
-A full 49-check audit of the entire implementation (Terraform, Python,
-scripts, IAM, endpoints, env vars) against Google's docs and against the
-investigation's own rigor was completed 2026-07-17 — see `AUDIT_REPORT.md`.
-Found several real, independent issues (Cloud Trace/Model Armor hostname
-mismatches, two Python correctness bugs, script diagnostics gaps) — tracked
-as separate GitHub issues (#29–#36), explicitly kept out of this
-gateway-bind investigation per direct instruction.
+## Full audit (separate effort, still relevant)
+A full 49-check audit of the implementation against Google's docs found
+several real, independent issues unrelated to this investigation — tracked
+separately as GitHub issues #29–#36 (Cloud Trace/Model Armor hostname
+mismatches, two Python correctness bugs, script diagnostics gaps). See
+`AUDIT_REPORT.md`. Not blocking; not part of this resolution.
 
 ## Repos
-- **This repo** (`testing2-gcp-sre-agent`) — the live, actual `t2-demo`
-  deployment. Source of truth for the ongoing investigation.
-- **`sreagent-cleanroom-proof`** (private) — point-in-time reference for the
-  cleanroom config.
-- **`sreagent-gateway-verified`** (private, public-facing-ready) — the
-  curated, reviewable repo built for the AGENT-Works experiment: our own
-  agent code + our own `iac/agent` + our own `iac/gke-access` + a vendored
-  copy of the codelab's gateway module (`iac/gateway-codelab`) for
-  reference, plus the hardened attach script. The GCP project it was
-  deployed to (`agent-works-502620`) has been torn down — the repo remains
-  as the durable record.
+- **This repo** (`testing2-gcp-sre-agent`) — the live `t2-demo` deployment,
+  now fully working. Source of truth.
+- **`sreagent-cleanroom-proof`** (private) — point-in-time cleanroom config
+  reference.
+- **`sreagent-gateway-verified`** (private) — curated repo proving our own
+  module works fresh (Experiment 1's evidence). The GCP project it was
+  deployed to (`agent-works-502620`) has been torn down; the repo is the
+  durable record.
 
 # Important commands
 ```bash
 export PATH="/Users/ashmin/Downloads/google-cloud-sdk/bin:$PATH"
 cd ~/projects/testing2-gcp-sre-agent
 
-# retry the bind (full diagnostics, hard-fails on real problems):
-bash scripts/attach_gateway_to_engine.sh
-
-# check current live engine state:
+# retest t2-demo end to end:
 TOKEN=$(gcloud auth print-access-token)
-curl -s -H "Authorization: Bearer $TOKEN" \
-  "https://us-central1-aiplatform.googleapis.com/v1beta1/projects/sreagent-t2-demo/locations/us-central1/reasoningEngines/8599129257987276800" \
-  | jq '{identityType: .spec.identityType, agentGatewayConfig: .spec.deploymentSpec.agentGatewayConfig}'
+export PROJECT_ID=sreagent-t2-demo REGION=us-central1
+export REASONING_ENGINE_ID=$(terraform -chdir=iac/agent output -raw reasoning_engine_id)
+python3 invoke_agent.py --scenario imagepull --verbose
 ```
 
 # Live resources
-- `sreagent-t2-demo`: engine `8599129257987276800` (still not bound — the
-  open problem), memory bank `3347932072473278464`, gateway `sre-agent-egress`
-  (healthy, PSC-I connected, proven to bind other engines successfully).
+- `sreagent-t2-demo`: engine `6299408329517039616` (working), memory bank
+  `3347932278464` (unchanged throughout), gateway `sre-agent-egress`.
 - `sreagent-cleanroom-test`: engine `3983291483653406720` (working), gateway
   `agent-gateway`.
 - `sreagent-demo`: GKE cluster `sre-test-cluster` (shared cross-project MCP
-  target for all of the above).
-- `agent-works-502620`: **deleted** (2026-07-17, `DELETE_REQUESTED`, 30-day
-  recovery window). Its proof is preserved in `sreagent-gateway-verified`.
+  target for both).
+- `agent-works-502620`: deleted (2026-07-17). Proof preserved in
+  `sreagent-gateway-verified`.
 
-# Next action (awaiting decision)
-Recreate the original t2-demo engine and re-test the bind (disruptive, not
-yet approved), or escalate to GCP Support with this now-doubly-controlled
-reproduction (module/project/gateway all independently cleared by direct
-experiment, not just process of elimination).
+# Next action
+None required for this investigation — closed. See `FINAL_RCA.md` for the
+permanent record. Follow-up production-readiness items tracked separately
+in GitHub issues #29–#36.

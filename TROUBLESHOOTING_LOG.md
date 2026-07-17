@@ -1428,3 +1428,44 @@ With module (Experiment 1), project, and gateway (Experiment 2) all directly, em
 
 **Files modified this session:** None to `iac/agent` or `iac/gke-access` in this repo (both experiments used a separate clone and a standalone REST call, respectively, to avoid any risk to this repo's own Terraform state). `TROUBLESHOOTING_LOG.md`, `CURRENT_STATE.md`, `AUDIT_REPORT.md` updated with full findings.
 **Next action:** Decide whether to request engine recreation on t2-demo (the one remaining untested variable) as a next step, or escalate to GCP Support with this now-complete, doubly-controlled reproduction (module cleared, project cleared, gateway cleared — a materially stronger case than before these two experiments).
+
+---
+
+## RESOLVED: engine recreation fixes t2-demo — full investigation conclusion
+
+**Timestamp:** 2026-07-17T09:35Z–09:44Z
+**Objective:** The one remaining untested variable after Experiments 1 and 2 (module cleared, project cleared, gateway cleared): does recreating the original engine resource itself (`8599129257987276800`, 8+ historical failed bind attempts) fix the bind? User approved this disruptive action explicitly.
+**Command:**
+```bash
+cd iac/agent
+terraform plan -replace='google_vertex_ai_reasoning_engine.sre_agent' -var="create_wif=false"
+# Reviewed via `terraform show -json | jq` (not the human-readable diff, which is bloated by the
+# base64 source archive) — confirmed 16 resources: the engine itself + 15 IAM/registry bindings
+# that reference its effectiveIdentity principal, all correctly cascading the replace. Expected,
+# not a red flag.
+terraform apply <plan>
+bash scripts/attach_gateway_to_engine.sh
+python3 invoke_agent.py --scenario imagepull --verbose
+```
+**Results:**
+- `terraform apply`: **Apply complete! Resources: 16 added, 0 changed, 16 destroyed.** New engine ID `6299408329517039616` (old `8599129257987276800` destroyed).
+- `attach_gateway_to_engine.sh`: **exit 0.** All pre-flight checks passed (same as every prior attempt — gateway ready, identity correct, APIs enabled, endpoints registered, service agents present). PATCH: HTTP 200. Operation polled to completion: **SUCCESS, zero errors.** `agentGatewayConfig` confirmed durably set, pointing at `sre-agent-egress` — the exact same gateway that failed to bind the original engine 8+ times across this entire investigation.
+- `invoke_agent.py --scenario imagepull --verbose`: **`status: "done"`, `errors: []`, `confidence: 0.75` (band: review), correct RCA** (ImagePullBackOff, nonexistent image, matching cleanroom's earlier diagnosis of the same fixture), `selected_mcp: gke_remote_mcp`, cross-project GKE access to `sreagent-demo/sre-test-cluster` confirmed working, Memory Bank prior-context recall working, full formatted RCA report generated.
+
+**Result: COMPLETE SUCCESS.** t2-demo is fully resolved, end-to-end, using its own real project, its own real (previously always-failing) gateway, its own real code and Terraform.
+
+### Final root cause
+Combining all three controlled tests this investigation ultimately ran:
+1. **Module** (Experiment 1, `agent-works-502620`): our own `iac/agent/agent_gateway.tf`, fresh project → SUCCESS. Module cleared.
+2. **Project + gateway** (Experiment 2, temp engine in t2-demo): new engine, same project, same real gateway (`sre-agent-egress`) → SUCCESS. Project and gateway cleared.
+3. **Engine identity** (this entry): recreate the original engine, same project, same gateway, same code → SUCCESS.
+
+With every other variable held constant and cleared by direct experiment, **only the original engine resource's own identity/state was ever the actual blocker.** Something in Vertex AI's backend tied specifically to that engine resource (`8599129257987276800`) — plausibly accumulated state from its 8+ historical failed `UpdateReasoningEngine` attempts across this investigation's multi-day history — prevented every subsequent bind attempt regardless of what configuration was applied to it. A fresh engine resource, with byte-for-byte identical configuration, bound on the first attempt every single time it was tried (Experiment 2, and now the recreated primary engine).
+
+This was never a code defect, a Terraform module defect, a project-level misconfiguration, or a gateway-level misconfiguration — all four were independently, empirically ruled out via direct controlled experiment, not by elimination of a checklist. It also does not require claiming an undiagnosed "Google backend bug" in the sense of broken software — it is consistent with an engine resource accumulating some form of server-side state or lock across many failed update attempts that a client has no way to inspect or clear except via recreation. Whether that specific mechanism is by design or an edge case Google hasn't documented is unconfirmed and doesn't need to be, for practical purposes: **the fix is engine recreation, proven.**
+
+### Lesson for future operations
+If a Reasoning Engine ever accumulates several failed `UpdateReasoningEngine` attempts (gateway bind or otherwise) and continues failing after every other cause has been ruled out, recreating the engine resource (via `terraform apply -replace=`) is a valid, low-risk remediation — Terraform correctly cascades the identity change through every dependent IAM/registry binding automatically, and nothing in this codebase hardcodes the engine ID (everything is looked up dynamically via `terraform output`).
+
+**Files modified:** `iac/agent` Terraform state (engine + 15 dependent IAM/registry bindings replaced). No `.tf` source files changed — this was a state-level replace of an existing, correctly-defined resource, not a code change.
+**Investigation status: CLOSED.** See `FINAL_RCA.md` for the permanent record.

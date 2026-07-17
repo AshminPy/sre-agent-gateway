@@ -1,7 +1,11 @@
 # Final RCA — Agent Gateway mTLS certificate-verify failure
 
-**Status:** VERIFIED — fixed and confirmed end-to-end on `sreagent-cleanroom-test`.
-**Not yet applied to:** `sreagent-t2-demo` (this repo's original deployment) or the `testing-gcp-sre-agent` repo — tracked as follow-up work, see bottom.
+**Status:** VERIFIED — fixed and confirmed end-to-end on **both**
+`sreagent-cleanroom-test` (2026-07-16) and `sreagent-t2-demo`
+(2026-07-17, this repo's original deployment — see "t2-demo addendum"
+below for the second, distinct issue that blocked it even after this
+fix was correctly applied).
+**Not yet applied to:** the separate `testing-gcp-sre-agent` repo — tracked as follow-up work, see bottom.
 
 ## Problem
 
@@ -142,19 +146,52 @@ inspection CA with no trust anchor.
   `pip install` could resolve to a version that regresses the specific
   `google-auth`/`google-cloud-aiplatform` fixes this relies on. Consider
   exact-pinning if this proves fragile.
-- Not yet verified whether `sreagent-t2-demo`'s original 8/8 failure history
-  is *fully* explained by this same root cause, or whether it has
-  additional project-specific issues on top — needs the same fix applied
-  and tested there directly (tracked as follow-up, not yet done as of this
-  document).
+- `sreagent-t2-demo`'s original 8/8 failure history was **not** fully
+  explained by this same root cause alone — see "t2-demo addendum" below.
+  This bundling fix was necessary but not sufficient there; a second,
+  distinct issue was blocking it on top.
 
 ## Changed files
 - `agent/gemini_client.py` — removed `base_url` override, added `[mtls-diag]` startup diagnostics
 - `agent/__init__.py` — added defensive pyopenssl import
 - `agent/requirements.txt` — pinned `google-auth>=2.56.0`, `google-cloud-aiplatform>=1.160.0`, added `certifi>=2026.6.17`
-- `scripts/attach_gateway_to_engine.sh` — rewritten to bundle source+gateway config, poll to real completion, fail loudly on error
+- `scripts/attach_gateway_to_engine.sh` — rewritten to bundle source+gateway config, poll to real completion, fail loudly on error; later hardened with full pre-flight diagnostics, hard-fail gates, SHA-256 artifact hashing (2026-07-17)
+
+## t2-demo addendum (2026-07-17) — a second, distinct root cause
+
+This bundling fix (above) was correctly implemented and applied to
+`sreagent-t2-demo` early in this investigation, but the bind kept failing
+identically (`error.code: 3`, generic message). An exhaustive, multi-day
+investigation systematically matched or ruled out every discoverable
+configuration difference between t2-demo and the working `cleanroom` project
+— gateway config (`networkConfig`/PSC-I, `protocols`, `description`,
+authz-extension `timeout`), IAM roles and service agents, environment
+variables, mTLS endpoint registration, org policy (193 constraints,
+identical), VPC-SC-adjacent documentation — all matched or empirically
+tested and rejected as the cause. Full history in `TROUBLESHOOTING_LOG.md`.
+
+**Actual second root cause:** the *original* engine resource
+(`8599129257987276800`) had accumulated some form of backend state —
+plausibly from its own 8+ historical failed `UpdateReasoningEngine`
+attempts across this investigation — that blocked every subsequent bind
+attempt regardless of what configuration was applied to it. Proven via
+three independent controlled experiments (2026-07-17), each holding every
+other variable constant: (1) our own gateway Terraform module, deployed
+fresh into a new project, bound immediately — ruling out the module; (2) a
+temporary new engine created inside `sreagent-t2-demo` itself, bound to the
+real, existing, always-failing gateway, bound immediately — ruling out the
+project and the gateway; (3) the *original* engine recreated via
+`terraform apply -replace=` (same project, same gateway, same code) —
+bound immediately, full functional test passed.
+
+**Fix:** recreate the engine resource. No code or Terraform source change
+was needed — this was a state-level replace of an already-correct resource
+definition. Nothing in this codebase hardcodes engine IDs; both
+`attach_gateway_to_engine.sh` and `invoke_agent.py` resolve the engine ID
+dynamically via `terraform output`, so recreation required no follow-up
+code changes.
 
 ## Follow-up work (not yet done)
-1. Apply this same bundled-deploy fix to `sreagent-t2-demo` and re-verify — very likely resolves the original 8/8 failure history there too, but not yet directly confirmed.
-2. Apply the same fix pattern to the `testing-gcp-sre-agent` repo (original, separate repo) — it has its own uncommitted in-progress port of earlier fixes; needs review before applying this on top.
-3. Consider exact-pinning the two dependency versions if the floor pins prove fragile over time.
+1. Apply the same fix pattern to the `testing-gcp-sre-agent` repo (original, separate repo) — it has its own uncommitted in-progress port of earlier fixes; needs review before applying this on top.
+2. Consider exact-pinning the two dependency versions if the floor pins prove fragile over time.
+3. Separate production-readiness issues found during a full implementation audit (2026-07-17) are tracked independently as GitHub issues #29–#36 — not part of this RCA, kept deliberately out of scope per direct instruction.
