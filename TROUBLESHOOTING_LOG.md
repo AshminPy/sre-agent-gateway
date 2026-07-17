@@ -1366,3 +1366,46 @@ done
 - NEW, unexplained-but-likely-benign difference: 5 extra networking-related IAM roles on t2-demo's service agents, most plausibly a side effect of this session's own PSC-I test, not a pre-existing differentiator.
 **Files modified:** None (read-only)
 **Next action:** Of the 4 "remaining probable causes" listed by the user (inherited org policy, different VPC-SC perimeter, missing service-agent role, hidden backend-state defect) — inherited org policy is now REJECTED (confirmed identical), missing service-agent role is REJECTED (confirmed nothing missing). VPC-SC perimeter membership remains genuinely unknown (still blocked by disabled `accesscontextmanager.googleapis.com`). "Hidden backend-state defect" remains the only unfalsifiable candidate — cannot be checked from this account, only by Google.
+
+---
+
+## Hardened diagnostic script run against t2-demo — new error text, VPC-SC doc found but symptom mismatch
+
+**Timestamp:** 2026-07-17T06:57Z–07:05Z
+**Objective:** User suggested trying the newly-hardened `attach_gateway_to_engine.sh` (built and reviewed on sreagent-gateway-verified, PRs #1/#2) against `sreagent-t2-demo` directly, to see if the much richer diagnostics surface anything new. Ported into this repo first (PR #26, merged).
+**Command:** `bash scripts/attach_gateway_to_engine.sh`
+**Exit code:** 1 (same outcome as always — still fails)
+
+**All pre-flight checks PASSED cleanly this run:**
+- Engine/gateway resources fetched, HTTP 200 both.
+- Gateway project/region match: OK.
+- Gateway readiness (agentGatewayCard populated): READY.
+- Engine identityType: AGENT_IDENTITY.
+- Required APIs (aiplatform, networkservices, networksecurity, agentregistry): all ENABLED.
+- Drift check: no existing binding (clean slate, as expected after the last failed attempt).
+- Endpoint registration: both hostnames REGISTERED.
+- Service agents: all 3 confirmed present (this time via the new three-state check, no ambiguity).
+
+**Two new, real findings from the enhanced diagnostics:**
+
+1. **The error message this run includes a trailing sentence never seen before:**
+   ```
+   {"code": 3, "message": "The Reasoning Engine failed to be updated.\n Please refer to our
+   troubleshooting pages (e.g., https://docs.cloud.google.com/gemini-enterprise-agent-platform/
+   troubleshooting/agent-deployment) to debug and fix the error."}
+   ```
+   Previous captures of this exact error (2026-07-16, multiple times) showed only `"The Reasoning Engine failed to be updated."` with nothing after — either Google added this help text to the error message platform-side between then and now, or it's non-deterministic per-request. Either way, this is the first time this investigation has had a documentation pointer directly from the error itself.
+
+2. **Read the linked troubleshooting page in full.** Found a real, documented VPC-SC section (quoted exactly):
+   > **"VPC-SC violation errors"** — Issue: you receive an error message similar to `Reasoning Engine instance REASONING_ENGINE_ID failed to start and cannot serve traffic.` or `Request is prohibited by organization's policy.` — Possible cause: missing required ingress rules in the VPC-SC perimeter. Recommended solution: create an ingress rule allowing the Reasoning Engine Service Agent (`service-PROJECT_NUMBER@gcp-sa-aiplatform-re.iam.gserviceaccount.com`) ingress into `storage.googleapis.com` and `artifactregistry.googleapis.com`.
+
+   **This directly touches the one thing this entire investigation has never been able to check (VPC-SC perimeter membership, blocked by disabled `accesscontextmanager.googleapis.com`).** However: **the documented symptom strings do NOT match what we actually observe.** Our error has always been the generic `{"code": 3, "message": "The Reasoning Engine failed to be updated."}` — never `"failed to start and cannot serve traffic"` or `"Request is prohibited by organization's policy"`. The documented VPC-SC failure mode also describes the ENGINE INSTANCE failing to start at runtime (a later lifecycle stage), not the admin-plane `UpdateReasoningEngine` PATCH itself failing (our actual failure point). **Conclusion: real, useful new documentation, but the specific symptom text doesn't match — this is suggestive, not confirmatory.** VPC-SC membership itself remains genuinely unconfirmed either way.
+
+3. **Response headers confirmed genuinely absent, not a script bug.** Manually inspected the raw headers file for the PATCH response: only standard headers present (`content-type`, `vary`, `date`, `server: ESF`, `x-xss-protection`, `x-frame-options`, `x-content-type-options`, `alt-svc`, `accept-ranges`) — no `x-goog-request-id`, `x-guploader-uploadid`, or trace headers at all. This specific API surface (`aiplatform.googleapis.com` v1beta1, `reasoningEngines.patch`) does not appear to emit request-tracing headers on this call. Confirmed by reading the raw file directly, not just trusting the grep.
+
+**Facts established:**
+- Every pre-flight check the hardened script performs passes cleanly on t2-demo — no new red flag found there.
+- New documentation pointer found directly in the error message (first time this has happened) — read in full, contains a real VPC-SC failure mode, but the specific symptom text doesn't match our observed error, so it doesn't confirm the cause.
+- No request-tracing header is available from this API call to hand to Google Support — confirmed by direct inspection, not assumed.
+**Files modified:** None this run (read-only + the same PATCH attempt already tried repeatedly).
+**Next action:** VPC-SC perimeter membership is still the one thing that cannot be checked from this account. Given the new (partial) documentation match, this strengthens rather than weakens the case for either (a) escalating to GCP Support with this exact reproduction plus the VPC-SC doc reference, or (b) getting org-admin access to check perimeter membership directly.

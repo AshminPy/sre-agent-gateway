@@ -195,6 +195,26 @@ pre-existing differentiator (flagged, not confirmed).
 **Remaining unknown: VPC-SC perimeter membership only** (API still
 disabled, cannot check from this account). Everything else from the
 original "4 probable causes" list is now closed.
+
+## Hardened script run against t2-demo (2026-07-17)
+Ported the new diagnostic script (built for AGENT-Works, PRs #1/#2 on
+sreagent-gateway-verified) into this repo (PR #26) and ran it live. All
+pre-flight checks pass cleanly — nothing new there. Still fails identically
+overall, but two new findings:
+1. Error message this run included a NEW trailing sentence pointing at
+   https://docs.cloud.google.com/gemini-enterprise-agent-platform/troubleshooting/agent-deployment
+   — first time any documentation pointer has come from the error itself.
+2. That page has a real VPC-SC section (missing ingress rule for the
+   Reasoning Engine Service Agent into storage/artifactregistry). Directly
+   touches our one remaining unknown (VPC-SC membership) — **but the
+   documented symptom text doesn't match what we actually see** (`"failed
+   to start and cannot serve traffic"` / `"Request is prohibited by
+   organization's policy"` vs our generic `"failed to be updated"`), and
+   it describes engine-instance-startup failure, not the admin-plane PATCH
+   failure we're hitting. Suggestive, not confirmatory.
+Also confirmed (by reading the raw file, not assuming): this API call
+returns no `x-goog-request-id` or trace header at all — nothing to hand
+Google Support from this specific call.
 3. Separate, smaller finding from this session: `terraform apply` on the
    reasoning engine silently wipes any out-of-band field it doesn't manage
    (confirmed for both `agentGatewayConfig` and env vars like
