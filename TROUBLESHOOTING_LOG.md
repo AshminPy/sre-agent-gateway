@@ -1366,3 +1366,106 @@ done
 - NEW, unexplained-but-likely-benign difference: 5 extra networking-related IAM roles on t2-demo's service agents, most plausibly a side effect of this session's own PSC-I test, not a pre-existing differentiator.
 **Files modified:** None (read-only)
 **Next action:** Of the 4 "remaining probable causes" listed by the user (inherited org policy, different VPC-SC perimeter, missing service-agent role, hidden backend-state defect) — inherited org policy is now REJECTED (confirmed identical), missing service-agent role is REJECTED (confirmed nothing missing). VPC-SC perimeter membership remains genuinely unknown (still blocked by disabled `accesscontextmanager.googleapis.com`). "Hidden backend-state defect" remains the only unfalsifiable candidate — cannot be checked from this account, only by Google.
+
+---
+
+## Verification: Memory Bank engines and the "same gateway" documented rule
+
+**Timestamp:** 2026-07-17T08:50Z
+**Objective:** User flagged Google's documented rule (*"All Agent Runtime agents deployed within that same project and region must bind to the same specific egress and ingress Agent Gateway instances"*) and asked to verify the Memory Bank engine doesn't point to a different gateway, before trusting Experiment 2 (new-engine-in-t2-demo bind test).
+**Command:** Direct `GET` on all three Memory Bank engines (t2-demo `3347932092473278464`, cleanroom `5185752584161329152`, agent-works-502620 `7499617630211276800`).
+**Result:** All three: `identityType: null`, `agentGatewayConfig: null` — no Agent Identity, no gateway binding at all, on any of them. Not "a different gateway" — genuinely unbound, and symmetric across all three projects.
+**Interpretation:** Memory Bank engines are not `AGENT_IDENTITY` resources, so the documented same-gateway rule (which governs Agent Identity principals) does not apply to them. This is consistent across every project checked, not a t2-demo-specific condition. **Experiment 2's result (temp engine bound successfully to `sre-agent-egress`, same project as the always-failing original) is unaffected by this check** — there was no second gateway binding on any resource in the project for the new engine's bind to conflict with.
+**Facts established:** Documented limitation (b) from the earlier audit (check 6) is now resolved: PASS, not UNKNOWN. No violation found, on any project.
+**Files modified:** None (read-only)
+
+---
+
+## Two controlled experiments: module-isolation and engine-isolation — both succeed, teardown complete
+
+**Timestamp:** 2026-07-17T08:00Z–09:25Z
+**Objective:** Following the full implementation audit (AUDIT_REPORT.md), the single most decisive missing experiment identified was: our own gateway Terraform module (`iac/agent/agent_gateway.tf`) had never been deployed fresh into a brand-new project — the earlier "decisive" clean-room proof used Google's codelab module instead. User directed two controlled experiments to close this gap and isolate whether the persistent t2-demo failure is caused by (a) our own module, (b) the project, (c) the gateway, or (d) the specific original engine resource's accumulated state.
+
+### Preliminary: IAM role purpose analysis (before either experiment)
+Per user instruction, "do not copy broad roles blindly" — researched the documented purpose of every IAM role cleanroom's effective identity has that t2-demo's lacks, via `gcloud iam roles describe`:
+- `roles/cloudapiregistry.viewer` — read-only Cloud API Registry access. Not tied to admin PATCH, runtime startup, or gateway traffic.
+- `roles/iam.serviceAccountTokenCreator` — impersonate other service accounts. Relevant to runtime SA-impersonation flows, not gateway binding.
+- `roles/telemetry.writer` — telemetry data writing. Runtime/observability concern, not admin-plane.
+**Decision: none granted to t2-demo.** No evidence ties any of them to the failure — t2-demo's error has always been `code: 3` (INVALID_ARGUMENT-class), never `code: 7` (PERMISSION_DENIED). Granting speculatively would violate the explicit "no broad roles without a specific denied permission" instruction.
+
+### Experiment 1 — Module-isolated fresh-project test
+**Setup:** New GCS state bucket `agent-works-502620-tfstate` created. `iac/agent/terraform.tfvars` written for `agent-works-502620`, holding every value identical to t2-demo's real, live tfvars (`project_b_id=sreagent-demo`, `gemini_model=gemini-2.5-pro`, `iap_iam_enforcement_mode=null`, etc.) except `project_a_id`/`tfstate_bucket` — the only intentional variable changed was the project. `enable_agent_gateway=true` (our own module, NOT the codelab module used for cleanroom). Deployed from a clean, separate local clone (`git clone` of `main` @ `5f0c9cb`) to avoid any state-directory confusion with the working directory's own branch-in-progress.
+**Commands & results:**
+- `terraform plan -var="create_wif=false"` → 76 to add, 0 to change, 0 to destroy (confirmed via `terraform graph`: no missing `depends_on`; confirmed via resource-type breakdown: no WIF/deployer resources included).
+- `terraform apply` → **Apply complete! Resources: 76 added, 0 changed, 0 destroyed.** (gateway: `sre-agent-egress` in `agent-works-502620`, engine: `7884675398351454208`, memory bank: `7499617630211276800`).
+- `iac/gke-access` applied separately: 4 to add, 0 to change → applied clean (same 4 roles already approved for cleanroom earlier: `container.viewer`, `mcp.toolUser`, `logging.viewer`, `monitoring.viewer`).
+- `scripts/register_endpoints.py --project=agent-works-502620 --mtls-endpoints=include` → exit 0, all endpoints registered (oauth2, storage, telemetry, trace, aiplatform + mtls variants, etc.).
+- `bash scripts/attach_gateway_to_engine.sh` → **all pre-flight checks PASS** (gateway project/region match, readiness READY, identityType AGENT_IDENTITY, required APIs enabled, no existing drift, endpoints registered, all 3 service agents present). PATCH: HTTP 200. Operation polled to completion: **SUCCESS, zero errors.** `agentGatewayConfig` confirmed durably set post-bind, pointing at `sre-agent-egress`.
+- `invoke_agent.py --scenario imagepull --verbose` → **`status: "done"`, `confidence_score: 1.0`, correct RCA** (`ImagePullBackOff` from nonexistent image), `primary_mcp_source: "gke_remote_mcp"`, cross-project GKE access to `sreagent-demo/sre-test-cluster` confirmed working.
+**Result: SUCCESS, first attempt, no retries needed.**
+**Conclusion: our own `iac/agent/agent_gateway.tf` module is not the cause.** It binds correctly and works end-to-end in a fresh project, using identical configuration to t2-demo except the project itself.
+
+### Experiment 2 — New-engine-in-t2-demo test
+**Setup:** A second, temporary reasoning engine created via a standalone REST `POST` (deliberately NOT added to Terraform state, to keep it disposable and avoid any risk to the real engine's managed state). Same source archive (repackaged from the identical git commit), same 15 environment variables as t2-demo's real live engine (verified via a live `GET` on the real engine first, then copied exactly — including the real live `GEMINI_MODEL=gemini-2.5-flash`, which is notably different from what `iac/agent/terraform.tfvars` currently declares, `gemini-2.5-pro` — a pre-existing drift between declared and live config, noted but out of scope for these experiments), `identityType=AGENT_IDENTITY` at creation. Existing engine (`8599129257987276800`) never touched.
+**Commands & results:**
+- `POST .../reasoningEngines` (create) → HTTP 200, operation polled to completion after 180s: **SUCCESS.** New engine ID `5730828876561514496`, `identityType: AGENT_IDENTITY`, `effectiveIdentity` correctly parameterized.
+- Bundled `PATCH` (same pattern as `attach_gateway_to_engine.sh`: `sourceCodeSpec` + `deploymentSpec.agentGatewayConfig` in one call) targeting t2-demo's **existing, already-failing** gateway `sre-agent-egress` → HTTP 200, operation polled to completion after 270s: **SUCCESS, zero errors** (`has("error")` confirmed `false` directly via `jq`). `agentGatewayConfig` confirmed set to `projects/sreagent-t2-demo/locations/us-central1/agentGateways/sre-agent-egress`.
+- `invoke_agent.py` functional test against the temp engine → admin-plane bind already proven; runtime call returned `403 Forbidden: Egress request is not authorized`. **Explained, not a new mystery**: the temp engine has its own unique `effectiveIdentity` principal (different engine ID → different principal), and `roles/iap.egressor` (confirmed via the audit to be granted per-engine-principal, not project-wide) was never extended to it. A setup gap on this temporary resource, not evidence about the original problem — and a structurally different failure class (runtime egress denial, HTTP 403) from the original engine's failure (admin-plane PATCH, `error.code: 3`, never reaches runtime).
+**Result: SUCCESS (bind).** 
+**Conclusion: the project (t2-demo) is not the cause. The gateway (`sre-agent-egress`) is not the cause.** A brand-new engine, same project, same gateway that has failed to bind the original engine 8+ times, binds immediately.
+
+### Verification: Memory Bank "same gateway" documented rule
+Per user follow-up, directly checked (not assumed) whether any Memory Bank engine across all three projects (t2-demo, cleanroom, agent-works-502620) points at a different gateway, per Google's documented requirement that all runtime agents in a project+region share the same gateway. **All three: `identityType: null`, `agentGatewayConfig: null`** — no Agent Identity, no gateway binding at all, symmetric across every project checked. Memory Bank engines are not `AGENT_IDENTITY` resources, so this documented rule (which governs Agent Identity principals) doesn't apply to them. **Confirms Experiment 2's result is unaffected** — nothing in the project for the new engine's binding to conflict with.
+
+### Combined conclusion
+With module (Experiment 1), project, and gateway (Experiment 2) all directly, empirically cleared, **the only remaining candidate is the original reasoning engine resource itself** (`8599129257987276800`) — some form of accumulated backend state from its 8+ historical failed bind attempts that a fresh engine, in the identical project, using the identical gateway, does not carry. This was flagged twice earlier in the investigation as an untested candidate; it is now the last one standing after direct elimination of every alternative, not merely the last name on a list. **Per explicit instruction, this is not yet claimed as a confirmed Google backend defect** — the one remaining test that would confirm it (recreating the original engine itself, a disruptive, real action on the project's actual production-path resource) has not been run and has not been approved.
+
+### Cleanup performed (this session, after both experiments concluded)
+- Temp engine `5730828876561514496` deleted from t2-demo (`DELETE`, HTTP 200, confirmed complete). Original engine `8599129257987276800` untouched throughout.
+- `agent-works-502620`'s cross-project GKE grants on `sreagent-demo` destroyed cleanly via `terraform destroy` (4 resources, 0 remaining) — `sreagent-demo` itself was never modified beyond these temporary grants, now fully reverted.
+- `agent-works-502620` project itself deleted (`gcloud projects delete`, confirmed `lifecycleState: DELETE_REQUESTED` — standard 30-day recovery window, then permanent). Reasoning: the project's sole purpose (prove our own module works fresh) was fully achieved and documented; no further live value in keeping it running.
+- `sreagent-gateway-verified` GitHub repo (containing the full reproduction — code, Terraform, the hardened script) is **preserved** and remains the durable record of what was deployed and how; only the live GCP project was torn down.
+
+**Files modified this session:** None to `iac/agent` or `iac/gke-access` in this repo (both experiments used a separate clone and a standalone REST call, respectively, to avoid any risk to this repo's own Terraform state). `TROUBLESHOOTING_LOG.md`, `CURRENT_STATE.md`, `AUDIT_REPORT.md` updated with full findings.
+**Next action:** Decide whether to request engine recreation on t2-demo (the one remaining untested variable) as a next step, or escalate to GCP Support with this now-complete, doubly-controlled reproduction (module cleared, project cleared, gateway cleared — a materially stronger case than before these two experiments).
+
+---
+
+## RESOLVED: engine recreation fixes t2-demo — full investigation conclusion
+
+**Timestamp:** 2026-07-17T09:35Z–09:44Z
+**Objective:** The one remaining untested variable after Experiments 1 and 2 (module cleared, project cleared, gateway cleared): does recreating the original engine resource itself (`8599129257987276800`, 8+ historical failed bind attempts) fix the bind? User approved this disruptive action explicitly.
+**Command:**
+```bash
+cd iac/agent
+terraform plan -replace='google_vertex_ai_reasoning_engine.sre_agent' -var="create_wif=false"
+# Reviewed via `terraform show -json | jq` (not the human-readable diff, which is bloated by the
+# base64 source archive) — confirmed 16 resources: the engine itself + 15 IAM/registry bindings
+# that reference its effectiveIdentity principal, all correctly cascading the replace. Expected,
+# not a red flag.
+terraform apply <plan>
+bash scripts/attach_gateway_to_engine.sh
+python3 invoke_agent.py --scenario imagepull --verbose
+```
+**Results:**
+- `terraform apply`: **Apply complete! Resources: 16 added, 0 changed, 16 destroyed.** New engine ID `6299408329517039616` (old `8599129257987276800` destroyed).
+- `attach_gateway_to_engine.sh`: **exit 0.** All pre-flight checks passed (same as every prior attempt — gateway ready, identity correct, APIs enabled, endpoints registered, service agents present). PATCH: HTTP 200. Operation polled to completion: **SUCCESS, zero errors.** `agentGatewayConfig` confirmed durably set, pointing at `sre-agent-egress` — the exact same gateway that failed to bind the original engine 8+ times across this entire investigation.
+- `invoke_agent.py --scenario imagepull --verbose`: **`status: "done"`, `errors: []`, `confidence: 0.75` (band: review), correct RCA** (ImagePullBackOff, nonexistent image, matching cleanroom's earlier diagnosis of the same fixture), `selected_mcp: gke_remote_mcp`, cross-project GKE access to `sreagent-demo/sre-test-cluster` confirmed working, Memory Bank prior-context recall working, full formatted RCA report generated.
+
+**Result: COMPLETE SUCCESS.** t2-demo is fully resolved, end-to-end, using its own real project, its own real (previously always-failing) gateway, its own real code and Terraform.
+
+### Final root cause
+Combining all three controlled tests this investigation ultimately ran:
+1. **Module** (Experiment 1, `agent-works-502620`): our own `iac/agent/agent_gateway.tf`, fresh project → SUCCESS. Module cleared.
+2. **Project + gateway** (Experiment 2, temp engine in t2-demo): new engine, same project, same real gateway (`sre-agent-egress`) → SUCCESS. Project and gateway cleared.
+3. **Engine identity** (this entry): recreate the original engine, same project, same gateway, same code → SUCCESS.
+
+With every other variable held constant and cleared by direct experiment, **only the original engine resource's own identity/state was ever the actual blocker.** Something in Vertex AI's backend tied specifically to that engine resource (`8599129257987276800`) — plausibly accumulated state from its 8+ historical failed `UpdateReasoningEngine` attempts across this investigation's multi-day history — prevented every subsequent bind attempt regardless of what configuration was applied to it. A fresh engine resource, with byte-for-byte identical configuration, bound on the first attempt every single time it was tried (Experiment 2, and now the recreated primary engine).
+
+This was never a code defect, a Terraform module defect, a project-level misconfiguration, or a gateway-level misconfiguration — all four were independently, empirically ruled out via direct controlled experiment, not by elimination of a checklist. It also does not require claiming an undiagnosed "Google backend bug" in the sense of broken software — it is consistent with an engine resource accumulating some form of server-side state or lock across many failed update attempts that a client has no way to inspect or clear except via recreation. Whether that specific mechanism is by design or an edge case Google hasn't documented is unconfirmed and doesn't need to be, for practical purposes: **the fix is engine recreation, proven.**
+
+### Lesson for future operations
+If a Reasoning Engine ever accumulates several failed `UpdateReasoningEngine` attempts (gateway bind or otherwise) and continues failing after every other cause has been ruled out, recreating the engine resource (via `terraform apply -replace=`) is a valid, low-risk remediation — Terraform correctly cascades the identity change through every dependent IAM/registry binding automatically, and nothing in this codebase hardcodes the engine ID (everything is looked up dynamically via `terraform output`).
+
+**Files modified:** `iac/agent` Terraform state (engine + 15 dependent IAM/registry bindings replaced). No `.tf` source files changed — this was a state-level replace of an existing, correctly-defined resource, not a code change.
+**Investigation status: CLOSED.** See `FINAL_RCA.md` for the permanent record.
