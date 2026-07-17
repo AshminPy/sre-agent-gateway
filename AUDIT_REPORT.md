@@ -109,3 +109,23 @@ Yes — the module-isolated fresh-project test (see §13) is the single biggest 
 
 **5. What would a Google Cloud Staff Engineer likely check next, before accepting "this is a platform/backend issue"?**
 In order: (a) demand the module-isolated test — deploy your own Terraform, not a reference implementation, into a fresh project, before accepting any "it's not your code" conclusion; (b) ask for confirmed VPC-SC perimeter membership from someone with org-admin access, since that's the one structural unknown that's never actually been resolved either way; (c) ask whether the specific reasoning ENGINE resource (not just the gateway) could carry server-side state from its 8+ prior failed bind attempts, and request a cheap, reversible test — recreate the engine, not just the gateway; (d) check whether `error.details` is truly always empty for this failure class across many retries, or whether it's ever populated (already checked here — confirmed empty every time, so this closes fast); (e) at that point, file the actual support case with this full reproduction, rather than more self-directed debugging.
+
+**Items (a) and (c) above have since been directly tested — see the follow-up section below.**
+
+---
+
+## Follow-up: Two Controlled Experiments (2026-07-17)
+
+Per direct instruction, the module-isolation gap (§13/final verdict item 4) was closed with two controlled experiments, kept explicitly separate from the general production-readiness fixes filed as GitHub issues #29–#36.
+
+**IAM roles — researched, not blindly copied.** Before either experiment, checked the documented purpose of every role cleanroom's effective identity has that t2-demo's lacks (`cloudapiregistry.viewer`, `iam.serviceAccountTokenCreator`, `telemetry.writer`). None map to admin-plane PATCH, and t2-demo's failure has never shown a permission denial (`code: 7`) — only `code: 3` (INVALID_ARGUMENT-class). **None granted.**
+
+| Test | Result | Evidence | Interpretation | Next action |
+|---|---|---|---|---|
+| **1. Module-isolated fresh-project test** — `iac/agent/agent_gateway.tf` (our own module, not the codelab's) deployed fresh into `agent-works-502620`, every other value held identical to t2-demo's real config | **SUCCESS** | 76 resources applied cleanly. Bundled PATCH: HTTP 200, operation completed, zero errors, `agentGatewayConfig` durably set. Full `invoke_agent.py` test: `status: "done"`, `confidence_score: 1.0`, correct RCA, cross-project GKE MCP confirmed working. | **Rules out: our own Terraform module.** Binds and works correctly, first try, in a fresh project. | None — module cleared. Project subsequently torn down (its purpose was fulfilled); proof preserved in the `sreagent-gateway-verified` repo. |
+| **2. New-engine-in-t2-demo test** — a temporary second engine, created via standalone REST call (not Terraform), bound to t2-demo's real, existing, always-failing gateway (`sre-agent-egress`) | **SUCCESS (bind)** | CREATE: HTTP 200. Bundled PATCH: HTTP 200, operation completed after 270s, zero errors (`has("error")` confirmed `false`), `agentGatewayConfig` correctly set. | **Rules out: the project. Rules out: the gateway.** A brand-new engine, same project, same gateway that has failed to bind the original engine 8+ times, binds immediately. | Temp engine deleted after the test. Original engine never touched. |
+| **Verification — Memory Bank "same gateway" rule** | **PASS** | All three projects' Memory Bank engines checked live: `identityType: null`, `agentGatewayConfig: null` on all three — symmetric, no violation. Memory Bank engines aren't `AGENT_IDENTITY` resources, so the documented same-gateway rule doesn't apply to them. | Confirms Experiment 2's result is unaffected — nothing for the new engine's binding to have conflicted with. | None. |
+
+**Combined conclusion:** module, project, and gateway are now all directly, empirically cleared — not by elimination of a list, but by two independent, controlled, successful reproductions. **The only remaining candidate is the original engine resource (`8599129257987276800`) itself carrying accumulated backend state from 8+ historical failed bind attempts.** This is not yet claimed as a confirmed Google backend defect, per explicit instruction — the one test that would confirm it (recreating the original engine) is disruptive, real, and not yet approved or run.
+
+**Cleanup performed:** temp engine deleted; `agent-works-502620`'s cross-project GKE grants on `sreagent-demo` destroyed cleanly via `terraform destroy`; `agent-works-502620` project itself deleted (`DELETE_REQUESTED`, standard 30-day recovery window). The `sreagent-gateway-verified` repo remains as the durable, reviewable record of the successful module-isolation proof.
