@@ -1,4 +1,4 @@
-# testing2-gcp-sre-agent
+# sre-agent-gateway
 
 An AI **Site Reliability Engineering** agent that investigates Kubernetes
 incidents on GKE — read-only — and produces a structured Root Cause Analysis.
@@ -16,6 +16,10 @@ you hit a gateway-binding failure (`error.code: 3` on the attach step). The
 short version is in [Troubleshooting](#troubleshooting) below.
 
 ![Architecture](docs/architecture.png)
+
+For the full, detailed architecture (both projects, IAM boundaries, CI/CD, and
+known gaps flagged honestly) see
+[`docs/diagrams/sre-agent-architecture.svg`](docs/diagrams/sre-agent-architecture.svg).
 
 ---
 
@@ -119,7 +123,7 @@ identity once with gcloud, then let GitHub Actions run plan (on PRs) and apply
 # 1. Seed the deployer identity out-of-band (a deployer can't create the
 #    identity it runs as — see scripts/bootstrap_wif.sh for why).
 PROJECT_A_ID=my-agent-proj \
-GITHUB_REPO=my-org/testing2-gcp-sre-agent \
+GITHUB_REPO=my-org/sre-agent-gateway \
 TFSTATE_BUCKET=my-agent-proj-tfstate \
 bash scripts/bootstrap_wif.sh
 
