@@ -15,6 +15,10 @@ see [`RCA_REPORT.md`](RCA_REPORT.md) for the full investigation and fix if
 you hit a gateway-binding failure (`error.code: 3` on the attach step). The
 short version is in [Troubleshooting](#troubleshooting) below.
 
+**Roadmap:** see [`NEXTSTEPS.md`](NEXTSTEPS.md) for the researched, ordered plan
+for what's next (RCA output format, observability, security review, evaluation,
+cost, MCP expansion, production readiness, and a LangGraph→ADK 2.0 migration).
+
 ![Architecture](docs/architecture.png)
 
 ---
