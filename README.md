@@ -54,8 +54,9 @@ iac/
 1. Two GCP projects with billing linked — **Project A** (agent) and **Project B**
    (GKE). They may be new, or Project B may be an existing project with a GKE
    cluster you already own.
-2. `gcloud`, `terraform >= 1.6`, `python >= 3.11`. For reproducible agent
-   packaging on macOS: `brew install gnu-tar`.
+2. `gcloud`, `terraform >= 1.6`, `python >= 3.11`. Agent packaging
+   (`scripts/package_agent.sh`) uses only the Python standard library, so it's
+   reproducible out of the box on macOS, Linux, and CI — no extra tools needed.
 3. Enable the bootstrap API in each project (Terraform can't enable the API it
    uses to enable APIs):
    ```bash
@@ -150,6 +151,7 @@ make attach-gateway        # bind the reasoning engine to the gateway (REST PATC
 
 ```bash
 source scripts/init-env.sh                      # writes agent/.env, exports engine id
+kubectl apply -f k8s/namespace.yaml             # create the test-incidents namespace (first time only)
 kubectl apply -f k8s/imagepull-pod.yaml         # create a failing pod in Project B's cluster
 make smoke                                      # invoke the agent, assert an RCA
 ```

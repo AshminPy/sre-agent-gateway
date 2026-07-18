@@ -47,6 +47,14 @@ jobs:
       - name: Init
         run: terraform init -backend-config="bucket=${{ secrets.TFSTATE_BUCKET }}" -backend-config="prefix=agent"
 
+      # gemini_model is pinned here explicitly because iac/agent/terraform.tfvars
+      # (the file holding the real production value) is gitignored and never
+      # reaches CI's checkout. Without this, CI silently falls back to
+      # variables.tf's default (gemini-2.5-flash), which differs from the live
+      # engine's gemini-2.5-pro — producing a false "1 to change" plan diff that,
+      # if applied, downgrades the model AND wipes agentGatewayConfig (Terraform
+      # apply on this resource clears any out-of-band field it doesn't manage,
+      # see TROUBLESHOOTING_LOG.md). Keep this in sync with terraform.tfvars.
       - name: Apply
         run: |
           terraform apply -auto-approve \
@@ -56,9 +64,36 @@ jobs:
             -var="notification_email=${{ secrets.NOTIFICATION_EMAIL }}" \
             -var="github_repo=${{ github.repository }}" \
             -var="tfstate_bucket=${{ secrets.TFSTATE_BUCKET }}" \
-            -var="create_wif=false"
+            -var="create_wif=false" \
+            -var="gemini_model=gemini-2.5-pro"
 
-      # Post-apply gateway binding (no-op when the gateway is disabled).
+      # Post-apply: register Agent Registry endpoints, then bind the gateway
+      # (both no-ops when the gateway is disabled). Order matters for a
+      # clean first-time apply: attach_gateway_to_engine.sh's own pre-flight
+      # checks report registration status, so registering first avoids a
+      # false warning on the very first CI run.
+      - name: Register Agent Registry endpoints
+        run: |
+          python3 scripts/register_endpoints.py \
+            --project="${{ secrets.GCP_PROJECT_A_ID }}" \
+            --region="${{ secrets.GCP_REGION }}" \
+            --mtls-endpoints=include
+        working-directory: .
+
       - name: Attach gateway to engine
         run: bash scripts/attach_gateway_to_engine.sh
+        working-directory: .
+
+      # Real end-to-end proof, not just "the PATCH call succeeded": invokes
+      # the deployed agent on a live fixture (k8s/imagepull-pod.yaml, a
+      # standing ImagePullBackOff pod in the Project B test cluster) and
+      # fails the job if it doesn't get back a well-formed RCA. The gateway
+      # bind operation can report done=true while the runtime connection is
+      # still broken (this is exactly how the original mTLS failure hid —
+      # see TROUBLESHOOTING_LOG.md) — this step is what would have caught it
+      # in CI instead of requiring manual investigation.
+      - name: Smoke test — verify the agent responds through the gateway
+        run: |
+          pip install --quiet "google-cloud-aiplatform[agent_engines]>=1.160.0"
+          bash scripts/smoke_test.sh
         working-directory: .
