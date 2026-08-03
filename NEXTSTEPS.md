@@ -1,5 +1,11 @@
 # NEXTSTEPS.md — SRE Agent Roadmap
 
+> **→ For the PRODUCTION LAUNCH plan (2026-07-28), see [PRODUCTION-LAUNCH-PLAN.md](PRODUCTION-LAUNCH-PLAN.md).**
+> It re-sequences this roadmap for a controlled read-only production rollout (PagerDuty entry
+> point + GKE/on-prem routing) and marks each priority done/partial/not-started against the
+> actual code, with dependencies and acceptance criteria. Use it as the entry point for launch
+> work; the research below stays as the deeper per-item reference.
+
 _Generated 2026-07-18. Research done via 11 parallel deep-dive agents (real doc fetches,
 not recalled knowledge) plus one cross-check pass that re-ordered the list by actual
 dependency, not the order the items were first listed in, and flagged contradictions
