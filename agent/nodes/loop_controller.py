@@ -12,7 +12,12 @@ log = logging.getLogger("sre-agent.loop_controller")
 
 # Hard cap on tokens consumed per run. Set to 0 to disable.
 # Prevents runaway spend from large log payloads on concurrent runs.
-_MAX_TOKENS = int(os.environ.get("MAX_TOKENS_PER_RUN", "100000"))
+# Parse defensively — a bad env value must not crash agent startup at import.
+try:
+    _MAX_TOKENS = int(os.environ.get("MAX_TOKENS_PER_RUN", "100000"))
+except (TypeError, ValueError):
+    log.warning("MAX_TOKENS_PER_RUN is not a valid integer; defaulting to 100000")
+    _MAX_TOKENS = 100000
 
 
 def _is_stuck(state: AgentState) -> bool:

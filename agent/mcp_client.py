@@ -146,8 +146,8 @@ def _build_cluster_registry() -> dict:
                     continue
                 cluster_type = c.get("type", "gke").lower()
                 registry[name] = {
-                    "project":      c.get("project", os.environ.get("PROJECT_ID", "")),
-                    "region":       c.get("region", "us-east1"),
+                    "project":      (c.get("project") or os.environ.get("PROJECT_ID", "")).strip(),
+                    "region":       (c.get("region") or "us-east1").strip(),
                     "cluster_type": cluster_type,
                     "mcp_primary":  "gke_remote_mcp" if cluster_type == "gke" else "k8s_mcp",
                     "mcp_fallback": "k8s_mcp"        if cluster_type == "gke" else "gke_remote_mcp",
@@ -587,9 +587,10 @@ def get_registry_prompt() -> str:
 
 def resolve_cluster(cluster_name: str) -> Dict[str, Any]:
     """Resolve cluster info from registry. Raises if cluster is unknown."""
-    if cluster_name in _get_cluster_registry():
-        return {**_get_cluster_registry()[cluster_name], "cluster_name": cluster_name}
-    known = list(_get_cluster_registry().keys())
+    registry = _get_cluster_registry()
+    if cluster_name in registry:
+        return {**registry[cluster_name], "cluster_name": cluster_name}
+    known = list(registry.keys())
     raise ValueError(
         f"Cluster '{cluster_name}' not in registry. Known clusters: {known}. "
         "To add a cluster: update clusters.json in GCS and re-upload — "
