@@ -30,7 +30,12 @@ def context_resolver(state: AgentState) -> dict:
         or "sre-test-cluster"
     )
 
-    if not ctx.get("cluster_name") and not ctx.get("cluster"):
+    # Recorded for the confidence framework's routing_confirmed signal (see
+    # agent/confidence/scorer.py) — does NOT change the default-cluster fallback behavior
+    # itself, only makes it observable to the completeness score instead of a log line only.
+    cluster_explicitly_provided = bool(ctx.get("cluster_name") or ctx.get("cluster"))
+
+    if not cluster_explicitly_provided:
         log.warning(
             "context_resolver: unknown cluster, defaulting to %s",
             cluster_name,
@@ -67,6 +72,7 @@ def context_resolver(state: AgentState) -> dict:
             "cluster_name": resolved_cluster,
             "cluster_region": region,
             "project_id": project_id,
+            "cluster_explicitly_provided": cluster_explicitly_provided,
 
             # Primary/fallback source strategy.
             "primary_mcp_source": primary,

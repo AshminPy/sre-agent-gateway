@@ -1,9 +1,19 @@
-"""task_evaluator.py — multi-signal confidence scoring."""
+"""task_evaluator.py — loop-continuation judgment + deterministic investigation completeness.
+
+The LLM judges whether enough evidence exists to stop looping (enough_evidence, working_theory,
+evidence_gaps) — that operational decision is unchanged. It NO LONGER self-assigns a confidence
+score: investigation_completeness is computed deterministically from AgentState by
+agent.confidence.scorer, every call, using the versioned policy. Root-cause confidence (the
+other axis) can't be computed here — it needs the claims rca_builder produces at the end of the
+investigation, not before. See docs/confidence-framework-design.md.
+"""
 import logging
-from agent.state import AgentState
+
+from agent.confidence import POLICY, score_investigation_completeness
 from agent.gemini_client import llm_json
+from agent.otel import log_node_tokens, trace_node
 from agent.prompts import TASK_EVALUATOR_SYSTEM, TASK_EVALUATOR_USER
-from agent.otel import trace_node, log_node_tokens
+from agent.state import AgentState
 
 log = logging.getLogger("sre-agent.task_evaluator")
 
@@ -20,6 +30,16 @@ def _evidence_digest(state: AgentState) -> str:
     return "\n".join(lines)
 
 
+def _completeness_update(state: AgentState) -> dict:
+    """Computed every call — cheap, pure, deterministic. Stored for rca_builder to reuse."""
+    completeness = score_investigation_completeness(state, POLICY)
+    log.info(
+        "task_evaluator investigation_completeness=%.2f band=%s gaps=%d",
+        completeness["score"], completeness["band"], len(completeness["gaps"]),
+    )
+    return completeness
+
+
 @trace_node("langgraph.task_evaluator")
 def task_evaluator(state: AgentState) -> dict:
     step      = state["investigation"]["current_step"]
@@ -28,22 +48,20 @@ def task_evaluator(state: AgentState) -> dict:
 
     eval_id = f"eval_{(step + 1):03d}"
     ctx     = state.get("resolved_context", {})
+    completeness = _completeness_update(state)
 
-    # Safety gate: never allow high confidence when no evidence exists.
-    # This prevents the bad state seen in the test output:
-    # "No evidence collected" + confidence=0.90 + human_review=false.
+    # Safety gate: never allow the loop to think it's done with zero evidence.
     if not state.get("evidence_ids"):
         tools_used = [h.get("tool") for h in state.get("tool_history", [])]
         gap = "no evidence extracted from tool output"
         if tools_used:
             gap = f"tool calls ran but no evidence was extracted: {', '.join(tools_used)}"
-        log.warning("task_evaluator no evidence found; forcing confidence=0.0")
+        log.warning("task_evaluator no evidence found; forcing enough_evidence=False")
         return {
             "evaluation_ids": [eval_id],
             "investigation":  {
                 "enough_evidence": False,
-                "confidence":      0.0,
-                "confidence_band": "escalate",
+                "completeness":    completeness,
                 "evidence_gaps":   [gap],
             },
             "working_theory": "No evidence available yet; RCA cannot be trusted.",
@@ -56,8 +74,7 @@ def task_evaluator(state: AgentState) -> dict:
             "evaluation_ids": [eval_id],
             "investigation":  {
                 "enough_evidence": False,
-                "confidence":      0.2,
-                "confidence_band": "escalate",
+                "completeness":    completeness,
                 "evidence_gaps":   ["minimum investigation steps not yet complete"],
             },
             "working_theory": f"Gathering evidence — {step}/{min_steps} minimum steps done",
@@ -73,45 +90,18 @@ def task_evaluator(state: AgentState) -> dict:
             evidence_digest=_evidence_digest(state),
             tool_count=len(tools_used),
             tools_used=", ".join(tools_used),
-            current_confidence=state["investigation"].get("confidence", 0.0),
         ),
         max_tokens=400,
     )
     log_node_tokens("task_evaluator", state["run_id"], step, usage)
 
-    enough     = result.get("enough_evidence", False)
-    try:
-        confidence = float(result.get("confidence") or 0.0)
-    except (ValueError, TypeError):
-        confidence = 0.0
-    theory     = result.get("working_theory", "")
-    gaps       = result.get("evidence_gaps", [])
-
-    # Deterministic coverage gate — prevent hallucinated high confidence.
-    # LLM confidence cannot exceed what the evidence count supports.
-    evidence_count   = len(state.get("evidence_ids", []))
-    coverage_score   = min(1.0, evidence_count / 4.0)  # 4 items = full coverage (was 3 — raised for production)
-    confidence_cap   = min(1.0, coverage_score + 0.25) # max 0.25 bonus above coverage
-    if confidence > confidence_cap:
-        log.warning(
-            "task_evaluator: capping LLM confidence %.2f → %.2f (coverage_score=%.2f evidence=%d)",
-            confidence, confidence_cap, coverage_score, evidence_count,
-        )
-        confidence = confidence_cap
-        if not gaps:
-            gaps = [f"Confidence capped: only {evidence_count}/4 required evidence items collected"]
-
-    # Enforce confidence band thresholds
-    if confidence >= 0.85:
-        confidence_band = "auto"
-    elif confidence >= 0.65:
-        confidence_band = "review"
-    else:
-        confidence_band = "escalate"
+    enough = result.get("enough_evidence", False)
+    theory = result.get("working_theory", "")
+    gaps   = result.get("evidence_gaps", [])
 
     log.info(
-        "task_evaluator enough=%s confidence=%.2f band=%s tokens=%d",
-        enough, confidence, confidence_band, usage["tokens_total"],
+        "task_evaluator enough=%s completeness=%.2f tokens=%d",
+        enough, completeness["score"], usage["tokens_total"],
     )
 
     current_tokens = state["investigation"].get("tokens_total", 0)
@@ -121,8 +111,7 @@ def task_evaluator(state: AgentState) -> dict:
         "evaluation_ids": [eval_id],
         "investigation":  {
             "enough_evidence":    enough,
-            "confidence":         confidence,
-            "confidence_band":    confidence_band,
+            "completeness":       completeness,
             "evidence_gaps":      gaps,
             "tokens_input":       state["investigation"].get("tokens_input", 0)  + usage["tokens_input"],
             "tokens_output":      state["investigation"].get("tokens_output", 0) + usage["tokens_output"],
