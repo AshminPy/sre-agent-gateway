@@ -161,6 +161,10 @@ Set enough_evidence=true ONLY when ALL conditions are met:
    NOT vague (e.g. "pod is failing")
 4. At least 2 tool calls completed
 
+You judge whether to keep investigating. You do NOT assign a confidence score — that is
+computed deterministically by application code from the evidence actually collected, not by
+you self-reporting a number.
+
 Respond ONLY with valid JSON. Keep strings under 120 chars."""
 
 TASK_EVALUATOR_USER = """\
@@ -171,12 +175,9 @@ Evidence digest:
 {evidence_digest}
 
 Tools called: {tool_count} — {tools_used}
-Current confidence: {current_confidence}
 
 {{
   "enough_evidence": true,
-  "confidence": 0.0,
-  "confidence_band": "auto | review | escalate",
   "working_theory": "<specific theory max 120 chars>",
   "evidence_gaps": ["<specific missing fact 1>"],
   "loop_exit_reason": "confidence_sufficient | need_more_evidence | null"
@@ -191,6 +192,19 @@ Only state what the evidence supports.
 Include the cluster name and region in the incident summary.
 Remediation steps must be immediately executable by a human — no autonomous actions.
 
+You propose the root cause, break it into individual claims, and flag anything you noticed
+that seemed to conflict with your own conclusion. You do NOT assign a confidence score —
+application code computes it deterministically from your claims and the evidence behind them.
+
+For every claim, pick the most honest claim_type:
+- observed_fact: directly stated by the evidence, no inference needed
+- supported_inference: a reasonable conclusion FROM observed facts, but still an inference
+- hypothesis: plausible but not confirmed by what you collected
+Never label an inference or hypothesis as observed_fact — that is scored as overclaiming.
+
+Also list any alternative explanation you considered and ruled out (or couldn't rule out),
+even briefly — this is required, not optional, when more than one explanation is plausible.
+
 Respond ONLY with valid JSON."""
 
 RCA_BUILDER_USER = """\
@@ -198,7 +212,6 @@ Incident: {query}
 Incident type: {incident_type}
 Cluster: {cluster} (region: {region}, project: {project})
 Working theory: {theory}
-Confidence band: {confidence_band}
 
 Past investigation context from Memory Bank — hints only, may be incomplete/truncated:
 - Do NOT cite memory as evidence. Only cite evidence_ids from live tool calls made in this investigation.
@@ -212,13 +225,27 @@ Evidence IDs available: {evidence_ids}
 
 {{
   "incident_summary": "<title with pod name, cluster, error — max 120 chars>",
-  "likely_root_cause": "<specific cause with evidence_id refs — max 200 chars>",
-  "confidence_score": 0.0,
-  "confidence_band": "auto | review | escalate",
+  "likely_root_cause": "<specific cause with evidence_id refs — max 200 chars, same as your primary claim below>",
+  "claims": [
+    {{
+      "text": "<specific factual claim, max 200 chars>",
+      "claim_type": "observed_fact | supported_inference | hypothesis",
+      "supporting_evidence_ids": ["ev_001"],
+      "contradicting_evidence_ids": []
+    }}
+  ],
+  "alternative_hypotheses_considered": [
+    {{
+      "description": "<an explanation you considered and ruled out or couldn't confirm>",
+      "supporting_evidence_ids": [],
+      "contradicting_evidence_ids": ["ev_002"],
+      "missing_evidence": ["<what would confirm or rule this out>"],
+      "status": "eliminated | active | weakened"
+    }}
+  ],
   "evidence_chain": ["ev_001", "ev_002"],
   "evidence_gaps": [],
   "reasoning_trace": ["<step 1>", "<step 2>"],
   "suggested_remediation": ["<human step 1>", "<human step 2>"],
-  "requires_human_review": true,
   "sources_skipped": []
 }}"""

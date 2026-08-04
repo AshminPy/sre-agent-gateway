@@ -6,16 +6,27 @@ Builds cited RCA with:
 - Real token tracking from Gemini usage_metadata
 - Estimated cost per investigation
 - Full structured observability event to Cloud Logging (ADR Appendix C)
+- Deterministic two-axis confidence scoring (agent.confidence) — the LLM proposes claims,
+  hypotheses, and root cause; this node is where root_cause_confidence, outcome, and the
+  legacy confidence/confidence_band fields are computed. See
+  docs/confidence-framework-design.md.
 """
 import json
 import logging
 import os
 from datetime import datetime, timezone
 
-from agent.state import AgentState
-from agent.gemini_client import llm_json, get_session_usage
+from agent.confidence import (
+    POLICY,
+    derive_outcome,
+    score_root_cause_confidence,
+)
+from agent.confidence.claim_builder import build_claims, build_hypotheses, detect_contradictions
+from agent.confidence.scorer import confidence_band_from_scores
+from agent.gemini_client import get_session_usage, llm_json
+from agent.otel import log_node_tokens, trace_node
 from agent.prompts import RCA_BUILDER_SYSTEM, RCA_BUILDER_USER
-from agent.otel import trace_node, log_node_tokens
+from agent.state import AgentState
 
 log = logging.getLogger("sre-agent.rca_builder")
 
@@ -42,7 +53,7 @@ def _evidence_digest(state: AgentState) -> str:
 def _enriched_evidence_digest(state: AgentState) -> tuple:
     """
     Re-reads full raw evidence from GCS for each evidence item and builds a
-    richer digest. Only called when confidence_band == 'escalate'.
+    richer digest. Only called when the outcome isn't confidently resolved.
 
     Returns: (digest_str, was_enriched)
     Falls back silently to the compressed digest if GCS is unavailable.
@@ -148,10 +159,22 @@ def _write_observability_log(state: AgentState, rca: dict, usage: dict) -> None:
             "evaluation_ids":     state.get("evaluation_ids", []),
             "gcs_evidence_path":  f"gs://{EVIDENCE_BUCKET}/{state['run_id']}/",
 
-            # Confidence
+            # Confidence — legacy field names preserved for existing log-based metrics/alerts
+            # (iac/agent/monitoring.tf filters on jsonPayload.confidence_band directly).
             "confidence_score":   inv.get("confidence", 0.0),
             "confidence_band":    inv.get("confidence_band", "escalate"),
             "requires_human_review": rca.get("requires_human_review", True),
+
+            # New confidence framework fields — see docs/confidence-framework-design.md
+            "schema_version":         rca.get("schema_version", "2.0"),
+            "outcome":                rca.get("outcome", "unknown"),
+            "policy_version":         rca.get("policy_version", POLICY.version),
+            "investigation_completeness_score": rca.get("investigation_completeness", {}).get("score"),
+            "root_cause_confidence_score":      rca.get("root_cause_confidence", {}).get("score"),
+            "contradictions_count":  len(rca.get("contradictions", [])),
+            "active_hypotheses_count": sum(
+                1 for h in rca.get("hypotheses", []) if h.get("status") == "active"
+            ),
 
             # Real token tracking from Gemini metadata
             "tokens_input":       tokens_input,
@@ -161,7 +184,7 @@ def _write_observability_log(state: AgentState, rca: dict, usage: dict) -> None:
 
             # Model info
             "model_name":         GEMINI_MODEL,
-            "prompt_version":     "v1.0",
+            "prompt_version":     "v2.0",
             "graph_version":      "v1.0",
 
             # Outcome — filled in after SRE reviews the RCA
@@ -190,90 +213,31 @@ def _write_observability_log(state: AgentState, rca: dict, usage: dict) -> None:
         log.warning("Failed to write observability log: %s", e)
 
 
-_CITATION_STOP = {
-    "this", "that", "with", "from", "have", "been", "were", "they",
-    "what", "when", "which", "also", "more", "than", "some", "into",
-}
-
-
-def _validate_citations(
-    rca_result: dict,
-    evidence_ids: list,
-    evidence_store: dict,
-) -> tuple:
-    """
-    H1 citation validity gate — deterministic, zero LLM cost.
-
-    Check 1 (existence): every ev_XXX pattern in likely_root_cause,
-    incident_summary, and reasoning_trace must be a real evidence_id.
-
-    Check 2 (overlap): likely_root_cause must share at least one
-    meaningful keyword (4+ chars, non-stop-word) with the key_facts of
-    the evidence items it cites. Catches root-cause claims that reference
-    the right ID but describe a completely different failure.
-
-    Returns (is_valid: bool, reason: str).
-    """
-    import re
-
-    known = set(evidence_ids)
-
-    # Scan text fields for ev_XXX patterns
-    scan_text = " ".join([
-        rca_result.get("likely_root_cause", ""),
-        rca_result.get("incident_summary", ""),
-        *rca_result.get("reasoning_trace", []),
-    ])
-    cited = set(re.findall(r"\bev_\d+\b", scan_text))
-
-    # Check 1 — phantom IDs
-    phantoms = cited - known
-    if phantoms:
-        return False, f"phantom evidence IDs cited: {sorted(phantoms)}"
-
-    # Check 2 — keyword overlap (only when root cause cites specific IDs)
-    root_cause = rca_result.get("likely_root_cause", "")
-    cited_in_rc = set(re.findall(r"\bev_\d+\b", root_cause))
-    if not root_cause or not cited_in_rc:
-        return True, ""
-
-    claim_words = set(re.findall(r"[a-z]{4,}", root_cause.lower())) - _CITATION_STOP
-
-    facts_words: set = set()
-    for ev_id in cited_in_rc:
-        ev = evidence_store.get(ev_id, {})
-        facts_text = " ".join(ev.get("key_facts", []) + [ev.get("summary", "")])
-        facts_words |= set(re.findall(r"[a-z]{4,}", facts_text.lower()))
-    facts_words -= _CITATION_STOP
-
-    if claim_words and facts_words and not (claim_words & facts_words):
-        return False, "likely_root_cause has no keyword overlap with cited evidence key_facts"
-
-    return True, ""
-
-
 @trace_node("langgraph.rca_builder")
 def rca_builder(state: AgentState) -> dict:
     log.info("node=rca_builder run_id=%s", state["run_id"])
 
     ctx             = state.get("resolved_context", {})
     inv             = state["investigation"]
-    confidence      = inv.get("confidence", 0.0)
-    confidence_band = inv.get("confidence_band", "escalate")
     theory          = state.get("working_theory", "")
     evidence_ids    = state.get("evidence_ids", [])
+    evidence_store  = state.get("evidence_store", {})
+    incident_type   = ctx.get("incident_type", "Unknown")
 
     no_evidence = len(evidence_ids) == 0
 
-    # Lazy GCS re-read for low-confidence RCAs.
-    # If confidence band is 'escalate', compressed key_facts were not enough.
-    # Re-read full raw evidence from GCS to give the RCA builder more signal.
-    # Falls back silently to compressed digest if GCS is unavailable.
-    if confidence_band == "escalate" and not no_evidence:
+    # Lazy GCS re-read for thin evidence. Previously gated on confidence_band=='escalate',
+    # which didn't exist yet at this point in the old design — now gated on the deterministic
+    # investigation_completeness computed by task_evaluator every loop iteration (state has it
+    # already; no LLM call needed to decide this).
+    completeness = inv.get("completeness", {}) or {}
+    thin_evidence = completeness.get("score", 0.0) < POLICY.band_thresholds["review"]
+
+    if thin_evidence and not no_evidence:
         evidence_digest_str, gcs_enriched = _enriched_evidence_digest(state)
         if gcs_enriched:
             log.info(
-                "rca_builder: low confidence — using GCS-enriched digest (run_id=%s)",
+                "rca_builder: thin evidence — using GCS-enriched digest (run_id=%s)",
                 state["run_id"],
             )
     else:
@@ -286,9 +250,8 @@ def rca_builder(state: AgentState) -> dict:
         RCA_BUILDER_SYSTEM,
         RCA_BUILDER_USER.format(
             query=state["incident_envelope"].get("user_query", ""),
-            incident_type=ctx.get("incident_type", "Unknown"),
+            incident_type=incident_type,
             theory=theory,
-            confidence_band=confidence_band,
             memory_context=memory_ctx or "No past investigations on record.",
             evidence_digest=evidence_digest_str,
             evidence_ids=json.dumps(evidence_ids),
@@ -296,15 +259,15 @@ def rca_builder(state: AgentState) -> dict:
             region=ctx.get("cluster_region", ""),
             project=ctx.get("project_id", ""),
         ),
-        max_tokens=1024,
+        max_tokens=1536,
     )
     log_node_tokens("rca_builder", state["run_id"], inv.get("current_step", 0), usage)
 
-    # Final safety gate: no evidence means no auto-confidence, no auto-approval.
+    # Final safety gate: no evidence means no claims can be grounded, no auto-approval.
     if no_evidence:
-        confidence = 0.0
-        confidence_band = "escalate"
         result["likely_root_cause"] = "No evidence was extracted, so root cause cannot be determined."
+        result["claims"] = []
+        result["alternative_hypotheses_considered"] = []
         result["evidence_gaps"] = [
             "No evidence IDs were created from tool output.",
             "Fix evidence extraction/state handoff before trusting RCA output.",
@@ -312,35 +275,51 @@ def rca_builder(state: AgentState) -> dict:
         result["reasoning_trace"] = [
             "The agent cannot prove a root cause without evidence IDs.",
             "Successful tool calls alone are not enough; their outputs must be extracted and cited.",
-            "Confidence is forced to 0.0 and human review is required.",
         ]
 
-    # ── H1: citation validity gate ────────────────────────────────────
-    # Only runs when band is "auto" — review/escalate already require human eyes.
-    # Downgrades to "review" if the LLM cited phantom IDs or the root-cause claim
-    # has no keyword overlap with the evidence it cites. No LLM call — pure code.
-    if not no_evidence and confidence_band == "auto":
-        citation_ok, citation_reason = _validate_citations(
-            result, evidence_ids, state.get("evidence_store", {})
-        )
-        if not citation_ok:
-            log.warning(
-                "rca_builder: citation gate FAILED — forcing band=review reason=%s run_id=%s",
-                citation_reason, state["run_id"],
-            )
-            confidence_band = "review"
-            result.setdefault("evidence_gaps", []).append(
-                f"Citation validity gate: {citation_reason}"
-            )
+    # ── Build claims, hypotheses, contradictions — LLM proposes, code grounds/scores ──
+    claims          = build_claims(result, evidence_ids, evidence_store)
+    known_ids       = set(evidence_ids)
+    hypotheses      = build_hypotheses(result, known_ids)
+    contradictions  = detect_contradictions(claims, result, evidence_store, ctx)
 
-    # Enforce required fields
+    # ── Deterministic root-cause confidence — this call decides the score, not the LLM ──
+    root_cause_confidence = score_root_cause_confidence(
+        claims=claims,
+        contradictions=contradictions,
+        hypotheses=hypotheses,
+        evidence_store=evidence_store,
+        tool_history=state.get("tool_history", []),
+        resolved_context=ctx,
+        incident_type=incident_type,
+        policy=POLICY,
+    )
+
+    outcome = derive_outcome(completeness, root_cause_confidence, contradictions, hypotheses, POLICY)
+    confidence_band = confidence_band_from_scores(outcome)
+    confidence = root_cause_confidence["score"]
+
+    # requires_human_review is now derived, not self-reported by the LLM — "auto" is the only
+    # band that doesn't require it, and even that requires the gates below to have passed
+    # (enforced by confidence_band_from_scores only ever returning "auto" for CONFIRMED, which
+    # derive_outcome only returns when there are zero unresolved contradictions/hypotheses).
     requires_review = confidence_band != "auto" or no_evidence
-    result["confidence_score"]      = confidence
-    result["confidence_band"]       = confidence_band
-    result["requires_human_review"] = requires_review
-    result["run_id"]                = state["run_id"]
-    result["evidence_chain"]        = evidence_ids
-    result["sources_skipped"]       = state.get("sources_skipped", [])
+
+    result["schema_version"]            = "2.0"
+    result["confidence_score"]          = confidence
+    result["confidence_deprecated"]     = True  # legacy field, kept for compat — see design doc §11
+    result["confidence_band"]           = confidence_band
+    result["outcome"]                   = outcome
+    result["policy_version"]            = POLICY.version
+    result["investigation_completeness"] = completeness
+    result["root_cause_confidence"]      = root_cause_confidence
+    result["claims"]                     = [c.to_dict() for c in claims]
+    result["hypotheses"]                 = [h.to_dict() for h in hypotheses]
+    result["contradictions"]             = [c.to_dict() for c in contradictions]
+    result["requires_human_review"]      = requires_review
+    result["run_id"]                     = state["run_id"]
+    result["evidence_chain"]             = evidence_ids
+    result["sources_skipped"]            = state.get("sources_skipped", [])
 
     # SRE feedback fields — filled in after human review.
     # sre_feedback: 'correct' | 'partial' | 'wrong'
@@ -385,9 +364,10 @@ def rca_builder(state: AgentState) -> dict:
     total_cost   = inv.get("estimated_cost_usd", 0.0) + usage.get("cost_usd", 0.0)
 
     log.info(
-        "rca_builder confidence=%.2f band=%s cluster=%s tokens=%d cost=$%.6f requires_review=%s gcs_enriched=%s",
-        confidence, confidence_band,
-        ctx.get("cluster_name", ""),
+        "rca_builder outcome=%s confidence=%.2f band=%s completeness=%.2f cluster=%s "
+        "contradictions=%d tokens=%d cost=$%.6f requires_review=%s gcs_enriched=%s",
+        outcome, confidence, confidence_band, completeness.get("score", 0.0),
+        ctx.get("cluster_name", ""), len(contradictions),
         total_tokens, total_cost, requires_review, gcs_enriched,
     )
 
@@ -398,6 +378,10 @@ def rca_builder(state: AgentState) -> dict:
         "final_summary": result,
         "investigation": {
             "status":             "done",
+            # Legacy fields — final authoritative value, overwrites whatever task_evaluator set
+            # during the loop (task_evaluator no longer sets these at all — see task_evaluator.py).
+            "confidence":         confidence,
+            "confidence_band":    confidence_band,
             "tokens_total":       total_tokens,
             "estimated_cost_usd": round(total_cost, 6),
         },

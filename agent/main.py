@@ -73,15 +73,31 @@ def _safe_float(value, default: float = 0.0) -> float:
         return default
 
 
-def _build_executive_summary(summary: dict, inv: dict, ctx: dict) -> str:
-    """Plain-English one-paragraph summary for non-technical stakeholders."""
-    incident_type = ctx.get("incident_type") or summary.get("incident_type") or "Unknown incident"
-    root_cause = (
+def _extract_root_cause(summary: dict) -> str:
+    """Single source of the root-cause text — built once, referenced everywhere it's rendered.
+    Fixes the previous bug where the executive summary and the RCA report each independently
+    pulled and re-rendered the full root-cause text, producing visible duplication in the
+    output. See docs/confidence-framework-design.md §12 / PRODUCTION-LAUNCH-PLAN.md P7.
+    """
+    return str(
         summary.get("likely_root_cause")
         or summary.get("root_cause")
         or summary.get("incident_summary")
         or "See full summary for details."
     )
+
+
+def _build_executive_summary(summary: dict, inv: dict, ctx: dict) -> str:
+    """Plain-English one-paragraph summary for non-technical stakeholders.
+
+    Deliberately a SHORT reference to the root cause, not the full text — the detailed
+    reasoning and evidence chain live only in the RCA report section (_build_rca_report).
+    """
+    incident_type = ctx.get("incident_type") or summary.get("incident_type") or "Unknown incident"
+    root_cause = _extract_root_cause(summary)
+    root_cause_brief = root_cause[:120].rstrip(".")
+    if len(root_cause) > 120:
+        root_cause_brief += "…"
     remediation = (
         summary.get("suggested_remediation")
         or summary.get("recommendation")
@@ -89,14 +105,17 @@ def _build_executive_summary(summary: dict, inv: dict, ctx: dict) -> str:
         or "No specific remediation provided — review agent output."
     )
     confidence_band = (inv.get("confidence_band") or summary.get("confidence_band") or "unknown").upper()
+    outcome = str(summary.get("outcome", "")).upper()
     requires_review = summary.get("requires_human_review", True)
     review_note = "Human review recommended before actioning." if requires_review else "No immediate human review required."
+    outcome_note = f" Outcome: {outcome}." if outcome else ""
     return (
         f"Incident type: {incident_type}. "
-        f"Root cause: {str(root_cause)[:500].rstrip('.')}. "
-        f"Confidence: {confidence_band}. "
+        f"Root cause: {root_cause_brief}. "
+        f"Confidence: {confidence_band}.{outcome_note} "
         f"Recommended action: {str(remediation)[:300].rstrip('.')}. "
-        f"{review_note}"
+        f"{review_note} "
+        "See the Root Cause Analysis section below for the full evidence-backed reasoning."
     )
 
 
@@ -125,12 +144,7 @@ def _build_rca_report(
     severity      = (payload.get("severity", "unknown") or "unknown").upper()
     incident_type = ctx.get("incident_type") or summary.get("incident_type") or "Unknown"
 
-    root_cause = (
-        summary.get("likely_root_cause")
-        or summary.get("root_cause")
-        or summary.get("incident_summary")
-        or "Root cause not determined — review evidence below."
-    )
+    root_cause = _extract_root_cause(summary)
 
     remediation_raw = (
         summary.get("suggested_remediation")
@@ -154,7 +168,6 @@ def _build_rca_report(
 
     confidence      = _safe_float(inv.get("confidence", summary.get("confidence_score", 0.0)))
     confidence_band = (inv.get("confidence_band") or summary.get("confidence_band") or "escalate").upper()
-    requires_review = summary.get("requires_human_review", True)
 
     tool_calls      = obs_event.get("tools_called", 0)
     evidence_count  = obs_event.get("evidence_count", len(evidence_ids))
@@ -261,9 +274,43 @@ def _build_rca_report(
     L.append(f"  Similar Past Incidents : {memory_note}")
     L.append("")
 
+    completeness = summary.get("investigation_completeness", {}) or {}
+    rcc          = summary.get("root_cause_confidence", {}) or {}
+    contradictions = summary.get("contradictions", []) or []
+    hypotheses     = summary.get("hypotheses", []) or []
+    outcome        = summary.get("outcome", "unknown")
+
     L += [
         SEP,
-        "  3.  IMPACT ASSESSMENT",
+        "  3.  CONFIDENCE BREAKDOWN",
+        SEP,
+        f"  Outcome                    : {str(outcome).upper()}",
+        f"  Investigation Completeness : {completeness.get('score', 0.0):.2f}  ({completeness.get('band', 'unknown')})",
+        f"  Root-Cause Confidence      : {rcc.get('score', 0.0):.2f}  ({rcc.get('band', 'unknown')})",
+    ]
+    if completeness.get("gaps"):
+        L.append("  Completeness gaps:")
+        for g in completeness["gaps"][:5]:
+            L.append(f"    • {str(g)[:110]}")
+    if rcc.get("reasons"):
+        L.append("  Root-cause reasons:")
+        for r in rcc["reasons"][:5]:
+            L.append(f"    • {str(r)[:110]}")
+    if contradictions:
+        L.append(f"  Contradictions detected ({len(contradictions)}):")
+        for c in contradictions[:5]:
+            L.append(f"    • {str(c.get('description',''))[:110]}")
+    active_hyp = [h for h in hypotheses if h.get("status") == "active"]
+    if active_hyp:
+        L.append(f"  Unresolved alternative hypotheses ({len(active_hyp)}):")
+        for h in active_hyp[:3]:
+            L.append(f"    • {str(h.get('description',''))[:110]}")
+    L.append(f"  Policy version              : {summary.get('policy_version', 'unknown')}")
+    L.append("")
+
+    L += [
+        SEP,
+        "  4.  IMPACT ASSESSMENT",
         SEP,
         f"  Workload        : {pod or incident_type}",
         f"  Incident Type   : {incident_type}",
@@ -273,7 +320,7 @@ def _build_rca_report(
         "  MTTR            : not yet tracked — pending future enhancement",
         "",
         SEP,
-        "  4.  REMEDIATION",
+        "  5.  REMEDIATION",
         SEP,
     ]
 
@@ -300,7 +347,7 @@ def _build_rca_report(
 
     L += [
         SEP,
-        "  5.  INVESTIGATION METADATA",
+        "  6.  INVESTIGATION METADATA",
         SEP,
         f"  AI Confidence   : {confidence * 100:.0f}%  (Band: {confidence_band})",
         f"  Human Review    : {review_note}",
@@ -464,6 +511,13 @@ def investigate(payload: dict) -> dict:
             "evidence_ids": evidence_ids,
             "confidence": confidence,
             "confidence_band": confidence_band,
+            # New confidence framework fields — additive, does not change any existing field
+            # name/value read by iac/agent/monitoring.tf's log-based metrics or alerts.
+            "outcome": summary.get("outcome", "unknown"),
+            "policy_version": summary.get("policy_version", ""),
+            "investigation_completeness_score": (summary.get("investigation_completeness") or {}).get("score"),
+            "root_cause_confidence_score": (summary.get("root_cause_confidence") or {}).get("score"),
+            "contradictions_count": len(summary.get("contradictions") or []),
             "status": inv.get("status", "unknown"),
             "loop_exit_reason": inv.get("loop_exit_reason", result.get("loop_exit_reason")),
             "human_review": bool(summary.get("requires_human_review", True)),
@@ -491,10 +545,15 @@ def investigate(payload: dict) -> dict:
         flush_traces(timeout_millis=5000)
 
         return {
+            "schema_version":     "2.0",
             "status":             inv["status"],
             "confidence":         inv.get("confidence", 0.0),
+            "confidence_deprecated": True,
             "confidence_band":    inv.get("confidence_band",
                                   summary.get("confidence_band", "escalate")),
+            "outcome":            summary.get("outcome", "unknown"),
+            "investigation_completeness": summary.get("investigation_completeness", {}),
+            "root_cause_confidence":      summary.get("root_cause_confidence", {}),
             "tool_calls":         len(tool_history),
             "evidence_ids":       evidence_ids,
             "run_id":             result.get("run_id", ""),
@@ -839,6 +898,18 @@ class SREAgent:
             cls._save_to_gcs(run_id, payload, result)
 
         # 4. Memory — save this investigation's root cause for future recall
+        #
+        # Gate added 2026-08-04: previously this wrote to persistent Memory Bank for ANY
+        # non-failed/non-blocked result, with no confidence or validation check — despite
+        # _mb_store's own docstring claiming RCA-poisoning prevention (it only dedups by
+        # pod+incident_type, not confidence). A low-confidence, escalate-band RCA could be
+        # written and later recalled as if it were validated fact. Now gated on
+        # confidence_band == "auto", which (via agent.confidence.scorer.confidence_band_from_scores)
+        # only happens for outcome == "confirmed": strong direct evidence, independently
+        # corroborated, no unresolved contradiction, no unresolved competing hypothesis. This
+        # is a real validation gate, not human sign-off — a genuine human-approval pipeline
+        # (using the existing but currently-unused sre_feedback/validation_status fields) is a
+        # further improvement, not built here. See docs/confidence-framework-design.md §12.
         if result.get("status") not in ("failed", "blocked"):
             summary    = result.get("summary", {}) or {}
             root_cause = (
@@ -847,10 +918,17 @@ class SREAgent:
             )[:300]
             pod        = payload.get("pod", "")
             confidence = _safe_float(result.get("confidence", 0.0))
+            confidence_band = result.get("confidence_band", "escalate")
             obs = result.get("observability", {})
             incident_type = obs.get("incident_type", "") if isinstance(obs, dict) else ""
             # Persist to Vertex AI Memory Bank (cross-session) and in-process list (same session)
-            cls._mb_store(cluster, namespace, pod, root_cause, confidence, incident_type)
+            if confidence_band == "auto":
+                cls._mb_store(cluster, namespace, pod, root_cause, confidence, incident_type)
+            else:
+                log.info(
+                    "Memory Bank write skipped — confidence_band=%s (only 'auto' writes persist)",
+                    confidence_band,
+                )
             cls._save_memory(query_text, root_cause, cluster, namespace)
 
         # 5. Model Armor — sanitize output (redacts PII that leaked from k8s logs)

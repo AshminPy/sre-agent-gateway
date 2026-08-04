@@ -38,7 +38,11 @@ class AgentState(TypedDict):
     # ── Investigation control ─────────────────────────────────────
     investigation:      Annotated[Dict[str, Any], operator.or_]
     # includes: status, current_step, max_steps, min_steps,
-    #           enough_evidence, confidence, confidence_band,
+    #           enough_evidence, confidence, confidence_band (legacy, LEGACY-COMPATIBLE —
+    #           see agent/confidence — final value set by rca_builder from
+    #           root_cause_confidence, not by task_evaluator),
+    #           completeness (new — investigation_completeness dict, set every
+    #           task_evaluator call, see agent/confidence/scorer.py),
     #           loop_exit_reason, evidence_gaps, task_plan,
     #           primary_gap, tokens_input, tokens_output,
     #           tokens_total, estimated_cost_usd
