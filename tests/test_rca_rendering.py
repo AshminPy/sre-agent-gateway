@@ -28,6 +28,18 @@ def test_extract_root_cause_is_the_single_source_both_renderers_use():
     assert _extract_root_cause(summary) == LONG_ROOT_CAUSE
 
 
+def test_extract_root_cause_never_crashes_on_a_non_string_llm_response():
+    """Regression test for the 2026-08-04 production incident: the LLM occasionally returned
+    a non-string value for likely_root_cause under the more complex confidence-framework
+    prompt, and slicing it directly (elsewhere in main.py, since fixed to reuse this function)
+    raised 'unhashable type: slice'. _extract_root_cause must always return a string, whatever
+    the LLM sends."""
+    summary = _summary(likely_root_cause={"text": "malformed nested object", "type": "observed_fact"})
+    result = _extract_root_cause(summary)
+    assert isinstance(result, str)
+    result[:300]  # must not raise — this is the exact operation that crashed in production
+
+
 def test_executive_summary_does_not_repeat_the_full_root_cause_text():
     summary = _summary()
     exec_summary = _build_executive_summary(summary, {}, {"incident_type": "ImagePullBackOff"})
