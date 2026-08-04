@@ -912,10 +912,11 @@ class SREAgent:
         # further improvement, not built here. See docs/confidence-framework-design.md §12.
         if result.get("status") not in ("failed", "blocked"):
             summary    = result.get("summary", {}) or {}
-            root_cause = (
-                summary.get("likely_root_cause", "")
-                or summary.get("incident_summary", "")
-            )[:300]
+            # Reuses _extract_root_cause (str()-safe) instead of a second, unguarded copy of
+            # the same extraction — that duplicate copy is what raised "unhashable type:
+            # 'slice'" in production 2026-08-04 when the LLM returned a non-string value for
+            # likely_root_cause under the more complex confidence-framework prompt.
+            root_cause = _extract_root_cause(summary)[:300]
             pod        = payload.get("pod", "")
             confidence = _safe_float(result.get("confidence", 0.0))
             confidence_band = result.get("confidence_band", "escalate")
