@@ -37,20 +37,31 @@ def input_normalizer(state: AgentState) -> dict:
         incident_type, usage["tokens_total"], usage["cost_usd"],
     )
 
-    # CLI hints ALWAYS override LLM guesses
+    # CLI hints ALWAYS override LLM guesses.
+    #
+    # Cluster identity is NEVER defaulted here. cluster_hint is the verified signal (came
+    # from the caller/alert system via resource_hints, structured data — not free text);
+    # cluster_guess is the unverified signal (LLM free-text extraction from the query). Both
+    # are passed through as-is, empty if absent — context_resolver.py's deterministic
+    # priority chain (agent/mcp_client.py:resolve_cluster_routing) decides what, if anything,
+    # they resolve to. This node does not guess a cluster and must not silently invent one.
     resolved = {
-        "incident_type": incident_type,
-        "namespace":     hints.get("namespace") or extracted.get("namespace", "test-incidents"),
-        "pod":           hints.get("pod")        or extracted.get("pod", ""),
-        "cluster_name":  hints.get("cluster")    or extracted.get("cluster_name", "sre-test-cluster"),
-        "deployment":    hints.get("deployment") or extracted.get("deployment", ""),
-        "severity":      envelope.get("incident", {}).get("severity", "unknown"),
+        "incident_type":     incident_type,
+        "namespace":         hints.get("namespace") or extracted.get("namespace", "test-incidents"),
+        "pod":               hints.get("pod")        or extracted.get("pod", ""),
+        "cluster_hint":      (hints.get("cluster") or "").strip(),
+        "cluster_guess":     (extracted.get("cluster_name") or "").strip(),
+        "project_hint":      (hints.get("project") or "").strip(),
+        "environment_hint":  (hints.get("environment") or "").strip(),
+        "deployment":        hints.get("deployment") or extracted.get("deployment", ""),
+        "severity":          envelope.get("incident", {}).get("severity", "unknown"),
     }
 
     hints_applied = bool(hints.get("cluster") or hints.get("namespace") or hints.get("pod"))
     log.info(
-        "input_normalizer cluster=%s namespace=%s pod=%s hints_applied=%s",
-        resolved["cluster_name"], resolved["namespace"], resolved["pod"], hints_applied,
+        "input_normalizer cluster_hint=%s cluster_guess=%s namespace=%s pod=%s hints_applied=%s",
+        resolved["cluster_hint"] or "(none)", resolved["cluster_guess"] or "(none)",
+        resolved["namespace"], resolved["pod"], hints_applied,
     )
 
     return {

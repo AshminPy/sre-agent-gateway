@@ -56,8 +56,35 @@ def write_evidence(
                     "GCS write failed for %s after 2 attempts: %s — audit chain broken",
                     evidence_id, e,
                 )
+                _log_evidence_storage_failure(run_id, evidence_id, path, str(e))
                 return f"gcs_write_failed:{path}"
     return f"gcs_write_failed:{path}"
+
+
+def _log_evidence_storage_failure(run_id: str, evidence_id: str, path: str, error: str) -> None:
+    """Structured Cloud Logging event for a permanent evidence-storage failure (both write
+    attempts exhausted). Same pattern as tool_executor.py's sre-agent-tool-failures log —
+    a dedicated logName lets iac/agent/monitoring.tf build a log-based metric + alert
+    without depending on a generic textPayload grep. See PRODUCTION-LAUNCH-PLAN.md
+    Priority 10 ("evidence-storage success/failure").
+    """
+    try:
+        from google.cloud import logging as cloud_logging
+
+        cloud_logging.Client().logger("sre-agent-evidence-storage-failures").log_struct(
+            {
+                "event":       "evidence_storage_failure",
+                "run_id":      run_id,
+                "evidence_id": evidence_id,
+                "path":        path,
+                "bucket":      BUCKET,
+                "error":       error[:300],
+            },
+            severity="ERROR",
+        )
+    except Exception:
+        # Never let observability logging break the investigation.
+        pass
 
 
 def read_evidence(raw_ref: str) -> dict:

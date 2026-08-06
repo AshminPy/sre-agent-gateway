@@ -120,10 +120,29 @@ MCP_REGISTRY = {
 #   {
 #     "clusters": [
 #       {
-#         "name":    "prod-cluster-us-east1",     # must match invoke payload "cluster" field
-#         "project": "prj-n-multitenant-0868",
-#         "region":  "us-east1",
-#         "type":    "gke"                         # "gke" | "custom"
+#         "name":               "prod-cluster-us-east1",  # canonical ID — invoke payload
+#                                                          # "cluster" field must match this
+#                                                          # exactly, or one of "aliases" below
+#         "aliases":            ["prod-east", "prod-1"],   # optional — approved alternate
+#                                                          # names this cluster may be routed
+#                                                          # by (see resolve_cluster_routing)
+#         "project":            "prj-n-multitenant-0868",
+#         "region":              "us-east1",
+#         "type":                "gke",                    # "gke" | "custom"
+#         "environment":         "production",              # optional — free text, used by
+#                                                          # the project/env/namespace routing
+#                                                          # tier
+#         "allowed_namespaces": ["team-a", "team-b"],       # optional — namespaces this
+#                                                          # cluster owns; empty/omitted means
+#                                                          # "no declared ownership" and this
+#                                                          # cluster is skipped by the
+#                                                          # namespace-based routing tier
+#                                                          # (it never disambiguates by
+#                                                          # namespace alone)
+#         "owner":               "team-a-sre",              # optional — free text, audit only
+#         "enabled":             true                       # optional, default true — disabled
+#                                                          # clusters are never auto-routed to,
+#                                                          # even by exact id/alias match
 #       }
 #     ]
 #   }
@@ -145,10 +164,24 @@ def _build_cluster_registry() -> dict:
                 if not name:
                     continue
                 cluster_type = c.get("type", "gke").lower()
+                aliases = [
+                    a.strip() for a in (c.get("aliases") or [])
+                    if isinstance(a, str) and a.strip()
+                ]
+                allowed_namespaces = [
+                    n.strip() for n in (c.get("allowed_namespaces") or [])
+                    if isinstance(n, str) and n.strip()
+                ]
                 registry[name] = {
+                    "canonical_id": name,
+                    "aliases":      aliases,
                     "project":      (c.get("project") or os.environ.get("PROJECT_ID", "")).strip(),
                     "region":       (c.get("region") or "us-east1").strip(),
                     "cluster_type": cluster_type,
+                    "environment":  (c.get("environment") or "unknown").strip(),
+                    "allowed_namespaces": allowed_namespaces,
+                    "owner":        (c.get("owner") or "").strip(),
+                    "enabled":      bool(c.get("enabled", True)),
                     "mcp_primary":  "gke_remote_mcp" if cluster_type == "gke" else "k8s_mcp",
                     "mcp_fallback": "k8s_mcp"        if cluster_type == "gke" else "gke_remote_mcp",
                     "mcp_url":      c.get("mcp_url", os.environ.get("K8S_MCP_URL", "")),
@@ -596,3 +629,146 @@ def resolve_cluster(cluster_name: str) -> Dict[str, Any]:
         "To add a cluster: update clusters.json in GCS and re-upload — "
         "gsutil cp iac/clusters.json gs://$CLUSTER_CONFIG_BUCKET/clusters.json"
     )
+
+
+def _alias_index(registry: Dict[str, Any]) -> Dict[str, str]:
+    """Map lowercased approved alias -> canonical cluster id, enabled clusters only."""
+    index: Dict[str, str] = {}
+    for canonical_id, info in registry.items():
+        if not info.get("enabled", True):
+            continue
+        for alias in info.get("aliases", []):
+            index[alias.lower()] = canonical_id
+    return index
+
+
+def resolve_cluster_routing(
+    cluster_hint: str = "",
+    cluster_guess: str = "",
+    namespace_hint: str = "",
+    project_hint: str = "",
+    environment_hint: str = "",
+) -> Dict[str, Any]:
+    """
+    Deterministic cluster routing. NEVER guesses — every branch either resolves to a
+    specific, registry-known, enabled cluster with a stated reason, or returns
+    resolved=False so the caller safe-stops instead of picking one.
+
+    Priority order:
+      1. exact_id                — cluster_hint (verified: from the caller/alert system,
+                                    not free-text LLM extraction) matches a canonical
+                                    cluster id exactly.
+      2. verified_alert_metadata — cluster_hint matches a canonical id case-insensitively.
+      3. approved_alias          — cluster_hint (or, only when no hint was supplied at all,
+                                    the unverified LLM-extracted cluster_guess) matches a
+                                    registered alias.
+      4. project_env_namespace   — project/environment/namespace hints uniquely identify
+                                    exactly one enabled cluster. Ambiguous (>1 match) is
+                                    treated the same as no match — never guessed.
+      5. unresolved              — none of the above. Caller must safe-stop.
+
+    A candidate that matches by id/alias but belongs to a disabled cluster is treated as
+    unresolved, not silently routed.
+    """
+    registry = _get_cluster_registry()
+
+    if not registry:
+        return {
+            "resolved": False,
+            "cluster_name": "",
+            "method": "unresolved",
+            "reason": "Cluster registry is empty or unavailable — cannot route to any cluster.",
+        }
+
+    def _enabled(canonical_id: str) -> bool:
+        return registry.get(canonical_id, {}).get("enabled", True)
+
+    # Tier 1 — exact id, case-sensitive, verified hint only.
+    if cluster_hint and cluster_hint in registry:
+        if _enabled(cluster_hint):
+            return {
+                "resolved": True, "cluster_name": cluster_hint, "method": "exact_id",
+                "reason": f"'{cluster_hint}' matched a registered cluster id exactly.",
+            }
+        return {
+            "resolved": False, "cluster_name": "", "method": "unresolved",
+            "reason": f"Cluster '{cluster_hint}' is registered but disabled.",
+        }
+
+    # Tier 2 — verified alert metadata: same hint, case-insensitive id match.
+    if cluster_hint:
+        for canonical_id in registry:
+            if canonical_id.lower() == cluster_hint.lower():
+                if _enabled(canonical_id):
+                    return {
+                        "resolved": True, "cluster_name": canonical_id,
+                        "method": "verified_alert_metadata",
+                        "reason": (
+                            f"'{cluster_hint}' matched cluster id '{canonical_id}' "
+                            "case-insensitively."
+                        ),
+                    }
+                return {
+                    "resolved": False, "cluster_name": "", "method": "unresolved",
+                    "reason": f"Cluster '{canonical_id}' is registered but disabled.",
+                }
+
+    # Tier 3 — approved alias. Prefer the verified hint; only fall back to the
+    # unverified LLM guess when no hint was supplied at all.
+    alias_index = _alias_index(registry)
+    alias_candidate = cluster_hint or cluster_guess
+    alias_verified = bool(cluster_hint)
+    if alias_candidate:
+        canonical_id = alias_index.get(alias_candidate.lower())
+        if canonical_id:
+            return {
+                "resolved": True, "cluster_name": canonical_id, "method": "approved_alias",
+                "reason": (
+                    f"'{alias_candidate}' matched approved alias for cluster '{canonical_id}' "
+                    f"({'verified hint' if alias_verified else 'unverified LLM guess'})."
+                ),
+            }
+
+    # Tier 4 — project / environment / namespace uniqueness.
+    if namespace_hint or project_hint or environment_hint:
+        candidates = []
+        for canonical_id, info in registry.items():
+            if not info.get("enabled", True):
+                continue
+            if project_hint and info.get("project") != project_hint:
+                continue
+            if environment_hint and info.get("environment") != environment_hint:
+                continue
+            if namespace_hint:
+                allowed = info.get("allowed_namespaces") or []
+                if not allowed or namespace_hint not in allowed:
+                    continue
+            candidates.append(canonical_id)
+        if len(candidates) == 1:
+            return {
+                "resolved": True, "cluster_name": candidates[0], "method": "project_env_namespace",
+                "reason": (
+                    f"Uniquely resolved via project='{project_hint}' "
+                    f"environment='{environment_hint}' namespace='{namespace_hint}'."
+                ),
+            }
+        if len(candidates) > 1:
+            return {
+                "resolved": False, "cluster_name": "", "method": "unresolved",
+                "reason": (
+                    f"Ambiguous: {len(candidates)} clusters match project/environment/namespace "
+                    f"hints ({candidates}) — refusing to guess."
+                ),
+            }
+
+    # Tier 5 — human safe-stop.
+    return {
+        "resolved": False,
+        "cluster_name": "",
+        "method": "unresolved",
+        "reason": (
+            "No cluster was explicitly provided and none could be deterministically resolved "
+            "via exact id, alias, or project/environment/namespace — stopping instead of "
+            "guessing."
+        ),
+    }

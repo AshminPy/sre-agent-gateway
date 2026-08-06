@@ -23,6 +23,14 @@ def _after_input(state: AgentState) -> str:
     return "failed" if state["investigation"].get("status") == "failed" else "ok"
 
 
+def _after_context(state: AgentState) -> str:
+    """Route straight to rca_builder if context_resolver safe-stopped (e.g. cluster could
+    not be deterministically resolved) — mirrors _after_input. Without this, a "failed"
+    status set by context_resolver would be silently overwritten by loop_controller on the
+    next iteration and the graph would proceed to call tools anyway."""
+    return "failed" if state["investigation"].get("status") == "failed" else "ok"
+
+
 def _after_tool(state: AgentState) -> str:
     """Route after tool_executor — skip evidence if no result."""
     action = state.get("current_action", {})
@@ -59,7 +67,11 @@ def compile_graph():
         {"ok": "context_resolver", "failed": "rca_builder"},
     )
 
-    g.add_edge("context_resolver", "task_planner")
+    g.add_conditional_edges(
+        "context_resolver",
+        _after_context,
+        {"ok": "task_planner", "failed": "rca_builder"},
+    )
     g.add_edge("task_planner",     "mcp_router")
     g.add_edge("mcp_router",       "tool_executor")
 

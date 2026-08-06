@@ -34,6 +34,16 @@ class AgentState(TypedDict):
     # includes: namespace, pod, cluster_name, cluster_region,
     #           mcp_endpoint, mcp_source, mcp_fallback,
     #           incident_type, project_id
+    # set by input_normalizer (pre-resolution, never a default/guess):
+    #           cluster_hint (verified — from caller/alert resource_hints),
+    #           cluster_guess (unverified — LLM free-text extraction),
+    #           project_hint, environment_hint
+    # set by context_resolver (deterministic routing — see
+    #   agent/mcp_client.py:resolve_cluster_routing() and PRODUCTION-LAUNCH-PLAN.md
+    #   Priority 5 — never defaults/guesses a cluster; unresolved -> safe-stop):
+    #           cluster_explicitly_provided, cluster_routing_method
+    #           ("exact_id" | "verified_alert_metadata" | "approved_alias" |
+    #           "project_env_namespace" | "unresolved"), cluster_routing_reason
 
     # ── Investigation control ─────────────────────────────────────
     investigation:      Annotated[Dict[str, Any], operator.or_]
@@ -43,7 +53,10 @@ class AgentState(TypedDict):
     #           root_cause_confidence, not by task_evaluator),
     #           completeness (new — investigation_completeness dict, set every
     #           task_evaluator call, see agent/confidence/scorer.py),
-    #           loop_exit_reason, evidence_gaps, task_plan,
+    #           loop_exit_reason (includes "cluster_unresolved" — set by context_resolver
+    #           on a routing safe-stop; graph.py routes status=="failed" straight to
+    #           rca_builder, skipping task_planner/mcp_router/tool_executor entirely),
+    #           evidence_gaps, task_plan,
     #           primary_gap, tokens_input, tokens_output,
     #           tokens_total, estimated_cost_usd
 

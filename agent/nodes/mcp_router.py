@@ -63,6 +63,33 @@ def _is_duplicate(tool: str, args: dict, tool_history: list) -> bool:
     return False
 
 
+def _log_routing_failure(run_id: str, cluster_name: str, reason: str) -> None:
+    """Structured Cloud Logging event for an mcp_router-level routing safe-stop — the
+    cluster was already resolved by context_resolver but has no usable/enabled registry
+    entry by the time mcp_router runs (registry went stale, or the cluster was disabled
+    mid-run). Distinct from context_resolver's "unresolved" cluster safe-stop (that one
+    means no cluster could be identified at all; this one means an identified cluster
+    could not be routed to an MCP). Same dedicated-logName pattern as
+    tool_executor.py's sre-agent-tool-failures — see PRODUCTION-LAUNCH-PLAN.md
+    Priority 10 ("routing failures" alert).
+    """
+    try:
+        from google.cloud import logging as cloud_logging
+
+        cloud_logging.Client().logger("sre-agent-routing-failures").log_struct(
+            {
+                "event":   "mcp_routing_failure",
+                "run_id":  run_id,
+                "cluster": cluster_name,
+                "reason":  reason,
+            },
+            severity="ERROR",
+        )
+    except Exception:
+        # Never let observability logging break the investigation.
+        pass
+
+
 @trace_node("langgraph.mcp_router")
 def mcp_router(state: AgentState) -> dict:
     step = state["investigation"]["current_step"]
@@ -81,7 +108,26 @@ def mcp_router(state: AgentState) -> dict:
     # ── Phase 1: deterministic MCP source selection (no LLM tokens) ─
     # GKE clusters → gke_remote_mcp first. On-prem → k8s_mcp first.
     cluster_name = ctx.get("cluster_name", "")
-    cluster_info = _get_cluster_registry().get(cluster_name, {})
+    cluster_info = _get_cluster_registry().get(cluster_name, {}) if cluster_name else {}
+
+    # Never guess an MCP destination. An empty cluster_name (context_resolver safe-stopped
+    # and should have already short-circuited the graph to rca_builder — this is a defense-
+    # in-depth check, not the primary gate) or a cluster_name missing from the registry
+    # (registry empty/stale, or the cluster was deleted/disabled since context_resolver ran)
+    # means we do not know which MCP to route to. Stop — do not default to gke_remote_mcp.
+    # See PRODUCTION-LAUNCH-PLAN.md Priority 5.
+    if not cluster_info or not cluster_info.get("enabled", True):
+        reason = (
+            f"No registry entry for cluster '{cluster_name}'" if not cluster_info
+            else f"Cluster '{cluster_name}' is registered but disabled"
+        )
+        log.error("mcp_router SAFE-STOP: %s — refusing to guess an MCP destination", reason)
+        _log_routing_failure(state["run_id"], cluster_name, reason)
+        return {
+            "current_action": {"tool": "done", "arguments": {}, "mcp_source": "none"},
+            "errors": [f"mcp_router: {reason} — cannot route safely, investigation stopped."],
+        }
+
     cluster_type = cluster_info.get("cluster_type", "gke")
     selected_mcp = "gke_remote_mcp" if cluster_type == "gke" else "k8s_mcp"
     if selected_mcp not in MCP_REGISTRY:

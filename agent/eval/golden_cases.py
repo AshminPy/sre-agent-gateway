@@ -118,6 +118,124 @@ GOLDEN_CASES = [
         "expected_confidence_min": 0.50,
     },
     {
+        "id": "pending-001",
+        "payload": {
+            "user_query": "Pod batch-worker-7 in test-incidents has been Pending for 12 minutes and never scheduled. Investigate why it will not start.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {
+                "namespace": "test-incidents",
+                "pod": "batch-worker-7",
+                "cluster": "sre-test-cluster",
+            },
+        },
+        "expected_trajectory": ["list_pods", "get_events"],
+        "expected_keywords": ["Pending", "FailedScheduling", "Insufficient"],
+        "expected_confidence_min": 0.50,
+    },
+    {
+        # Non-GKE cluster — must route to the custom K8s MCP (k8s_mcp), never gke_remote_mcp.
+        # Requires clusters.json in the live cluster registry to declare this cluster with
+        # "type": "custom" — see agent/mcp_client.py:_build_cluster_registry(). Deterministic
+        # routing behavior for this case (correct MCP source selected for a non-GKE cluster) is
+        # additionally covered without live infra by
+        # tests/test_eval_scenario_matrix.py::test_non_gke_cluster_routes_to_custom_mcp.
+        "id": "onprem-001",
+        "payload": {
+            "user_query": "Pod legacy-billing-0 in billing-ns on our on-prem cluster is CrashLoopBackOff. Investigate.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {
+                "namespace": "billing-ns",
+                "pod": "legacy-billing-0",
+                "cluster": "onprem-dc1-cluster",
+            },
+        },
+        "expected_trajectory": ["list_pods", "get_current_logs", "list_events"],
+        "expected_keywords": ["CrashLoopBackOff", "exit"],
+        "expected_confidence_min": 0.50,
+    },
+    {
+        # Deliberately thin evidence available (pod already deleted / logs rotated out) — the
+        # agent must land on insufficient_evidence / a low confidence score, not invent a root
+        # cause. Full grounding/claim-exclusion behavior is validated without live infra by
+        # tests/test_eval_scenario_matrix.py::test_insufficient_evidence_does_not_invent_a_cause.
+        "id": "insufficient-evidence-001",
+        "payload": {
+            "user_query": "Pod ghost-pod-42 in test-incidents was reported crashing but no longer exists. Investigate what happened.",
+            "incident": {"severity": "P3"},
+            "resource_hints": {
+                "namespace": "test-incidents",
+                "pod": "ghost-pod-42",
+                "cluster": "sre-test-cluster",
+            },
+        },
+        "expected_trajectory": ["list_pods"],
+        "expected_keywords": ["unknown", "insufficient"],
+        "expected_confidence_min": 0.0,
+        "expected_outcome": ["insufficient_evidence", "unknown"],
+        "max_confidence": 0.5,
+    },
+    {
+        # Evidence collected references a different cluster than the one the investigation is
+        # scoped to (stale cache / cross-cluster name collision) — must surface as
+        # conflicting_evidence, not be silently averaged away. Validated without live infra by
+        # tests/test_eval_scenario_matrix.py::test_conflicting_evidence_forces_conflicting_outcome.
+        "id": "conflicting-evidence-001",
+        "payload": {
+            "user_query": "Pod shared-cache-2 in test-incidents is unstable. Investigate — evidence sources disagree on cluster origin.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {
+                "namespace": "test-incidents",
+                "pod": "shared-cache-2",
+                "cluster": "sre-test-cluster",
+            },
+        },
+        "expected_trajectory": ["list_pods", "get_events"],
+        "expected_keywords": ["conflicting", "cluster"],
+        "expected_confidence_min": 0.0,
+        "expected_outcome": ["conflicting_evidence"],
+        "max_confidence": 0.65,
+    },
+    {
+        # No cluster_hint and no unique project/environment/namespace match — must trigger
+        # Task 1's human safe-stop (resolve_cluster_routing tier 5), never guess a cluster.
+        # Validated without live infra by tests/test_eval_scenario_matrix.py::
+        # test_ambiguous_routing_triggers_safe_stop_and_insufficient_evidence.
+        "id": "ambiguous-routing-001",
+        "payload": {
+            "user_query": "Something is wrong with the checkout pod. Investigate.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {
+                "namespace": "checkout",
+            },
+        },
+        "expected_trajectory": [],
+        "expected_keywords": ["unknown", "cluster"],
+        "expected_confidence_min": 0.0,
+        "expected_outcome": ["insufficient_evidence"],
+        "max_confidence": 0.0,
+    },
+    {
+        # GKE Remote MCP (or Connect Gateway) call fails outright — must surface as a tool
+        # failure, never a silent empty success, and must degrade completeness/confidence
+        # rather than being ignored. Validated without live infra by tests/
+        # test_eval_scenario_matrix.py::test_gke_remote_mcp_network_failure_surfaces_as_tool_failure.
+        "id": "mcp-gateway-failure-001",
+        "payload": {
+            "user_query": "Pod edge-gateway-1 in test-incidents is failing. Investigate — GKE Remote MCP / Connect Gateway is degraded.",
+            "incident": {"severity": "P1"},
+            "resource_hints": {
+                "namespace": "test-incidents",
+                "pod": "edge-gateway-1",
+                "cluster": "sre-test-cluster",
+            },
+        },
+        "expected_trajectory": ["list_pods"],
+        "expected_keywords": ["unknown", "failed"],
+        "expected_confidence_min": 0.0,
+        "expected_outcome": ["insufficient_evidence", "unknown"],
+        "max_confidence": 0.5,
+    },
+    {
         "id": "secret-001",
         "payload": {
             "user_query": "user-service in demo-incidents has been ContainerCreating for 10 minutes. All user authentication is broken. Investigate the startup failure.",

@@ -71,12 +71,26 @@ def keyword_accuracy(root_cause: str, keywords: list[str]) -> float:
 
 
 def score_case(result: dict[str, Any], case: dict[str, Any]) -> dict[str, Any]:
-    """Score one agent result against a golden case."""
+    """Score one agent result against a golden case.
+
+    Two OPTIONAL case keys extend this beyond simple trajectory/keyword matching, for
+    scenarios where the correct behavior is "recognize the limit and say so" rather than
+    "name the right root cause" (see PRODUCTION-LAUNCH-PLAN.md Priority 8):
+
+      expected_outcome:  list[str] — result['outcome'] (from the confidence framework, see
+                          agent/confidence/models.py InvestigationOutcome) must be one of
+                          these. Absent -> not checked (default behavior unchanged).
+      max_confidence:    float — result['confidence_score'] must be <= this. Used for
+                          insufficient/conflicting/ambiguous cases where a HIGH confidence
+                          score would itself be the failure (the agent inventing certainty
+                          it doesn't have). Absent -> not checked.
+    """
     summary = result.get("final_summary", result)
     predicted_tools = summary.get("tools_called", [])
     root_cause = summary.get("likely_root_cause", "")
     confidence = summary.get("confidence_score", 0.0)
     band = summary.get("confidence_band", "escalate")
+    outcome = summary.get("outcome", "")
 
     expected_traj = case["expected_trajectory"]
     expected_kw   = case["expected_keywords"]
@@ -87,7 +101,15 @@ def score_case(result: dict[str, Any], case: dict[str, Any]) -> dict[str, Any]:
     kw_acc = keyword_accuracy(root_cause, expected_kw)
     conf_ok = confidence >= case.get("expected_confidence_min", 0.0)
 
-    passed = recall >= 0.5 and kw_acc >= 0.5 and conf_ok
+    expected_outcome = case.get("expected_outcome")
+    outcome_ok = outcome in expected_outcome if expected_outcome else True
+
+    max_confidence = case.get("max_confidence")
+    max_conf_ok = confidence <= max_confidence if max_confidence is not None else True
+
+    passed = (
+        recall >= 0.5 and kw_acc >= 0.5 and conf_ok and outcome_ok and max_conf_ok
+    )
 
     return {
         "case_id":              case["id"],
@@ -99,6 +121,9 @@ def score_case(result: dict[str, Any], case: dict[str, Any]) -> dict[str, Any]:
         "confidence":           confidence,
         "confidence_band":      band,
         "confidence_ok":        conf_ok,
+        "outcome":              outcome,
+        "outcome_ok":           outcome_ok,
+        "max_confidence_ok":    max_conf_ok,
         "predicted_tools":      predicted_tools,
         "expected_tools":       expected_traj,
         "root_cause":           root_cause[:200],
@@ -109,7 +134,7 @@ def score_case(result: dict[str, Any], case: dict[str, Any]) -> dict[str, Any]:
 
 def run_local(case: dict[str, Any]) -> dict[str, Any]:
     """Run agent locally using the LangGraph graph directly."""
-    from agent.graph import build_graph
+    from agent.graph import compile_graph
     from agent.state import get_initial_state
 
     payload = {
@@ -118,7 +143,7 @@ def run_local(case: dict[str, Any]) -> dict[str, Any]:
         "resource_hints": case["payload"].get("resource_hints", {}),
     }
 
-    graph = build_graph()
+    graph = compile_graph()
     initial_state = get_initial_state(payload)
 
     start = time.time()

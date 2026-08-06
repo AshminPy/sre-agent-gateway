@@ -14,6 +14,7 @@ Builds cited RCA with:
 import json
 import logging
 import os
+import time
 from datetime import datetime, timezone
 
 from agent.confidence import (
@@ -24,7 +25,7 @@ from agent.confidence import (
 from agent.confidence.claim_builder import build_claims, build_hypotheses, detect_contradictions
 from agent.confidence.scorer import confidence_band_from_scores
 from agent.gemini_client import get_session_usage, llm_json
-from agent.otel import log_node_tokens, trace_node
+from agent.otel import get_trace_id_hex, log_node_tokens, trace_node
 from agent.prompts import RCA_BUILDER_SYSTEM, RCA_BUILDER_USER
 from agent.state import AgentState
 
@@ -101,6 +102,34 @@ def _enriched_evidence_digest(state: AgentState) -> tuple:
     return "\n".join(lines), enriched
 
 
+def _derive_status(state: AgentState) -> str:
+    """Top-level pass/fail signal for this run.
+
+    PRODUCTION-LAUNCH-PLAN.md Priority 10: "a top-level status field (so the errors
+    metric may never fire from RCA-path failures)". iac/agent/monitoring.tf's
+    pre-existing `errors` log-based metric filters on jsonPayload.status=="error", but no
+    log entry has ever set that field — so it could never fire, regardless of how many
+    real failures occurred. "error" here means a real system/tooling failure was
+    recorded during the run (routing safe-stop, tool failure, evidence-storage failure,
+    abnormal loop exit — anything that appended to state["errors"]) — not a low-
+    confidence-but-clean RCA outcome, which outcome/confidence_band already cover.
+    """
+    return "error" if state.get("errors") else "success"
+
+
+def _evidence_storage_stats(state: AgentState) -> dict:
+    """Evidence-storage (GCS write) success/failure visibility — PRODUCTION-LAUNCH-PLAN.md
+    Priority 10. evidence_extractor.py sets ev_entry["gcs_write_failed"]=True per item
+    when write_evidence() exhausts its retries (see agent/gcs_client.py)."""
+    store  = state.get("evidence_store", {})
+    failed = [ev_id for ev_id, ev in store.items() if ev.get("gcs_write_failed")]
+    return {
+        "evidence_storage_failed_count": len(failed),
+        "evidence_storage_failed_ids":   failed,
+        "evidence_storage_ok":           len(failed) == 0,
+    }
+
+
 def _write_observability_log(state: AgentState, rca: dict, usage: dict) -> None:
     """
     Write full structured audit event to Cloud Logging.
@@ -119,11 +148,63 @@ def _write_observability_log(state: AgentState, rca: dict, usage: dict) -> None:
         tokens_total  = tokens_input + tokens_output
         cost_usd      = round(inv.get("estimated_cost_usd", 0.0) + usage.get("cost_usd", 0.0), 6)
 
+        # Session-level totals — cross-check: for single Agent Engine requests these
+        # should equal tokens_total above. A mismatch means an LLM call happened outside
+        # the normal node flow. Fetched here (not after log_struct) so model_latency_s
+        # can be included in the entry below.
+        session = get_session_usage()
+
+        # Latency — PRODUCTION-LAUNCH-PLAN.md Priority 10 ("MCP/model/total latency —
+        # per-tool duration_s is captured then discarded"). mcp_latency_s aggregates the
+        # per-tool durations tool_executor.py already records in tool_history;
+        # model_latency_s is the cumulative Gemini call time for this process (see
+        # gemini_client.get_session_usage — same single-request-per-process assumption as
+        # the token cross-check above); total_latency_s is measured wall-clock since
+        # get_initial_state() set investigation["started_at"].
+        mcp_latency_s = round(
+            sum(h.get("duration_s", 0) or 0 for h in state.get("tool_history", [])), 3
+        )
+        started_at = inv.get("started_at")
+        total_latency_s = round(time.time() - started_at, 3) if started_at else None
+
+        evidence_storage = _evidence_storage_stats(state)
+
         entry = {
             # Run identity
             "run_id":             state["run_id"],
             "incident_id":        state["incident_id"],
             "timestamp":          datetime.now(timezone.utc).isoformat(),
+            # Cloud Trace correlation — "" when the OTel tracer is disabled/unavailable
+            # (get_trace_id_hex() never raises). Join this log entry to its Cloud Trace
+            # spans (trace_node's langgraph.* spans) via this id.
+            "trace_id":           get_trace_id_hex(),
+
+            # Top-level pass/fail — see _derive_status(). Restores the pre-existing
+            # `errors` log-based metric (iac/agent/monitoring.tf), which filters on
+            # jsonPayload.status=="error" but no entry ever set this field before.
+            "status":             _derive_status(state),
+
+            # PagerDuty incident id — placeholder until PRODUCTION-LAUNCH-PLAN.md
+            # Priority 2 (PagerDuty incident integration) is built. Always None today;
+            # wire from resolved_context once P2 lands so RCA logs correlate 1:1 with the
+            # triggering PD incident.
+            "pagerduty_incident_id": ctx.get("pagerduty_incident_id"),
+
+            # Agent Gateway / Connect Gateway failure visibility — explicit placeholder
+            # fields, not silently omitted, so the schema already has a slot for these
+            # once the underlying capability is real:
+            #   - connect_gateway_status: always None. Priority 3 (GKE Fleet Connect
+            #     Gateway, on-prem connectivity) has NO code yet — mcp_client.py only
+            #     reaches GKE directly + the custom Cloud Run MCP. Nothing to report.
+            #   - agent_gateway_authz_mode: always None. iac/agent/agent_gateway.tf's IAP
+            #     authz extension runs in DRY_RUN (logs decisions, never blocks — see that
+            #     file's comment above google_network_services_authz_extension.iap), and
+            #     the gateway does not emit any app-observable signal into the agent
+            #     process today — the agent has no way to know at runtime whether a given
+            #     call transited the gateway or how it was authorized. Wire this once the
+            #     gateway is switched to enforce mode and/or its audit logs are joined in.
+            "connect_gateway_status":    None,
+            "agent_gateway_authz_mode":  None,
 
             # Incident context
             "incident_type":      ctx.get("incident_type", "Unknown"),
@@ -135,6 +216,8 @@ def _write_observability_log(state: AgentState, rca: dict, usage: dict) -> None:
             "cluster_region":     ctx.get("cluster_region", ""),
             "project_id":         ctx.get("project_id", ""),
             "mcp_source":         ctx.get("mcp_source", ""),
+            "cluster_routing_method": ctx.get("cluster_routing_method", ""),
+            "cluster_routing_reason": ctx.get("cluster_routing_reason", ""),
 
             # Investigation metrics
             "iterations":         inv.get("current_step", 0),
@@ -182,6 +265,16 @@ def _write_observability_log(state: AgentState, rca: dict, usage: dict) -> None:
             "tokens_total":       tokens_total,
             "estimated_cost_usd": cost_usd,
 
+            # Latency — see comment above where these are computed.
+            "mcp_latency_s":      mcp_latency_s,
+            "model_latency_s":    session["session_model_latency_s"],
+            "total_latency_s":    total_latency_s,
+
+            # Evidence-storage (GCS) success/failure — see _evidence_storage_stats().
+            "evidence_storage_ok":           evidence_storage["evidence_storage_ok"],
+            "evidence_storage_failed_count": evidence_storage["evidence_storage_failed_count"],
+            "evidence_storage_failed_ids":   evidence_storage["evidence_storage_failed_ids"],
+
             # Model info
             "model_name":         GEMINI_MODEL,
             "prompt_version":     "v2.0",
@@ -192,15 +285,14 @@ def _write_observability_log(state: AgentState, rca: dict, usage: dict) -> None:
             "sre_feedback":       None,
             "sre_notes":          None,
             "gcs_enriched":       rca.get("gcs_enriched", False),
-        }
 
-        # Session-level totals — cross-check: for single Agent Engine requests
-        # these should equal tokens_total above. A mismatch means an LLM call
-        # happened outside the normal node flow.
-        session = get_session_usage()
-        entry["session_tokens_total"] = session["session_tokens_total"]
-        entry["session_cost_usd"]     = session["session_cost_usd"]
-        entry["session_calls"]        = session["session_calls"]
+            # Session-level totals — cross-check: for single Agent Engine requests
+            # these should equal tokens_total/model_latency_s above. A mismatch means an
+            # LLM call happened outside the normal node flow.
+            "session_tokens_total": session["session_tokens_total"],
+            "session_cost_usd":     session["session_cost_usd"],
+            "session_calls":        session["session_calls"],
+        }
 
         logger_c.log_struct(entry, severity="INFO")
         log.info(
@@ -230,7 +322,21 @@ def rca_builder(state: AgentState) -> dict:
     # which didn't exist yet at this point in the old design — now gated on the deterministic
     # investigation_completeness computed by task_evaluator every loop iteration (state has it
     # already; no LLM call needed to decide this).
-    completeness = inv.get("completeness", {}) or {}
+    #
+    # task_evaluator never runs (so investigation.completeness is never set) when
+    # input_normalizer or context_resolver safe-stops and graph.py routes straight here — e.g.
+    # Task 1's ambiguous/unresolved cluster routing safe-stop. A bare {} has no "score" key,
+    # which used to raise KeyError inside confidence.scorer.derive_outcome("completeness["score"]")
+    # instead of yielding an insufficient_evidence outcome. Synthesize a proper zero-completeness
+    # dict — same shape score_investigation_completeness() would produce — so downstream scoring
+    # always has a real "score" key to read, regardless of which safe-stop path got here.
+    completeness = inv.get("completeness") or {
+        "score": 0.0,
+        "band": "incomplete",
+        "gaps": ["Investigation stopped before task_evaluator ran (safe-stop)"],
+        "evidence_domains_present": [],
+        "missing_required_domains": [],
+    }
     thin_evidence = completeness.get("score", 0.0) < POLICY.band_thresholds["review"]
 
     if thin_evidence and not no_evidence:
@@ -357,6 +463,12 @@ def rca_builder(state: AgentState) -> dict:
         "primary_mcp_source":  ctx.get("mcp_source", ""),
         "actual_mcp_sources":  actual_sources,
         "namespace":          ctx.get("namespace", ""),
+        # Deterministic cluster-routing decision from context_resolver.py — see
+        # agent/mcp_client.py:resolve_cluster_routing() for the priority chain and
+        # PRODUCTION-LAUNCH-PLAN.md Priority 5. Present even on a safe-stop (method
+        # "unresolved") so reviewers can see exactly why routing refused to guess.
+        "cluster_routing_method": ctx.get("cluster_routing_method", ""),
+        "cluster_routing_reason": ctx.get("cluster_routing_reason", ""),
     }
 
     # Add real token tracking to RCA output
