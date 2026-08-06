@@ -11,21 +11,22 @@ _Created 2026-07-28. Status is evidence-based: marked ✅/🟡 only where backed
 
 Legend: ✅ done · 🟡 partial · ⬜ not started
 
-## Status at a glance
+## Status at a glance (updated 2026-08-05 — see "Revised execution order" below for the real sequencing)
 | # | Priority | Status |
 |---|---|---|
+| — | **Model Armor resolution (MVP blocker, new 2026-08-04)** | 🟥 **blocked — root cause not found, support case drafted, not yet filed with Google** |
 | 1 | Document & protect working baseline | 🟡 partial |
 | 2 | PagerDuty incident integration | ⬜ not started |
 | 3 | On-prem connectivity (Connect Gateway) | ⬜ not started |
 | 4 | Custom read-only Kubernetes MCP server | 🟡 partial |
 | 5 | Deterministic cluster & MCP routing | 🟡 partial |
 | 6 | End-to-end routing tests | ⬜ not started |
-| 7 | Confidence score redesign | 🟡 exists but has the exact flaws to fix |
+| 7 | Confidence score redesign | 🟡 **built + live-verified in personal repo/GCP 2026-08-04 — NOT complete: not yet ported to `sre-agent-app-infra-main`, not merged/tested in company environment. "Done" = merged + tested on work laptop, per 2026-08-05 clarification.** |
 | 8 | Minimum RCA accuracy validation | 🟡 partial (eval harness exists) |
 | 9 | Production security validation | 🟡 partial (strong baseline) |
 | 10 | Logging/metrics/alert validation | 🟡 partial (monitoring.tf exists, under-covers) |
 | 11 | Cost validation & optimization | 🟡 partial |
-| 12 | Controlled production launch | ⬜ gated on 1–11 |
+| 12 | Controlled production launch | ⬜ gated on all of the above |
 
 ---
 
