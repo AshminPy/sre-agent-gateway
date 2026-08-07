@@ -1,5 +1,7 @@
 from kubernetes import client
 
+from security import REQUEST_TIMEOUT
+
 
 def get_pod_logs(
     v1: client.CoreV1Api,
@@ -16,6 +18,7 @@ def get_pod_logs(
             container=container,
             tail_lines=tail_lines,
             timestamps=True,
+            _request_timeout=REQUEST_TIMEOUT,
         )
         return {
             "pod": pod_name,
@@ -49,6 +52,7 @@ def get_previous_pod_logs(
             previous=True,          # ← this is the key flag
             tail_lines=tail_lines,
             timestamps=True,
+            _request_timeout=REQUEST_TIMEOUT,
         )
         return {
             "pod": pod_name,
