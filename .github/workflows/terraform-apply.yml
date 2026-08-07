@@ -152,8 +152,46 @@ jobs:
             --mtls-endpoints=include
         working-directory: .
 
-      - name: Attach gateway to engine
-        run: bash scripts/attach_gateway_to_engine.sh
+      # Self-heals a known, recurring, undocumented flake (see
+      # TROUBLESHOOTING_LOG.md / deploy-state — third occurrence as of
+      # 2026-08-07, no official Google doc or public trace found despite
+      # research): the engine's backend occasionally accumulates bad state
+      # and every attach attempt against it fails with
+      # `code: 3, "The Reasoning Engine failed to be updated"`, regardless of
+      # how correct the PATCH itself is. The only known working fix is to
+      # recreate the engine (terraform apply -replace=) and re-attach — this
+      # automates exactly that, ONCE, instead of requiring a human to notice
+      # the CI failure and do it manually. Capped at one retry on purpose: a
+      # different failure (bad credentials, a real code bug, gateway
+      # misconfiguration) should still fail the job loudly, not loop.
+      - name: Attach gateway to engine (self-heals one known recurring flake)
+        run: |
+          set +e
+          bash scripts/attach_gateway_to_engine.sh 2>&1 | tee /tmp/attach_attempt1.log
+          STATUS=${PIPESTATUS[0]}
+          set -e
+          if [ "$STATUS" -eq 0 ]; then
+            exit 0
+          fi
+          if ! grep -q "The Reasoning Engine failed to be updated" /tmp/attach_attempt1.log; then
+            echo "Attach failed with a DIFFERENT error than the known recurring flake — not auto-retrying, see log above." >&2
+            exit "$STATUS"
+          fi
+          echo "::warning::Attach hit the known recurring 'Reasoning Engine failed to be updated' flake — recreating the engine and retrying once."
+          cd iac/agent
+          terraform apply -auto-approve -replace="google_vertex_ai_reasoning_engine.sre_agent" \
+            -var="project_a_id=${{ secrets.GCP_PROJECT_A_ID }}" \
+            -var="project_b_id=${{ secrets.GCP_PROJECT_B_ID }}" \
+            -var="region=${{ secrets.GCP_REGION }}" \
+            -var="notification_email=${{ secrets.NOTIFICATION_EMAIL }}" \
+            -var="github_repo=${{ github.repository }}" \
+            -var="tfstate_bucket=${{ secrets.TFSTATE_BUCKET }}" \
+            -var="create_wif=false" \
+            -var="gemini_model=gemini-2.5-pro" \
+            -var="enable_custom_mcp=${{ vars.ENABLE_CUSTOM_MCP || 'false' }}" \
+            -var="custom_mcp_image=${{ steps.mcp_image.outputs.image || 'us-docker.pkg.dev/cloudrun/container/placeholder' }}"
+          cd ../..
+          bash scripts/attach_gateway_to_engine.sh
         working-directory: .
 
       # Real end-to-end proof, not just "the PATCH call succeeded": invokes
@@ -164,8 +202,16 @@ jobs:
       # still broken (this is exactly how the original mTLS failure hid —
       # see TROUBLESHOOTING_LOG.md) — this step is what would have caught it
       # in CI instead of requiring manual investigation.
+      #
+      # google-cloud-aiplatform pin fixed 2026-08-07: >=1.160.0 does not
+      # exist on PyPI (confirmed live — `pip install` fails outright with
+      # "No matching distribution found", latest real release is 1.148.1).
+      # On a fresh CI runner (no pre-installed package) this would have
+      # failed before smoke_test.sh even ran; only worked in local testing
+      # because a compatible version happened to already be installed from
+      # earlier work in that environment.
       - name: Smoke test — verify the agent responds through the gateway
         run: |
-          pip install --quiet "google-cloud-aiplatform[agent_engines]>=1.160.0"
+          pip install --quiet "google-cloud-aiplatform[agent_engines]>=1.148.1"
           bash scripts/smoke_test.sh
         working-directory: .
