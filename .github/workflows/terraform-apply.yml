@@ -139,17 +139,42 @@ jobs:
             exit 1
           fi
 
-      # Post-apply: register Agent Registry endpoints, then bind the gateway
-      # (both no-ops when the gateway is disabled). Order matters for a
-      # clean first-time apply: attach_gateway_to_engine.sh's own pre-flight
-      # checks report registration status, so registering first avoids a
-      # false warning on the very first CI run.
+      # Post-apply: register Agent Registry endpoints (Google APIs, always; the
+      # custom Cloud Run MCP, only when enabled — no-op otherwise), then bind the
+      # gateway. Order matters for a clean first-time apply: attach_gateway_to_
+      # engine.sh's own pre-flight checks report registration status, so
+      # registering first avoids a false warning on the very first CI run.
+      #
+      # register_custom_mcp.py was added 2026-08-07 after real live end-to-end
+      # testing caught this the hard way: without it, every custom-MCP call gets
+      # HTTP 403 "endpoint... unregistered in the Agent Registry" — the plain
+      # endpoint registration below only covers Google APIs, never the custom
+      # Cloud Run MCP. It uses --mcp-server-spec-type=tool-spec (verified against
+      # Google's own codelab for external MCP servers:
+      # https://codelabs.developers.google.com/agw-cuj-arun-egress-emcp), not
+      # --endpoint-spec-type=no-spec (which the Google-API registration below
+      # uses — a deliberately different registration type, not an inconsistency).
+      # Kept as one CI step (not two) since both are "register Agent Registry" —
+      # one action, same as this repo already had for the Google-API side.
       - name: Register Agent Registry endpoints
         run: |
           python3 scripts/register_endpoints.py \
             --project="${{ secrets.GCP_PROJECT_A_ID }}" \
             --region="${{ secrets.GCP_REGION }}" \
             --mtls-endpoints=include
+
+          if [ "${{ vars.ENABLE_CUSTOM_MCP || 'false' }}" = "true" ]; then
+            pip install --quiet -r mcp/requirements.txt
+            MCP_URL=$(gcloud run services describe sre-k8s-mcp \
+              --project="${{ secrets.GCP_PROJECT_A_ID }}" \
+              --region="${{ secrets.GCP_REGION }}" \
+              --format="value(status.url)")
+            python3 scripts/register_custom_mcp.py \
+              --project="${{ secrets.GCP_PROJECT_A_ID }}" \
+              --region="${{ secrets.GCP_REGION }}" \
+              --url="$MCP_URL" \
+              --enabled=true
+          fi
         working-directory: .
 
       # Self-heals a known, recurring, undocumented flake (see

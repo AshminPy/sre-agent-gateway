@@ -63,8 +63,10 @@ def tool_executor(state: AgentState) -> dict:
             tool_name, result.get("blocked", False), result.get("error"),
         )
         try:
+            import os
+
             from google.cloud import logging as cloud_logging
-            cloud_logging.Client().logger("sre-agent-tool-failures").log_struct(
+            cloud_logging.Client(project=os.environ.get("PROJECT_ID")).logger("sre-agent-tool-failures").log_struct(
                 {
                     "event":      "tool_failure",
                     "run_id":     state["run_id"],

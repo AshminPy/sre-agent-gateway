@@ -54,6 +54,13 @@ SCENARIOS = {
         "severity":  "medium",
         "query": "Pod imagepull-pod in test-incidents cannot pull its image. Investigate.",
     },
+    "onprem": {
+        "namespace": "test-incidents",
+        "cluster":   "sre-lab",
+        "pod":       "imagepull-pod",
+        "severity":  "medium",
+        "query": "Pod imagepull-pod in test-incidents on cluster sre-lab cannot pull its image. Investigate.",
+    },
 
     # ── Complex (namespace: test-incidents) ──────────────────────────────
     "rollout": {

@@ -137,7 +137,7 @@ def _write_observability_log(state: AgentState, rca: dict, usage: dict) -> None:
     """
     try:
         from google.cloud import logging as cloud_logging
-        client   = cloud_logging.Client()
+        client   = cloud_logging.Client(project=os.environ.get("PROJECT_ID"))
         logger_c = client.logger("sre-agent-investigations")
 
         inv = state["investigation"]
