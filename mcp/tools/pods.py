@@ -1,9 +1,11 @@
 from kubernetes import client
 
+from security import REQUEST_TIMEOUT
+
 
 def get_pods(v1: client.CoreV1Api, namespace: str) -> dict:
     """List all pods in namespace with status summary."""
-    pods = v1.list_namespaced_pod(namespace=namespace)
+    pods = v1.list_namespaced_pod(namespace=namespace, _request_timeout=REQUEST_TIMEOUT)
     result = []
     for pod in pods.items:
         container_statuses = []
@@ -40,7 +42,7 @@ def get_pods(v1: client.CoreV1Api, namespace: str) -> dict:
 
 def describe_pod(v1: client.CoreV1Api, namespace: str, pod_name: str) -> dict:
     """Full pod description including resource limits and termination reason."""
-    pod = v1.read_namespaced_pod(name=pod_name, namespace=namespace)
+    pod = v1.read_namespaced_pod(name=pod_name, namespace=namespace, _request_timeout=REQUEST_TIMEOUT)
     containers = []
     for c in pod.spec.containers:
         resources = {}

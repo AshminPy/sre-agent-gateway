@@ -12,7 +12,7 @@ import functools
 import json
 import logging
 import os
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 log = logging.getLogger("sre-agent.otel")
 
@@ -83,6 +83,24 @@ def get_tracer():
             log.warning("OpenTelemetry disabled or failed to initialize: %s", exc)
             _otel_error_logged = True
         return None
+
+
+def get_trace_id_hex() -> str:
+    """Return the current OTel span's trace_id as a 32-char lowercase hex string, or ""
+    if there is no active span (tracer disabled/unavailable) or the span context is
+    invalid. Used to correlate the per-run structured RCA log (Cloud Logging) with the
+    Cloud Trace spans emitted by trace_node — see PRODUCTION-LAUNCH-PLAN.md Priority 10
+    ("trace_id correlation").
+    """
+    try:
+        from opentelemetry import trace as _ot
+
+        span_context = _ot.get_current_span().get_span_context()
+        if not span_context or not span_context.is_valid:
+            return ""
+        return format(span_context.trace_id, "032x")
+    except Exception:
+        return ""
 
 
 def flush_traces(timeout_millis: int = 5000) -> None:

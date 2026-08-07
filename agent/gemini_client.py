@@ -44,6 +44,7 @@ _client = None
 _session_tokens_input  = 0
 _session_tokens_output = 0
 _session_calls         = 0
+_session_duration_s    = 0.0  # cumulative Gemini call wall-clock time — model latency
 
 
 def _get_client():
@@ -137,9 +138,9 @@ def _emit_gen_ai_span(
 def llm(system: str, user: str, *, max_tokens: int = 1024) -> tuple[str, dict]:
     """
     Call Gemini and return (text, usage_metadata).
-    usage_metadata: { tokens_input, tokens_output, tokens_total, cost_usd, model }
+    usage_metadata: { tokens_input, tokens_output, tokens_total, cost_usd, model, duration_s }
     """
-    global _session_tokens_input, _session_tokens_output, _session_calls
+    global _session_tokens_input, _session_tokens_output, _session_calls, _session_duration_s
 
     client = _get_client()
     prompt = f"{system}\n\n{user}"
@@ -169,11 +170,13 @@ def llm(system: str, user: str, *, max_tokens: int = 1024) -> tuple[str, dict]:
 
             tokens_total = tokens_input + tokens_output
             cost_usd     = _calculate_cost(tokens_input, tokens_output)
+            duration_s   = round((_span_end_ns - _span_start_ns) / 1e9, 3)
 
             # Update session totals
             _session_tokens_input  += tokens_input
             _session_tokens_output += tokens_output
             _session_calls         += 1
+            _session_duration_s    += duration_s
 
             usage = {
                 "tokens_input":  tokens_input,
@@ -181,6 +184,7 @@ def llm(system: str, user: str, *, max_tokens: int = 1024) -> tuple[str, dict]:
                 "tokens_total":  tokens_total,
                 "cost_usd":      cost_usd,
                 "model":         MODEL,
+                "duration_s":    duration_s,
             }
 
             log.debug(
@@ -253,11 +257,17 @@ def llm_json(system: str, user: str, *, max_tokens: int = 1024) -> tuple[dict, d
 
 
 def get_session_usage() -> dict:
-    """Return cumulative token usage for this process session."""
+    """Return cumulative token usage (and model call latency) for this process session.
+
+    session_model_latency_s sums every llm() call's real wall-clock duration — for a
+    single Agent Engine request (one investigation per process invocation) this is the
+    investigation's total model latency. See PRODUCTION-LAUNCH-PLAN.md Priority 10.
+    """
     return {
-        "session_tokens_input":  _session_tokens_input,
-        "session_tokens_output": _session_tokens_output,
-        "session_tokens_total":  _session_tokens_input + _session_tokens_output,
-        "session_calls":         _session_calls,
-        "session_cost_usd":      _calculate_cost(_session_tokens_input, _session_tokens_output),
+        "session_tokens_input":   _session_tokens_input,
+        "session_tokens_output":  _session_tokens_output,
+        "session_tokens_total":   _session_tokens_input + _session_tokens_output,
+        "session_calls":          _session_calls,
+        "session_cost_usd":       _calculate_cost(_session_tokens_input, _session_tokens_output),
+        "session_model_latency_s": round(_session_duration_s, 3),
     }

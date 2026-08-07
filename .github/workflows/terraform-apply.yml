@@ -9,6 +9,7 @@ on:
     branches: [main]
     paths:
       - "agent/**"
+      - "mcp/**"
       - "iac/agent/**"
       - ".github/workflows/terraform-*.yml"
 
@@ -55,7 +56,20 @@ jobs:
       # if applied, downgrades the model AND wipes agentGatewayConfig (Terraform
       # apply on this resource clears any out-of-band field it doesn't manage,
       # see TROUBLESHOOTING_LOG.md). Keep this in sync with terraform.tfvars.
-      - name: Apply
+      #
+      # enable_custom_mcp defaults to the ENABLE_CUSTOM_MCP repo variable (unset
+      # = "false") so this workflow file alone never silently turns the feature
+      # (and its real Cloud Run/Artifact Registry/IAM resources) on — that's a
+      # deliberate opt-in, set in repo Settings > Variables, not a code change.
+      #
+      # This first apply runs BEFORE the image build below on purpose: on the
+      # very first enable, the Artifact Registry repo (google_artifact_registry_
+      # repository.mcp) doesn't exist yet for the build step to push into.
+      # Terraform can't build/push a container image itself, so this apply just
+      # ensures the repo + Cloud Run service exist (on the placeholder image if
+      # custom_mcp_image was never set before) — the second apply below then
+      # points Cloud Run at the real image once it's been pushed.
+      - name: Apply (ensure infra + Artifact Registry repo exist)
         run: |
           terraform apply -auto-approve \
             -var="project_a_id=${{ secrets.GCP_PROJECT_A_ID }}" \
@@ -65,7 +79,65 @@ jobs:
             -var="github_repo=${{ github.repository }}" \
             -var="tfstate_bucket=${{ secrets.TFSTATE_BUCKET }}" \
             -var="create_wif=false" \
-            -var="gemini_model=gemini-2.5-pro"
+            -var="gemini_model=gemini-2.5-pro" \
+            -var="enable_custom_mcp=${{ vars.ENABLE_CUSTOM_MCP || 'false' }}"
+
+      # Build & push the custom MCP image only when the feature is enabled and
+      # this push actually touched mcp/ (skips the build entirely on an
+      # agent-only change, and skips it entirely when the feature is off).
+      - name: Build & push MCP image
+        id: mcp_image
+        if: ${{ vars.ENABLE_CUSTOM_MCP == 'true' }}
+        run: |
+          IMAGE="${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_A_ID }}/sre-agent-repo/sre-k8s-mcp:${{ github.sha }}"
+          gcloud auth configure-docker "${{ secrets.GCP_REGION }}-docker.pkg.dev" --quiet
+          docker build -t "$IMAGE" mcp/
+          docker push "$IMAGE"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+        working-directory: .
+
+      # Second apply: only needed when the feature is on, to point Cloud Run at
+      # the image just pushed above (custom_mcp_image is the only var that can
+      # actually differ from the first apply — everything else is identical, so
+      # this plans/applies as a single targeted update, not a full re-apply).
+      - name: Apply (point Cloud Run at the new MCP image)
+        if: ${{ vars.ENABLE_CUSTOM_MCP == 'true' }}
+        run: |
+          terraform apply -auto-approve \
+            -var="project_a_id=${{ secrets.GCP_PROJECT_A_ID }}" \
+            -var="project_b_id=${{ secrets.GCP_PROJECT_B_ID }}" \
+            -var="region=${{ secrets.GCP_REGION }}" \
+            -var="notification_email=${{ secrets.NOTIFICATION_EMAIL }}" \
+            -var="github_repo=${{ github.repository }}" \
+            -var="tfstate_bucket=${{ secrets.TFSTATE_BUCKET }}" \
+            -var="create_wif=false" \
+            -var="gemini_model=gemini-2.5-pro" \
+            -var="enable_custom_mcp=true" \
+            -var="custom_mcp_image=${{ steps.mcp_image.outputs.image }}"
+
+      # Real deploy-verification, not just "apply succeeded": the Cloud Run
+      # service uses INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER, so a plain HTTP
+      # curl from this external GitHub-hosted runner cannot reach it (verified
+      # against the resource's own ingress setting in iac/agent/cloudrun_mcp.tf
+      # before writing this step, rather than assuming an HTTP check would
+      # work). Instead, confirm the revision Terraform just pointed at the new
+      # image is actually Ready and serving — catches an image that fails to
+      # start (bad ENTRYPOINT, crash on boot, etc.) that `apply` alone wouldn't.
+      - name: Verify MCP Cloud Run revision is healthy
+        if: ${{ vars.ENABLE_CUSTOM_MCP == 'true' }}
+        run: |
+          gcloud run services describe sre-k8s-mcp \
+            --project="${{ secrets.GCP_PROJECT_A_ID }}" \
+            --region="${{ secrets.GCP_REGION }}" \
+            --format="value(status.conditions[0].type,status.conditions[0].status,status.latestReadyRevision)"
+          READY=$(gcloud run services describe sre-k8s-mcp \
+            --project="${{ secrets.GCP_PROJECT_A_ID }}" \
+            --region="${{ secrets.GCP_REGION }}" \
+            --format="value(status.conditions[0].status)")
+          if [ "$READY" != "True" ]; then
+            echo "MCP Cloud Run revision is NOT Ready — see conditions above." >&2
+            exit 1
+          fi
 
       # Post-apply: register Agent Registry endpoints, then bind the gateway
       # (both no-ops when the gateway is disabled). Order matters for a
