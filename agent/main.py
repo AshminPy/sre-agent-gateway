@@ -489,6 +489,21 @@ def investigate(payload: dict) -> dict:
         confidence = _safe_float(inv.get("confidence", summary.get("confidence_score", 0.0)))
         confidence_band = inv.get("confidence_band", summary.get("confidence_band", "escalate"))
 
+        # PRODUCTION-LAUNCH-PLAN.md Priority 10 fields (2026-08-07 fix): these were built
+        # and unit-tested in rca_builder.py/_write_observability_log's OWN separate
+        # "sre-agent-investigations" log entry, but never threaded into THIS event —
+        # the one iac/agent/monitoring.tf's unresolved_cluster and investigation_latency
+        # log-based metrics actually filter on. Confirmed missing via a real live agent
+        # invocation + a direct Cloud Logging query before this fix (jsonPayload had none
+        # of these keys), not assumed from code review alone.
+        from agent.gemini_client import get_session_usage
+        from agent.otel import get_trace_id_hex
+
+        mcp_latency_s = round(sum(h.get("duration_s", 0) or 0 for h in tool_history), 3)
+        session_usage = get_session_usage()
+        evidence_store = result.get("evidence_store", {}) or {}
+        evidence_storage_ok = not any(ev.get("gcs_write_failed") for ev in evidence_store.values())
+
         # ============================================================
         # Structured observability log — one JSON event per agent run
         # Cloud Logging can parse this as jsonPayload when emitted to stdout.
@@ -497,10 +512,13 @@ def investigate(payload: dict) -> dict:
         obs_event = {
             "event_type": "sre_agent_run",
             "run_id": result.get("run_id", ""),
+            "trace_id": get_trace_id_hex(),
             "incident_type": ctx.get("incident_type", summary.get("incident_type", "")),
             "project_id": ctx.get("project_id", PROJECT_ID),
             "cluster": ctx.get("cluster_name", ctx.get("cluster", cluster)),
             "cluster_region": ctx.get("cluster_region", ctx.get("region", "")),
+            "cluster_routing_method": ctx.get("cluster_routing_method", ""),
+            "cluster_routing_reason": ctx.get("cluster_routing_reason", ""),
             "namespace": ctx.get("namespace", namespace),
             "pod": ctx.get("pod", pod),
             "deployment": ctx.get("deployment", deployment),
@@ -509,6 +527,7 @@ def investigate(payload: dict) -> dict:
             "tools_called": len(tool_history),
             "evidence_count": len(evidence_ids),
             "evidence_ids": evidence_ids,
+            "evidence_storage_ok": evidence_storage_ok,
             "confidence": confidence,
             "confidence_band": confidence_band,
             # New confidence framework fields — additive, does not change any existing field
@@ -522,11 +541,21 @@ def investigate(payload: dict) -> dict:
             "loop_exit_reason": inv.get("loop_exit_reason", result.get("loop_exit_reason")),
             "human_review": bool(summary.get("requires_human_review", True)),
             "latency_ms": latency_ms,
+            "mcp_latency_s": mcp_latency_s,
+            "model_latency_s": session_usage.get("session_model_latency_s"),
+            "total_latency_s": round(latency_ms / 1000, 3),
             "tokens_input": tokens_input,
             "tokens_output": tokens_output,
             "tokens_total": tokens_total,
             "estimated_cost_usd": estimated_cost_usd,
             "error_count": len(errors),
+            "pagerduty_incident_id": ctx.get("pagerduty_incident_id"),
+            # Placeholders, not silently omitted — mirrors rca_builder.py's own comment:
+            # connect_gateway_status has no code producing a real value yet (Priority 3
+            # has no app-observable signal into the agent process); agent_gateway_authz_mode
+            # is always None while the gateway's IAP authz extension runs in DRY_RUN.
+            "connect_gateway_status": None,
+            "agent_gateway_authz_mode": None,
         }
 
         # stdout JSON line for Cloud Logging jsonPayload parsing.

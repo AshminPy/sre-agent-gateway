@@ -71,7 +71,7 @@ def _log_evidence_storage_failure(run_id: str, evidence_id: str, path: str, erro
     try:
         from google.cloud import logging as cloud_logging
 
-        cloud_logging.Client().logger("sre-agent-evidence-storage-failures").log_struct(
+        cloud_logging.Client(project=os.environ.get("PROJECT_ID")).logger("sre-agent-evidence-storage-failures").log_struct(
             {
                 "event":       "evidence_storage_failure",
                 "run_id":      run_id,

@@ -74,9 +74,11 @@ def _log_routing_failure(run_id: str, cluster_name: str, reason: str) -> None:
     Priority 10 ("routing failures" alert).
     """
     try:
+        import os
+
         from google.cloud import logging as cloud_logging
 
-        cloud_logging.Client().logger("sre-agent-routing-failures").log_struct(
+        cloud_logging.Client(project=os.environ.get("PROJECT_ID")).logger("sre-agent-routing-failures").log_struct(
             {
                 "event":   "mcp_routing_failure",
                 "run_id":  run_id,
