@@ -21,25 +21,21 @@ locals {
 # docs), scoped to private-VPC targets only, which this deployment doesn't
 # use — the codelab reference itself creates none.
 #
-# sre-agent-egress-na + the network_config block below were added during the
-# 2026-07-16/17 gateway-bind investigation to test whether PSC-I's presence
-# affected the failure. It didn't: tested directly (RCA in FINAL_RCA.md /
-# TROUBLESHOOTING_LOG.md), confirmed NOT the cause — the real root cause was
-# unrelated accumulated engine-side state, fixed by engine recreation. Left
-# in place: harmless (confirmed via a live bind succeeding on this exact
-# gateway with PSC-I present), matches the vendored codelab reference's own
-# module (which creates PSC-I unconditionally), and removing it now would
-# mean an unnecessary destroy/recreate cycle on a currently-working resource.
-
-resource "google_compute_network_attachment" "sre_egress" {
-  count                 = local.gw_count
-  project               = var.project_a_id
-  name                  = "sre-agent-egress-na"
-  region                = var.region
-  connection_preference = "ACCEPT_AUTOMATIC"
-  subnetworks           = [google_compute_subnetwork.agent_gateway_psc[0].id]
-}
-
+# 2026-08-07: removed the PSC-I network_attachment (sre-agent-egress-na) and
+# its dedicated subnet (networking.tf's agent_gateway_psc) that were added
+# 2026-07-16/17 purely to test an unrelated gateway-bind hypothesis — already
+# confirmed NOT the cause that same investigation (FINAL_RCA.md /
+# TROUBLESHOOTING_LOG.md; real cause was accumulated engine-side state, fixed
+# by engine recreation). This deployment's actual traffic (Google APIs + GKE
+# Remote MCP) needs no VPC connectivity per this comment block's own citation
+# above; re-verified live with a real agent invocation right after this
+# change deployed (not assumed) — see TROUBLESHOOTING_LOG.md for that result.
+# Removing this now — rather than leaving it as "harmless" — because the
+# custom Cloud Run MCP target (a real private-VPC destination,
+# INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER) needs its OWN correctly-scoped PSC
+# setup, and this generic leftover attachment was not that (no Internal
+# Application Load Balancer / Serverless NEG behind it, so it couldn't have
+# reached Cloud Run either way) — see cloudrun_mcp.tf for that follow-up work.
 resource "google_network_services_agent_gateway" "sre_egress" {
   count = local.gw_count
 
@@ -58,12 +54,6 @@ resource "google_network_services_agent_gateway" "sre_egress" {
   }
 
   registries = [local.registry_uri]
-
-  network_config {
-    egress {
-      network_attachment = google_compute_network_attachment.sre_egress[0].id
-    }
-  }
 
   depends_on = [google_project_service.apis]
 }
