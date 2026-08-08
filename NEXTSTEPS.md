@@ -429,6 +429,32 @@ Don't rewrite the architecture — the cluster-registry half (GCS-backed cluster
 - Converting clusters.json.tftpl to a list is a breaking change to the variable interface (`gke_cluster_name` string -> `gke_clusters` list) — needs a migration note/default for existing `sreagent-t2-demo` state so the next apply doesn't unexpectedly re-plan the bucket object or IAM.
 - Extracting iac/gke-access into a reusable module is speculative generalization if only ever applied to one Project B in practice — do it only once a real 2nd project is on the table (YAGNI), not preemptively.
 
+### 2026-08-08 confirmation + one new finding
+
+Re-confirmed via a fresh, independent code/Terraform read while building `docs/` (PR #50):
+the `clusters.json.tftpl` single-cluster bug above is still exactly as described (single hardcoded
+entry, no `for` loop, no `lifecycle { ignore_changes }` on the bucket object) — this is now
+**PRODUCTION-READY BLOCKER #1** for adding a 2nd cluster, not just a hypothesis; still not
+empirically confirmed with a real `terraform apply` clobbering a hand-added entry, so still treat
+that specific claim as inferred, not observed.
+
+**One finding not previously captured here**: the custom Cloud Run MCP fallback isn't just
+"single-cluster by construction" (point 6 above) — it currently has **no network path to any
+cluster at all**, regardless of count. `iac/agent/cloudrun_mcp.tf` sets `ingress =
+INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER`, which requires an Internal Load Balancer + Serverless
+NEG to reach the service from anywhere, including the agent's own gateway egress — neither
+resource exists anywhere in `iac/` (confirmed by exhaustive grep for `serverless_neg`,
+`forwarding_rule`, `backend_service`, `url_map`, `target_https_proxy` — zero matches). Combined
+with `enable_custom_mcp` defaulting `false` and not overridden live, this means the fallback path
+described throughout this section (`gke_remote_mcp` failure → auto-fallback to `k8s_mcp`) has no
+live target to fall back to today. Full detail: `docs/architecture/mcp-architecture.md` in the new
+knowledge base.
+
+On the MCP_REGISTRY hardcoded-to-2-sources point (4 above): also flagging that tool-selection
+accuracy as the *combined* tool surface grows (beyond today's 6 + 27, never shown to the model
+together) has never been load/accuracy-tested — worth a deliberate check once a 3rd source is
+actually added, not before.
+
 ---
 
 ## 6. (Item #7) RCA accuracy eval suite: golden dataset + LLM-judge scoring + confidence-calibration checks
@@ -479,6 +505,26 @@ Do not build a fourth eval script — consolidate. Merge the three fragmented so
 - Three-way duplication risk during migration: until eval/dataset.jsonl, golden_cases.py, and invoke_agent.py SCENARIOS are consolidated, a future edit to one (e.g. changing a fixture's expected root cause) can silently desync from the other two, producing an eval suite that tests stale ground truth.
 - pyproject.toml scopes google-cloud-aiplatform[evaluation] and pandas as LOCAL-only dependencies (explicitly excluded from agent/requirements.txt, which is what actually ships in the Agent Engine bundle) — any new eval code must stay in the repo root / agent/eval, never imported by agent/main.py's runtime path, or it will break the deployed bundle.
 - This 16-case suite is too small to produce a statistically meaningful 'agent accuracy %' — frame it to stakeholders as a regression/smoke suite for known failure modes, not a general accuracy benchmark, to avoid over-claiming from a small N.
+
+### 2026-08-08 confirmation + needs a light refresh
+
+This item's research (2026-07-18) predates the two-axis confidence-scoring redesign that landed
+2026-08-04 (`agent/confidence/`, PR #43/44) — the single `confidence_band` this item's calibration
+plan groups by still exists (now derived from the new `outcome` enum, not directly LLM-set), but
+the underlying scoring is now a real deterministic mechanism (`investigation_completeness` +
+`root_cause_confidence`, code-checked claims/evidence grounding), not the older simpler design.
+
+**Confirmed still true and now the sharper way to say it**: `agent/confidence/policy.py`'s
+`POLICY_VERSION = "1.0.0-uncalibrated"` — the docstring states outright these are "reasoned
+initial defaults... not statistically calibrated against real incident outcomes" and calibration
+"is required before these numbers should be trusted for a real launch decision." This is
+independent confirmation of exactly what implementation step 4 above (the calibration report)
+is meant to fix — that step is still the right plan, just should be updated to read from the new
+`outcome`/`investigation_completeness`/`root_cause_confidence` fields (`agent/nodes/rca_builder.py`)
+rather than assuming the pre-redesign single-score model. **Also confirmed: no LLM-judge
+evaluation exists anywhere in this codebase today** (checked directly, not assumed) — the
+PointwiseMetric rubric plan in implementation step 3 above is still not built. Full detail:
+`docs/architecture/confidence.md` and `docs/architecture/evaluation.md` in the new knowledge base.
 
 ---
 
