@@ -41,7 +41,7 @@ No test in the repo exercises the compiled full graph (`compile_graph()`/`graph.
 | GKE Remote MCP | ✅ | Live, primary path, `MCP_REGISTRY["gke_remote_mcp"]` |
 | Multi-cluster registry | ✅ | `terraform test` 4/4 pass live; `pytest` 13/13 pass live |
 | Cluster-type-based routing (gke vs custom) | ✅ | `mcp_router.py:133-136`, deterministic, covered by `test_eval_scenario_matrix.py` |
-| Custom K8s MCP (Cloud Run) | ❌ | `enable_custom_mcp` defaults `false`; no Load Balancer/Serverless NEG anywhere in `iac/` (grep confirmed) |
+| Custom K8s MCP (Cloud Run) | 🟡 | **Built, not deployed** — not absent. Code is real and complete: `mcp/server.py` (447 lines), 11 tool modules under `mcp/tools/`, real Terraform at `iac/agent/cloudrun_mcp.tf`, and its read-only guarantee is enforced by a live-passing test (`mcp/tests/test_no_mutation.py`, 2/2). But `enable_custom_mcp` defaults `false` and no Load Balancer/Serverless NEG exists anywhere in `iac/` — so it cannot actually be reached even if enabled. Don't read the ❌ label class as "code doesn't exist" here; it means "not live." |
 | Dynamic MCP discovery / `tools/list` | ❌ | Agent uses a static compile-time allowlist (`GKE_REMOTE_TOOLS`/`CUSTOM_K8S_TOOLS` frozensets); no runtime `tools/list` call in the agent's runtime path |
 | Connect Gateway | 🔵 | Proven manually against a local `kind` cluster only; no `google_gke_hub_membership` Terraform resource anywhere |
 | Cross-project IAM for additional clusters | 🔵 | `iac/gke-access/providers.tf:6` hardwires a single `project_b_id` (scalar, not a list) — known, documented gap |

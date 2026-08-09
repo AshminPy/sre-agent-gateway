@@ -1,7 +1,7 @@
 # Scaling
 
 > **Implementation Status:** Reference/analysis page based on current implementation limits.
-> **Last Verified:** 2026-08-08
+> **Last Verified:** 2026-08-09
 > **Owner:** SRE Agent platform team.
 
 ## More incidents: 10/day → 100 → 1,000
@@ -12,7 +12,15 @@
 
 ## More clusters
 
-The single-cluster-only `clusters.json` template is the actual blocker today, not a scaling limit per se — see [Cluster Routing](../architecture/cluster-routing.md#known-operational-limitation). Fix that first; once fixed, the routing chain itself (deterministic, registry-lookup-based) has no inherent scale limit tied to cluster count. The 5-minute TTL cache on the registry means adding a cluster takes up to 5 minutes to propagate without a container restart.
+~~The single-cluster-only `clusters.json` template is the actual blocker today~~ — **FIXED
+2026-08-09**: `var.additional_clusters` (`iac/agent/variables.tf`) supports any number of
+clusters, including non-GKE ones, and each survives `terraform apply` by design. See
+[Cluster Routing](../architecture/cluster-routing.md). The routing chain itself
+(deterministic, registry-lookup-based) has no inherent scale limit tied to cluster count.
+The 5-minute TTL cache on the registry means adding a cluster takes up to 5 minutes to
+propagate without a container restart. What's still open: adding a cluster in a
+**different** GCP project gets no IAM grant today — `iac/gke-access/providers.tf` is
+hardwired to one `project_b_id`.
 
 ## More MCP servers
 

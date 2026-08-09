@@ -11,12 +11,12 @@ test_no_mutation.py` executed live (2/2 passed), `terraform test` executed live 
 `pytest tests/test_multi_cluster_registry.py tests/test_mcp_router.py` executed live (13/13
 passed).
 
-**Real staleness found and fixed today** (9 files):
+**Real staleness found and fixed today** (10 files):
 - `docs/architecture/evaluation.md` — didn't mention either of today's 2 eval-harness bug fixes, the 2 new regression tests, or the corrected baseline at all. Added a full section.
-- `docs/architecture/evidence-architecture.md` — the example evidence object had `source` and `tool` **swapped** relative to the real `ev_entry` shape in `agent/nodes/evidence_extractor.py:130-142` (`source` actually holds the tool name; `mcp_source` holds the MCP source). Fixed to match the real code exactly.
+- `docs/architecture/evidence-architecture.md` — the example evidence object had `source` and `tool` **swapped** relative to the real `ev_entry` shape in `agent/nodes/evidence_extractor.py:131-143` (`source` actually holds the tool name; `mcp_source` holds the MCP source). Fixed to match the real code exactly.
 - `docs/operations/deployment.md` — claimed CI "posts as a PR comment"; checked the actual workflow YAML, no such step exists. Removed the false claim, added the `terraform test` step that's real but was undocumented.
 - `docs/operations/terraform.md` — same missing `terraform test` step; `main.tf`'s row didn't mention it now also renders `clusters.json`; the "wipe-on-apply limitation" framing for `clusters.json` was stale (fixed 2026-08-09, no longer a limitation).
-- `docs/architecture/gke-vs-nongke.md`, `docs/runbooks/add-non-gke-cluster.md`, `docs/runbooks/mcp-failure.md` — all three still told a reader the cluster registry gets wiped on a second cluster entry and pointed at a dead anchor link (`cluster-routing.md#known-operational-limitation`, which no longer exists) — all fixed to reflect the real, working multi-cluster mechanism.
+- `docs/architecture/gke-vs-nongke.md`, `docs/runbooks/add-non-gke-cluster.md`, `docs/runbooks/mcp-failure.md`, `docs/governance/scaling.md` — all four still told a reader the cluster registry gets wiped on a second cluster entry and pointed at a dead anchor link (`cluster-routing.md#known-operational-limitation`, which no longer exists) — all fixed to reflect the real, working multi-cluster mechanism. (`scaling.md` was missed in the first pass through this list — an independent reviewer caught it before merge.)
 - `docs/architecture/langgraph-workflow.md`, `docs/architecture/investigation-loop.md` — both claimed `recursion_limit=60` was "hardcoded in `agent/main.py:423,443`" — it's now a shared constant (`agent/graph.py:29`) imported by both `agent/main.py` and `agent/eval/run_eval.py`, specifically to prevent the eval-harness drift that caused today's bug #2. Fixed.
 - `docs/operations/daily-health-check.md` — linked to a heading in `logging.md` that doesn't exist; the real content lives in `observability.md`. Fixed the link.
 - `docs/least-privilege-iam.md` — still missing `roles/aiplatform.agentDefaultAccess`, a gap the 2026-08-08 report already flagged as unfixed (item 4 below) — fixed today.

@@ -62,7 +62,7 @@ Both use uniform bucket-level access and bucket-level (not project-level) IAM.
 
 ## A real evidence object (sanitized/illustrative shape)
 
-Exact shape from `ev_entry` in `agent/nodes/evidence_extractor.py:130-142` — note `source` holds
+Exact shape from `ev_entry` in `agent/nodes/evidence_extractor.py:131-143` — note `source` holds
 the **tool name** and `mcp_source` holds the **MCP source** (an earlier version of this doc had
 these two fields swapped; corrected 2026-08-09). There is no `evidence_id` field inside the
 entry — the ID only exists as the outer dict key (`evidence_store[ev_id]`).
