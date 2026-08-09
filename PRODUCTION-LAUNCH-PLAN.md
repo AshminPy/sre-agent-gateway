@@ -31,7 +31,7 @@ Legend: ✅ done · 🟡 partial · ⬜ not started
 ---
 
 ## Priority 1 — Document & protect the working baseline  🟡
-**Have:** `CURRENT_STATE.md`, `RCA_REPORT.md`, `FINAL_RCA.md`, `AUDIT_REPORT.md`, `README.md`; git clean on `main@897e48b`; backup made (`~/projects/_backups/testing2-...-BACKUP-2026-07-28.tar.gz`). Confidence + routing logic now documented (this scan).
+**Have:** `archive/RESOLVED_2026-07-17_CURRENT_STATE.md`, `archive/RESOLVED_2026-07-17_RCA_REPORT.md`, `archive/RESOLVED_2026-07-17_FINAL_RCA.md`, `archive/RESOLVED_2026-07-17_AUDIT_REPORT.md`, `README.md`; git clean on `main@897e48b`; backup made (`~/projects/_backups/testing2-...-BACKUP-2026-07-28.tar.gz`). Confidence + routing logic now documented (this scan).
 **Missing:** one consolidated production-baseline doc (architecture + Agent Engine/Gateway/MCP/identity config + cross-project flow + rollback path in one place); explicit rollback procedure; separate branches/envs for Connect-Gateway / custom-MCP / PagerDuty testing.
 **Acceptance:** a single BASELINE.md a new engineer can read to understand + safely roll back; rollback tested once.
 **Depends on:** none (do first).

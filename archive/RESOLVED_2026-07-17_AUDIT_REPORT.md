@@ -55,7 +55,7 @@ All 15 env vars identical by name across both engines; only inherently per-proje
 
 ## 9. Post-Deployment (checks 46–49)
 
-Cleanroom: fully attached, verified end-to-end (FINAL_RCA.md). T2-demo: `agentGatewayConfig` still absent live, right now — the bind has never durably succeeded.
+Cleanroom: fully attached, verified end-to-end (RESOLVED_2026-07-17_FINAL_RCA.md). T2-demo: `agentGatewayConfig` still absent live, right now — the bind has never durably succeeded.
 
 ## 10. Script Review — `attach_gateway_to_engine.sh`
 
@@ -132,4 +132,4 @@ Per direct instruction, the module-isolation gap (§13/final verdict item 4) was
 
 ### RESOLUTION (2026-07-17, same day) — investigation closed
 
-The one remaining candidate was tested with explicit approval: the original engine (`8599129257987276800`) was recreated via `terraform apply -replace=`. Result: **bound on the first attempt, full end-to-end functional test passed.** This confirms the final root cause — the original engine resource had accumulated backend state from its own failed bind history that blocked every subsequent attempt, independent of module, project, gateway, or code, all four of which were independently cleared by direct experiment. Full details in `FINAL_RCA.md`'s "t2-demo addendum" and `TROUBLESHOOTING_LOG.md`'s final entry. **`sreagent-t2-demo` is now fully working, end to end, using its own real project, gateway, and code.**
+The one remaining candidate was tested with explicit approval: the original engine (`8599129257987276800`) was recreated via `terraform apply -replace=`. Result: **bound on the first attempt, full end-to-end functional test passed.** This confirms the final root cause — the original engine resource had accumulated backend state from its own failed bind history that blocked every subsequent attempt, independent of module, project, gateway, or code, all four of which were independently cleared by direct experiment. Full details in `RESOLVED_2026-07-17_FINAL_RCA.md`'s "t2-demo addendum" and `RESOLVED_2026-07-17_TROUBLESHOOTING_LOG.md`'s final entry. **`sreagent-t2-demo` is now fully working, end to end, using its own real project, gateway, and code.**

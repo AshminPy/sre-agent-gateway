@@ -41,8 +41,8 @@ config.
 > **Update (2026-07-17): RESOLVED.** The `certificate verify failed` issue
 > described below (originally logged 2026-07-13) is fixed and verified
 > end-to-end. Two unrelated root causes, both closed — full writeup in
-> [`FINAL_RCA.md`](../FINAL_RCA.md) and the management-facing
-> [`RCA_REPORT.md`](../RCA_REPORT.md). Short version:
+> [`archive/RESOLVED_2026-07-17_FINAL_RCA.md`](../archive/RESOLVED_2026-07-17_FINAL_RCA.md) and the management-facing
+> [`archive/RESOLVED_2026-07-17_RCA_REPORT.md`](../archive/RESOLVED_2026-07-17_RCA_REPORT.md). Short version:
 > 1. **The actual cause was never client-library choice** (the raw-genai-client
 >    hypothesis below was a reasonable lead at the time, but wrong). The
 >    gateway's TLS-inspection certificate is only trusted when the source
@@ -54,7 +54,7 @@ config.
 >    repeated failed bind attempts made while #1 was still undiagnosed.
 >    Fixed by recreating the engine (`terraform apply -replace=`).
 > The "decisive next test" proposed below **was** eventually run (twice, in
-> two different forms) — see `FINAL_RCA.md`'s "t2-demo addendum" — and
+> two different forms) — see `archive/RESOLVED_2026-07-17_FINAL_RCA.md`'s "t2-demo addendum" — and
 > confirmed neither our code, our project, nor our gateway was at fault.
 > The section below is preserved as the historical record of the
 > investigation as it stood on 2026-07-13, not current guidance.

@@ -134,7 +134,7 @@ Filed as GitHub issues [#29](https://github.com/AshminPy/sre-agent-gateway/issue
 
 ## 9. Full Audit (supporting document)
 
-Before accepting §5's conclusion, a full, independent, evidence-based audit was run across every layer of the system — infrastructure code, application code, live cloud configuration, IAM, networking, and the investigation's own record — checked against Google's official documentation line by line. Every one of 49 individual checks was scored explicitly as confirmed-correct, confirmed-incorrect, or genuinely unknown (never guessed). Full detail in [`AUDIT_REPORT.md`](AUDIT_REPORT.md).
+Before accepting §5's conclusion, a full, independent, evidence-based audit was run across every layer of the system — infrastructure code, application code, live cloud configuration, IAM, networking, and the investigation's own record — checked against Google's official documentation line by line. Every one of 49 individual checks was scored explicitly as confirmed-correct, confirmed-incorrect, or genuinely unknown (never guessed). Full detail in [`RESOLVED_2026-07-17_AUDIT_REPORT.md`](RESOLVED_2026-07-17_AUDIT_REPORT.md).
 
 ---
 
@@ -158,8 +158,8 @@ The fix was proven, not assumed, at every stage:
 ## Full Investigation Record
 
 For complete chronological detail, including every command run, every raw API response, and every hypothesis tested (including the ones not summarized above):
-- [`TROUBLESHOOTING_LOG.md`](TROUBLESHOOTING_LOG.md) — full, append-only evidence log
-- [`CURRENT_STATE.md`](CURRENT_STATE.md) — current system state summary
-- [`FINAL_RCA.md`](FINAL_RCA.md) — technical root-cause document (engineering audience)
-- [`AUDIT_REPORT.md`](AUDIT_REPORT.md) — the full 49-point implementation audit
+- [`RESOLVED_2026-07-17_TROUBLESHOOTING_LOG.md`](RESOLVED_2026-07-17_TROUBLESHOOTING_LOG.md) — full, append-only evidence log
+- [`RESOLVED_2026-07-17_CURRENT_STATE.md`](RESOLVED_2026-07-17_CURRENT_STATE.md) — current system state summary
+- [`RESOLVED_2026-07-17_FINAL_RCA.md`](RESOLVED_2026-07-17_FINAL_RCA.md) — technical root-cause document (engineering audience)
+- [`RESOLVED_2026-07-17_AUDIT_REPORT.md`](RESOLVED_2026-07-17_AUDIT_REPORT.md) — the full 49-point implementation audit
 - [`sreagent-gateway-verified`](https://github.com/AshminPy/sreagent-gateway-verified) — standalone repo proving our own deployment code works, built and verified during Experiment 1
