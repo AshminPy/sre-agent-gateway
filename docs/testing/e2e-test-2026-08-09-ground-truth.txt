@@ -1,0 +1,339 @@
+=== kubectl describe deployment ===
+Name:                   notification-relay
+Namespace:              test-incidents
+CreationTimestamp:      Sun, 09 Aug 2026 18:04:28 -0400
+Labels:                 app=notification-relay
+                        incident-type=e2e-honest-baseline-test
+Annotations:            autopilot.gke.io/resource-adjustment:
+                          {"input":{"containers":[{"limits":{"cpu":"200m","memory":"128Mi"},"requests":{"cpu":"50m","memory":"64Mi"},"name":"notification-relay"}]},...
+                        autopilot.gke.io/warden-version: 35.26.5-gke.2
+                        deployment.kubernetes.io/revision: 1
+Selector:               app=notification-relay
+Replicas:               2 desired | 2 updated | 2 total | 0 available | 2 unavailable
+StrategyType:           RollingUpdate
+MinReadySeconds:        0
+RollingUpdateStrategy:  25% max unavailable, 25% max surge
+Pod Template:
+  Labels:  app=notification-relay
+  Containers:
+   notification-relay:
+    Image:      python:3.11-slim
+    Port:       9090/TCP
+    Host Port:  0/TCP
+    Command:
+      python3
+      -c
+    Args:
+      import http.server, socketserver, sys, time
+      print("notification-relay starting up...", flush=True)
+      print("WARN: cache backend unreachable at redis-cache:6379, falling back to local in-memory cache -- this is expected in this environment", flush=True)
+      time.sleep(2)
+      print("notification-relay: local HTTP server ready on port 9090", flush=True)
+      class H(http.server.SimpleHTTPRequestHandler):
+          def do_GET(self):
+              self.send_response(200)
+              self.end_headers()
+              self.wfile.write(b'{"status":"ok"}')
+          def log_message(self, fmt, *args):
+              pass
+      with socketserver.TCPServer(("", 9090), H) as httpd:
+          httpd.serve_forever()
+      
+    Limits:
+      cpu:                200m
+      ephemeral-storage:  1Gi
+      memory:             128Mi
+    Requests:
+      cpu:                50m
+      ephemeral-storage:  1Gi
+      memory:             64Mi
+    Liveness:             http-get http://:9090/healthz delay=10s timeout=1s period=10s #success=1 #failure=3
+    Readiness:            http-get http://:8080/healthz delay=5s timeout=1s period=5s #success=1 #failure=3
+    Environment:          <none>
+    Mounts:               <none>
+  Volumes:                <none>
+  Node-Selectors:         <none>
+  Tolerations:            kubernetes.io/arch=amd64:NoSchedule
+Conditions:
+  Type           Status  Reason
+  ----           ------  ------
+  Available      False   MinimumReplicasUnavailable
+  Progressing    True    ReplicaSetUpdated
+OldReplicaSets:  <none>
+NewReplicaSet:   notification-relay-5fb84bdbd4 (2/2 replicas created)
+Events:
+  Type    Reason             Age    From                   Message
+  ----    ------             ----   ----                   -------
+  Normal  ScalingReplicaSet  5m32s  deployment-controller  Scaled up replica set notification-relay-5fb84bdbd4 from 0 to 2
+
+=== kubectl describe pods ===
+Name:             notification-relay-5fb84bdbd4-dmxg9
+Namespace:        test-incidents
+Priority:         0
+Service Account:  default
+Node:             gk3-sre-test-cluster-nap-1fw01nst-ed88c671-cvzc/10.0.0.14
+Start Time:       Sun, 09 Aug 2026 18:04:28 -0400
+Labels:           app=notification-relay
+                  pod-template-hash=5fb84bdbd4
+                  topology.kubernetes.io/region=us-central1
+                  topology.kubernetes.io/zone=us-central1-b
+Annotations:      <none>
+Status:           Running
+SeccompProfile:   RuntimeDefault
+IP:               10.1.0.19
+IPs:
+  IP:           10.1.0.19
+Controlled By:  ReplicaSet/notification-relay-5fb84bdbd4
+Containers:
+  notification-relay:
+    Container ID:  containerd://6f872e00b75231d69be91fa6b43007a01ef507d63a1dcfc8f44442c81a0ce991
+    Image:         python:3.11-slim
+    Image ID:      docker.io/library/python@sha256:90744cff8f32887f075c47d747a173ff333e9e98801667af93c357fa9f5e28ff
+    Port:          9090/TCP
+    Host Port:     0/TCP
+    Command:
+      python3
+      -c
+    Args:
+      import http.server, socketserver, sys, time
+      print("notification-relay starting up...", flush=True)
+      print("WARN: cache backend unreachable at redis-cache:6379, falling back to local in-memory cache -- this is expected in this environment", flush=True)
+      time.sleep(2)
+      print("notification-relay: local HTTP server ready on port 9090", flush=True)
+      class H(http.server.SimpleHTTPRequestHandler):
+          def do_GET(self):
+              self.send_response(200)
+              self.end_headers()
+              self.wfile.write(b'{"status":"ok"}')
+          def log_message(self, fmt, *args):
+              pass
+      with socketserver.TCPServer(("", 9090), H) as httpd:
+          httpd.serve_forever()
+      
+    State:          Running
+      Started:      Sun, 09 Aug 2026 18:05:43 -0400
+    Last State:     Terminated
+      Reason:       Error
+      Exit Code:    137
+      Started:      Sun, 09 Aug 2026 18:04:39 -0400
+      Finished:     Sun, 09 Aug 2026 18:05:39 -0400
+    Ready:          False
+    Restart Count:  1
+    Limits:
+      cpu:                200m
+      ephemeral-storage:  1Gi
+      memory:             128Mi
+    Requests:
+      cpu:                50m
+      ephemeral-storage:  1Gi
+      memory:             64Mi
+    Liveness:             http-get http://:9090/healthz delay=10s timeout=1s period=10s #success=1 #failure=3
+    Readiness:            http-get http://:8080/healthz delay=5s timeout=1s period=5s #success=1 #failure=3
+    Environment:          <none>
+    Mounts:
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-vmrsg (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  kube-api-access-vmrsg:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    ConfigMapOptional:       <nil>
+    DownwardAPI:             true
+QoS Class:                   Burstable
+Node-Selectors:              <none>
+Tolerations:                 kubernetes.io/arch=amd64:NoSchedule
+                             node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:
+  Type     Reason     Age                    From                                   Message
+  ----     ------     ----                   ----                                   -------
+  Normal   Scheduled  5m32s                  gke.io/optimize-utilization-scheduler  Successfully assigned test-incidents/notification-relay-5fb84bdbd4-dmxg9 to gk3-sre-test-cluster-nap-1fw01nst-ed88c671-cvzc
+  Warning  Unhealthy  4m52s (x3 over 5m12s)  kubelet                                Liveness probe failed: Get "http://10.1.0.19:9090/healthz": dial tcp 10.1.0.19:9090: connect: connection refused
+  Normal   Killing    4m52s                  kubelet                                Container notification-relay failed liveness probe, will be restarted
+  Normal   Pulled     4m20s (x2 over 5m30s)  kubelet                                Container image "python:3.11-slim" already present on machine and can be accessed by the pod
+  Normal   Created    4m20s (x2 over 5m28s)  kubelet                                Container created
+  Normal   Started    4m18s (x2 over 5m22s)  kubelet                                Container started
+  Warning  Unhealthy  12s (x63 over 5m14s)   kubelet                                Readiness probe failed: Get "http://10.1.0.19:8080/healthz": dial tcp 10.1.0.19:8080: connect: connection refused
+
+
+Name:             notification-relay-5fb84bdbd4-lqq2b
+Namespace:        test-incidents
+Priority:         0
+Service Account:  default
+Node:             gk3-sre-test-cluster-nap-1fw01nst-ed88c671-cvzc/10.0.0.14
+Start Time:       Sun, 09 Aug 2026 18:04:28 -0400
+Labels:           app=notification-relay
+                  pod-template-hash=5fb84bdbd4
+                  topology.kubernetes.io/region=us-central1
+                  topology.kubernetes.io/zone=us-central1-b
+Annotations:      <none>
+Status:           Running
+SeccompProfile:   RuntimeDefault
+IP:               10.1.0.18
+IPs:
+  IP:           10.1.0.18
+Controlled By:  ReplicaSet/notification-relay-5fb84bdbd4
+Containers:
+  notification-relay:
+    Container ID:  containerd://0c85a7e7308af6add03bd533f69e12ced35f27c86de7e72057bce4c51cd936f9
+    Image:         python:3.11-slim
+    Image ID:      docker.io/library/python@sha256:90744cff8f32887f075c47d747a173ff333e9e98801667af93c357fa9f5e28ff
+    Port:          9090/TCP
+    Host Port:     0/TCP
+    Command:
+      python3
+      -c
+    Args:
+      import http.server, socketserver, sys, time
+      print("notification-relay starting up...", flush=True)
+      print("WARN: cache backend unreachable at redis-cache:6379, falling back to local in-memory cache -- this is expected in this environment", flush=True)
+      time.sleep(2)
+      print("notification-relay: local HTTP server ready on port 9090", flush=True)
+      class H(http.server.SimpleHTTPRequestHandler):
+          def do_GET(self):
+              self.send_response(200)
+              self.end_headers()
+              self.wfile.write(b'{"status":"ok"}')
+          def log_message(self, fmt, *args):
+              pass
+      with socketserver.TCPServer(("", 9090), H) as httpd:
+          httpd.serve_forever()
+      
+    State:          Running
+      Started:      Sun, 09 Aug 2026 18:05:43 -0400
+    Last State:     Terminated
+      Reason:       Error
+      Exit Code:    137
+      Started:      Sun, 09 Aug 2026 18:04:38 -0400
+      Finished:     Sun, 09 Aug 2026 18:05:39 -0400
+    Ready:          False
+    Restart Count:  1
+    Limits:
+      cpu:                200m
+      ephemeral-storage:  1Gi
+      memory:             128Mi
+    Requests:
+      cpu:                50m
+      ephemeral-storage:  1Gi
+      memory:             64Mi
+    Liveness:             http-get http://:9090/healthz delay=10s timeout=1s period=10s #success=1 #failure=3
+    Readiness:            http-get http://:8080/healthz delay=5s timeout=1s period=5s #success=1 #failure=3
+    Environment:          <none>
+    Mounts:
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-dtl2p (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  kube-api-access-dtl2p:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    ConfigMapOptional:       <nil>
+    DownwardAPI:             true
+QoS Class:                   Burstable
+Node-Selectors:              <none>
+Tolerations:                 kubernetes.io/arch=amd64:NoSchedule
+                             node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:
+  Type     Reason     Age                    From                                   Message
+  ----     ------     ----                   ----                                   -------
+  Normal   Scheduled  5m32s                  gke.io/optimize-utilization-scheduler  Successfully assigned test-incidents/notification-relay-5fb84bdbd4-lqq2b to gk3-sre-test-cluster-nap-1fw01nst-ed88c671-cvzc
+  Warning  Unhealthy  4m52s (x3 over 5m12s)  kubelet                                Liveness probe failed: Get "http://10.1.0.18:9090/healthz": dial tcp 10.1.0.18:9090: connect: connection refused
+  Normal   Killing    4m52s                  kubelet                                Container notification-relay failed liveness probe, will be restarted
+  Normal   Pulled     4m20s (x2 over 5m30s)  kubelet                                Container image "python:3.11-slim" already present on machine and can be accessed by the pod
+  Normal   Created    4m19s (x2 over 5m28s)  kubelet                                Container created
+  Normal   Started    4m18s (x2 over 5m23s)  kubelet                                Container started
+  Warning  Unhealthy  12s (x62 over 5m15s)   kubelet                                Readiness probe failed: Get "http://10.1.0.18:8080/healthz": dial tcp 10.1.0.18:8080: connect: connection refused
+
+=== kubectl describe service ===
+Name:                     notification-relay
+Namespace:                test-incidents
+Labels:                   <none>
+Annotations:              cloud.google.com/neg: {"ingress":true}
+Selector:                 app=notification-relay
+Type:                     ClusterIP
+IP Family Policy:         SingleStack
+IP Families:              IPv4
+IP:                       10.2.2.54
+IPs:                      10.2.2.54
+Port:                     <unset>  80/TCP
+TargetPort:               8080/TCP
+Endpoints:                
+Session Affinity:         None
+Internal Traffic Policy:  Cluster
+Events:
+  Type    Reason                          Age                    From                   Message
+  ----    ------                          ----                   ----                   -------
+  Normal  ADD                             5m33s                  sc-gateway-controller  test-incidents/notification-relay
+  Normal  DNSRecordProvisioningSucceeded  5m32s (x5 over 5m32s)  clouddns-controller    DNS records updated
+
+=== full events ===
+LAST SEEN   TYPE      REASON                           OBJECT                                     MESSAGE
+7m3s        Normal    Scheduled                        pod/notification-relay-5fb84bdbd4-fxl6v    Successfully assigned test-incidents/notification-relay-5fb84bdbd4-fxl6v to gk3-sre-test-cluster-nap-1fw01nst-ed88c671-cvzc
+11m         Warning   FailedScheduling                 pod/notification-relay-5fb84bdbd4-fxl6v    no nodes available to schedule pods
+11m         Warning   FailedScheduling                 pod/notification-relay-5fb84bdbd4-4w57j    no nodes available to schedule pods
+11m         Warning   FailedScheduling                 pod/notification-relay-5fb84bdbd4-fxl6v    no nodes available to schedule pods
+7m3s        Normal    Scheduled                        pod/notification-relay-5fb84bdbd4-4w57j    Successfully assigned test-incidents/notification-relay-5fb84bdbd4-4w57j to gk3-sre-test-cluster-nap-1fw01nst-ed88c671-cvzc
+11m         Warning   FailedScheduling                 pod/notification-relay-5fb84bdbd4-4w57j    no nodes available to schedule pods
+5m33s       Normal    Scheduled                        pod/notification-relay-5fb84bdbd4-lqq2b    Successfully assigned test-incidents/notification-relay-5fb84bdbd4-lqq2b to gk3-sre-test-cluster-nap-1fw01nst-ed88c671-cvzc
+5m33s       Normal    Scheduled                        pod/notification-relay-5fb84bdbd4-dmxg9    Successfully assigned test-incidents/notification-relay-5fb84bdbd4-dmxg9 to gk3-sre-test-cluster-nap-1fw01nst-ed88c671-cvzc
+11m         Normal    SuccessfulCreate                 replicaset/notification-relay-5fb84bdbd4   Created pod: notification-relay-5fb84bdbd4-fxl6v
+11m         Normal    ScalingReplicaSet                deployment/notification-relay              Scaled up replica set notification-relay-5fb84bdbd4 from 0 to 2
+11m         Normal    SuccessfulCreate                 replicaset/notification-relay-5fb84bdbd4   Created pod: notification-relay-5fb84bdbd4-4w57j
+11m         Normal    ADD                              service/notification-relay                 test-incidents/notification-relay
+11m         Normal    TriggeredScaleUp                 pod/notification-relay-5fb84bdbd4-4w57j    Pod triggered scale-up: [{https://www.googleapis.com/compute/v1/projects/sreagent-demo/zones/us-central1-b/instanceGroups/gk3-sre-test-cluster-pool-3-13bc3469-grp 0->1 (max: 1000)}]
+10m         Normal    TriggeredScaleUp                 pod/notification-relay-5fb84bdbd4-fxl6v    Pod triggered scale-up: [{https://www.googleapis.com/compute/v1/projects/sreagent-demo/zones/us-central1-a/instanceGroups/gk3-sre-test-cluster-pool-3-bbab1e8a-grp 0->1 (max: 1000)}]
+10m         Warning   FailedScaleUp                    pod/notification-relay-5fb84bdbd4-4w57j    Node scale up in zones us-central1-b associated with this pod failed: GCE quota exceeded. Pod is at risk of not being scheduled.
+10m         Warning   FailedScaleUp                    pod/notification-relay-5fb84bdbd4-fxl6v    Node scale up in zones us-central1-a associated with this pod failed: GCE quota exceeded. Pod is at risk of not being scheduled.
+6m54s       Normal    Pulling                          pod/notification-relay-5fb84bdbd4-4w57j    Pulling image "python:3.11-slim"
+6m54s       Normal    Pulling                          pod/notification-relay-5fb84bdbd4-fxl6v    Pulling image "python:3.11-slim"
+6m40s       Normal    DELETE                           service/notification-relay                 test-incidents/notification-relay
+6m39s       Normal    DNSRecordProvisioningSucceeded   service/notification-relay                 DNS records updated
+6m16s       Normal    Pulled                           pod/notification-relay-5fb84bdbd4-4w57j    Successfully pulled image "python:3.11-slim" in 5.038s (38.667s including waiting). Image size: 45538343 bytes.
+6m15s       Normal    Pulled                           pod/notification-relay-5fb84bdbd4-fxl6v    Successfully pulled image "python:3.11-slim" in 468ms (39.355s including waiting). Image size: 45538343 bytes.
+6m14s       Normal    Created                          pod/notification-relay-5fb84bdbd4-4w57j    Container created
+6m13s       Normal    Created                          pod/notification-relay-5fb84bdbd4-fxl6v    Container created
+6m10s       Normal    Started                          pod/notification-relay-5fb84bdbd4-fxl6v    Container started
+6m10s       Normal    Started                          pod/notification-relay-5fb84bdbd4-4w57j    Container started
+6m9s        Normal    Killing                          pod/notification-relay-5fb84bdbd4-fxl6v    Stopping container notification-relay
+6m9s        Normal    Killing                          pod/notification-relay-5fb84bdbd4-4w57j    Stopping container notification-relay
+5m39s       Warning   Unhealthy                        pod/notification-relay-5fb84bdbd4-fxl6v    Readiness probe failed: Get "http://10.1.0.17:8080/healthz": dial tcp 10.1.0.17:8080: connect: connection refused
+5m39s       Warning   Unhealthy                        pod/notification-relay-5fb84bdbd4-4w57j    Readiness probe failed: Get "http://10.1.0.16:8080/healthz": dial tcp 10.1.0.16:8080: connect: connection refused
+5m34s       Normal    ADD                              service/notification-relay                 test-incidents/notification-relay
+5m34s       Normal    ScalingReplicaSet                deployment/notification-relay              Scaled up replica set notification-relay-5fb84bdbd4 from 0 to 2
+5m34s       Normal    SuccessfulCreate                 replicaset/notification-relay-5fb84bdbd4   Created pod: notification-relay-5fb84bdbd4-dmxg9
+5m34s       Normal    SuccessfulCreate                 replicaset/notification-relay-5fb84bdbd4   Created pod: notification-relay-5fb84bdbd4-lqq2b
+5m33s       Normal    DNSRecordProvisioningSucceeded   service/notification-relay                 DNS records updated
+4m53s       Warning   Unhealthy                        pod/notification-relay-5fb84bdbd4-lqq2b    Liveness probe failed: Get "http://10.1.0.18:9090/healthz": dial tcp 10.1.0.18:9090: connect: connection refused
+4m53s       Normal    Killing                          pod/notification-relay-5fb84bdbd4-lqq2b    Container notification-relay failed liveness probe, will be restarted
+4m53s       Normal    Killing                          pod/notification-relay-5fb84bdbd4-dmxg9    Container notification-relay failed liveness probe, will be restarted
+4m53s       Warning   Unhealthy                        pod/notification-relay-5fb84bdbd4-dmxg9    Liveness probe failed: Get "http://10.1.0.19:9090/healthz": dial tcp 10.1.0.19:9090: connect: connection refused
+4m21s       Normal    Pulled                           pod/notification-relay-5fb84bdbd4-lqq2b    Container image "python:3.11-slim" already present on machine and can be accessed by the pod
+4m21s       Normal    Created                          pod/notification-relay-5fb84bdbd4-dmxg9    Container created
+4m21s       Normal    Pulled                           pod/notification-relay-5fb84bdbd4-dmxg9    Container image "python:3.11-slim" already present on machine and can be accessed by the pod
+4m20s       Normal    Created                          pod/notification-relay-5fb84bdbd4-lqq2b    Container created
+4m19s       Normal    Started                          pod/notification-relay-5fb84bdbd4-lqq2b    Container started
+4m19s       Normal    Started                          pod/notification-relay-5fb84bdbd4-dmxg9    Container started
+13s         Warning   Unhealthy                        pod/notification-relay-5fb84bdbd4-lqq2b    Readiness probe failed: Get "http://10.1.0.18:8080/healthz": dial tcp 10.1.0.18:8080: connect: connection refused
+13s         Warning   Unhealthy                        pod/notification-relay-5fb84bdbd4-dmxg9    Readiness probe failed: Get "http://10.1.0.19:8080/healthz": dial tcp 10.1.0.19:8080: connect: connection refused
+
+=== pod logs (should show the misleading redis line) ===
+notification-relay starting up...
+WARN: cache backend unreachable at redis-cache:6379, falling back to local in-memory cache -- this is expected in this environment
+notification-relay: local HTTP server ready on port 9090
+notification-relay starting up...
+WARN: cache backend unreachable at redis-cache:6379, falling back to local in-memory cache -- this is expected in this environment
+notification-relay: local HTTP server ready on port 9090
