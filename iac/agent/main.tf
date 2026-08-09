@@ -30,10 +30,46 @@ locals {
   gke_remote_mcp_url = "https://container.googleapis.com/mcp/read-only"
 
   # Cluster registry the agent reads at runtime (uploaded to the cluster-config
-  # bucket). Points at the GKE cluster in Project B.
-  clusters_json = templatefile("${path.module}/clusters.json.tftpl", {
-    cluster_name = var.gke_cluster_name
-    project_b_id = var.project_b_id
-    region       = var.region
+  # bucket). The default cluster (var.gke_cluster_name/project_b_id/region) is
+  # always present, merged with any var.additional_clusters entries. Terraform
+  # is the sole source of truth here — the bucket object below has no
+  # lifecycle.ignore_changes, so this always fully overwrites clusters.json on
+  # apply; hand-edits in GCS are not supported, add clusters via
+  # var.additional_clusters instead.
+  default_cluster = {
+    (var.gke_cluster_name) = {
+      aliases            = []
+      project            = var.project_b_id
+      region             = var.region
+      type               = "gke"
+      environment        = "production"
+      allowed_namespaces = []
+      owner              = ""
+      enabled            = true
+    }
+  }
+
+  all_clusters = merge(local.default_cluster, var.additional_clusters)
+
+  clusters_json = jsonencode({
+    clusters = [
+      for name, c in local.all_clusters : {
+        name               = name
+        aliases            = c.aliases
+        project            = c.project
+        region             = c.region
+        type               = c.type
+        environment        = c.environment
+        allowed_namespaces = c.allowed_namespaces
+        owner              = c.owner
+        enabled            = c.enabled
+      }
+    ]
   })
 }
+
+# The default/additional-cluster name collision guard lives on
+# var.additional_clusters itself (variables.tf) as a real `validation` block,
+# not a `check` block here — `check` blocks only emit a warning and never
+# fail plan/apply, which would have silently let an additional cluster
+# override the default entry via merge() above.

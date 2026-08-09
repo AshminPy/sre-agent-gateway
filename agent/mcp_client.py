@@ -147,7 +147,9 @@ MCP_REGISTRY = {
 #     ]
 #   }
 #
-# To add a cluster: edit clusters.json in GCS — no Terraform or redeploy needed.
+# To add a cluster: set var.additional_clusters in Terraform and apply
+# (iac/agent/variables.tf) — Terraform is the sole source of truth for this
+# file; a manual edit in GCS will be silently overwritten on the next apply.
 # Agent SA needs: roles/storage.objectViewer on the config bucket.
 
 def _build_cluster_registry() -> dict:
@@ -626,8 +628,9 @@ def resolve_cluster(cluster_name: str) -> Dict[str, Any]:
     known = list(registry.keys())
     raise ValueError(
         f"Cluster '{cluster_name}' not in registry. Known clusters: {known}. "
-        "To add a cluster: update clusters.json in GCS and re-upload — "
-        "gsutil cp iac/clusters.json gs://$CLUSTER_CONFIG_BUCKET/clusters.json"
+        "To add a cluster: set var.additional_clusters in Terraform "
+        "(iac/agent/variables.tf) and apply — do not hand-edit clusters.json "
+        "in GCS, it will be overwritten on the next apply."
     )
 
 

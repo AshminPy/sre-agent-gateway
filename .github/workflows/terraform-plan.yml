@@ -52,6 +52,14 @@ jobs:
       - name: Validate
         run: terraform validate
 
+      # Terraform-native tests (iac/agent/tests/*.tftest.hcl) — config/template
+      # rendering only, no real cloud resources (the module under test has no
+      # providers), so this needs no extra credentials beyond what's already
+      # authenticated above. Catches regressions in clusters.json rendering
+      # before they reach a real plan/apply.
+      - name: Terraform test
+        run: terraform test
+
       # gemini_model is pinned here explicitly because iac/agent/terraform.tfvars
       # (the file holding the real production value) is gitignored and never
       # reaches CI's checkout. Without this, CI silently falls back to

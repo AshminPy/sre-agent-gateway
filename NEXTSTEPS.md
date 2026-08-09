@@ -450,6 +450,29 @@ described throughout this section (`gke_remote_mcp` failure → auto-fallback to
 live target to fall back to today. Full detail: `docs/architecture/mcp-architecture.md` in the new
 knowledge base.
 
+**⚠️ 2026-08-09 correction needed, not yet done**: `gh variable list` shows `ENABLE_CUSTOM_MCP=true`
+(a GitHub Actions repo variable, set 2026-08-07 — invisible to a pure code/Terraform read, which is
+exactly how the "defaulting false, not overridden" claim above went stale). This means CI's real
+applies likely DO run with `enable_custom_mcp=true`, contradicting the claim two paragraphs up and
+the same claim repeated in `docs/architecture/mcp-architecture.md` / `docs/management/risks-and-limitations.md`.
+**Not yet verified**: whether the Cloud Run service is actually reachable despite the missing
+LB/NEG, or still effectively dead. This is now backlog item #4 (next up per the recommended order)
+— do not assume either way until that item runs.
+
+### STATUS: 2026-08-09 — clusters.json multi-cluster bug FIXED
+
+`var.additional_clusters` (`iac/agent/variables.tf`) — `map(object(...))`, merged with the default
+cluster via `jsonencode(...)` in `iac/agent/main.tf` (replacing the old `templatefile(...)` +
+`.tftpl`, which is deleted). Real collision guard (a `validation` block, not a `check` block — a
+`check` block was tried first, and an independent review caught that `check` blocks only emit a
+warning and never fail plan/apply; replaced before merge, verified with a real `terraform plan`
+exit code). Tests: `iac/agent/tests/clusters_json.tftest.hcl` (4 cases, Terraform-native, no real
+cloud resources) + `tests/test_multi_cluster_registry.py` (8 cases, Python, mocked GCS). Applied
+live to `sreagent-t2-demo`, re-verified with a real `invoke_agent.py --scenario imagepull` run
+against `sre-test-cluster` afterward. **Still open, not fixed by this change**: adding a cluster in
+a different GCP project gets no IAM grant (`iac/gke-access` is hardwired to one `project_b_id`) —
+see the runbook. Full detail: PR in `sre-agent-gateway`, `docs/architecture/cluster-routing.md`.
+
 On the MCP_REGISTRY hardcoded-to-2-sources point (4 above): also flagging that tool-selection
 accuracy as the *combined* tool surface grows (beyond today's 6 + 27, never shown to the model
 together) has never been load/accuracy-tested — worth a deliberate check once a 3rd source is

@@ -27,7 +27,11 @@ An empty cluster registry short-circuits straight to `unresolved` before any tie
 
 A JSON registry file, `clusters.json`, stored in a dedicated GCS bucket, read by `_get_cluster_registry()` with a 5-minute TTL cache (`agent/mcp_client.py:205-217`). Each entry has: `name` (canonical ID), `aliases`, `project`, `region`, `type` (`gke`/`custom`), `environment`, `allowed_namespaces`, `owner`, `enabled`, and `mcp_url` (falls back to an env var if absent).
 
-**⚠️ Known operational limitation — `clusters.json` is wiped on every `terraform apply`.** The Terraform template that generates this file (`iac/agent/clusters.json.tftpl`) hardcodes exactly **one** cluster object — there is no loop/list construct, and the `google_storage_bucket_object` resource that uploads it has no `lifecycle { ignore_changes }` block. This means **any manually-added second cluster entry is destroyed on the next `terraform apply`.** See [Adding a New GKE Cluster](../runbooks/add-gke-cluster.md) for the current workaround and what needs to change to fix this properly.
+**FIXED (2026-08-09)** — `clusters.json` now supports multiple clusters. `iac/agent/main.tf` renders it via `jsonencode(...)` over a `map(object(...))` (`var.additional_clusters`, `iac/agent/variables.tf`), merged with the always-present default cluster (`var.gke_cluster_name`). Terraform remains the sole source of truth — hand-editing the file in GCS is still not supported and is still overwritten on the next apply, by design; add clusters via `var.additional_clusters` instead. See [Adding a New GKE Cluster](../runbooks/add-gke-cluster.md).
+
+Two things confirmed during this fix, worth knowing:
+- A name collision between `var.gke_cluster_name` and an `var.additional_clusters` key **fails the plan** (a real `validation` block on `additional_clusters`, whitespace-trimmed) — it does not silently override the default cluster.
+- Adding a cluster in the **same** `project_b_id` needs no IAM/Gateway change. Adding a cluster in a **different** project gets a `clusters.json` entry but currently **zero IAM** — `iac/gke-access` is hardwired to one `var.project_b_id` — and will `403` at runtime until that stack is applied a second time against the new project. See [Adding a New GKE Cluster](../runbooks/add-gke-cluster.md) for the exact gap.
 
 ## What data comes from PagerDuty
 

@@ -30,9 +30,9 @@ Proven only via manual `kubectl` testing and a locally-run integration test — 
 
 An IAP outage silently degrades to "unauthorized egress allowed" rather than blocking the agent. A deliberate rollout-safety tradeoff, but one that doesn't appear to have a formal risk-acceptance record. See [Security Operations](../governance/security.md).
 
-## 7. `clusters.json` is wiped on every `terraform apply`
+## 7. ~~`clusters.json` is wiped on every `terraform apply`~~ — FIXED 2026-08-09
 
-The multi-cluster registry file is generated from a single-cluster-only Terraform template — any manually-added second cluster is destroyed on the next apply. This directly blocks scaling to more than one cluster without a fix. See [Cluster Routing](../architecture/cluster-routing.md).
+Multi-cluster support now exists (`var.additional_clusters`, `iac/agent/variables.tf`), with a real, enforcing collision guard and a live-verified backward-compatible default. See [Cluster Routing](../architecture/cluster-routing.md). One related gap remains, not fixed by this change: adding a cluster in a **different** GCP project than the existing one currently gets no IAM grant (`iac/gke-access` is hardwired to one project) and will `403` at runtime — see [Adding a New GKE Cluster](../runbooks/add-gke-cluster.md).
 
 ## 8. No automated eval-quality gate in CI
 
