@@ -1,9 +1,50 @@
 # Evaluation and AI Quality
 
 > **Implementation Status:** IMPLEMENTED (deterministic golden-case evaluation); Vertex AI EvalTask integration — PARTIALLY IMPLEMENTED (present, optional, off by default); LLM-as-judge / rubric grading — DOES NOT EXIST
-> **Last Verified:** 2026-08-08 — `agent/eval/golden_cases.py`, `agent/eval/run_eval.py`
-> **Source of Truth:** `agent/eval/run_eval.py:73-130` (scoring logic)
+> **Last Verified:** 2026-08-09 — `agent/eval/golden_cases.py`, `agent/eval/run_eval.py`
+> **Source of Truth:** `agent/eval/run_eval.py:73-133` (scoring logic)
 > **Owner:** SRE Agent platform team.
+
+## 2026-08-09 — two real evaluation-harness bugs fixed, corrected baseline established
+
+Two problems in the eval harness itself (not the agent) were found and fixed this day:
+
+1. **Stale expected tool names.** `golden_cases.py`'s `expected_trajectory` fields for 12 of 14
+   cases were written against an old tool-naming scheme that no longer exists — this made
+   trajectory scoring read as a false 0%. Fixed by rewriting all 12 to the current real
+   `GKE_REMOTE_TOOLS`/`CUSTOM_K8S_TOOLS` names (`agent/mcp_client.py`). Guarded going forward by
+   `tests/test_golden_cases_tool_names.py`, which checks each case's tool names against the
+   *correct* per-case source (not just "valid somewhere in the combined tool set" — that weaker
+   check would not have caught this exact bug, since several old names happen to also be valid
+   `CUSTOM_K8S_TOOLS` names).
+2. **`recursion_limit` mismatch.** Local eval mode (`run_local()`) passed no `recursion_limit`
+   config to `graph.invoke()` at all, silently falling back to LangGraph's built-in default of
+   25, while the deployed agent uses 60 — this crashed 4/14 cases with "Recursion limit of 25
+   reached," unrelated to real agent behavior. Fixed with a single shared constant,
+   `GRAPH_RECURSION_LIMIT = 60` (`agent/graph.py:29`), imported by both `agent/main.py` and
+   `agent/eval/run_eval.py:140,157`. Guarded by `tests/test_recursion_limit_consistency.py`.
+3. A related silent gap closed in the same fix: `_latency_seconds` was already computed by
+   `run_local()`/`run_remote()` but was being dropped before it reached the saved score JSON —
+   now included as `latency_seconds` in every case's output.
+
+The 14 scenarios were rerun clean after the fix. Result: **14/14 completed execution (0
+recursion-limit crashes, was 10/14)**, **12/14 correct tools called (trajectory recall ≥ 0.5,
+not measurable before the fix)**, **100% correct MCP source selection**, **0 tool execution
+failures**. Full numbers, old-vs-new comparison, and 3 new findings the clean rerun surfaced
+(a cross-contamination case-mixup, a silent zero-tool-call anomaly, and confirmation that 3
+cases have no live fixture) are in
+[`docs/baselines/tool-scaling-baseline-2026-08-09-corrected.md`](../baselines/tool-scaling-baseline-2026-08-09-corrected.md)
+— that file is the current official tool-scaling baseline. The original run
+(`tool-scaling-baseline-2026-08-09.md`) is kept, unmodified, as historical evidence of the two
+bugs above.
+
+**Reading the old "0% tool match" / new "3/14 pass" numbers correctly**: neither number means
+what it looks like at first glance. The 0% in the first run was test-data drift, not a real
+routing failure. The 3/14 in the corrected run reflects the pass/fail gate's strict AND across
+five separate checks (recall, keyword accuracy, confidence, outcome, max-confidence) — the
+metric that actually answers "is tool selection working" is trajectory recall ≥ 0.5, which is
+12/14. See the corrected baseline doc's "Reading the pass/fail number correctly" section for
+the full breakdown.
 
 ## How we know the agent is correct — the honest, current picture
 
@@ -20,9 +61,19 @@ This is **not** an AI-judged evaluation system today. Every correctness check th
 
 Case IDs cover: `crashloop-001`, `oomkilled-001`, `imagepull-001`, `configmap-001`, `init-001`, `selector-001`, `cascading-001`, `pending-001`, `onprem-001`, `insufficient-evidence-001`, `conflicting-evidence-001`, `ambiguous-routing-001`, `mcp-gateway-failure-001`, `secret-001`. Note the intentional **negative** cases: `insufficient-evidence-001` (a pod that's already been deleted — the agent must NOT invent a cause) and `conflicting-evidence-001` (evidence sources disagree — the agent must flag the conflict, not pick a side).
 
+**Known current limitations** (surfaced by the 2026-08-09 corrected rerun, not fixed —
+out of scope for that follow-up, listed here for honesty): 3 cases (`pending-001`,
+`mcp-gateway-failure-001`, `conflicting-evidence-001`) target pods that have no live k8s
+fixture anywhere in this repo, so they can only ever produce a "pod does not exist" result;
+`selector-001` was found to sometimes pick the wrong pod to investigate when all 7
+`test-incidents` fixtures are live in the same namespace simultaneously with no exact
+resource-name hint given; `onprem-001` made zero tool calls with no error logged in the
+corrected rerun (unexplained, ties into the still-open question of whether the custom MCP
+path is actually reachable). Full detail in the corrected baseline doc above.
+
 ## Deterministic checks — `score_case()`
 
-Purely code, no LLM (`agent/eval/run_eval.py:73-130`):
+Purely code, no LLM (`agent/eval/run_eval.py:73-133`):
 
 - `trajectory_precision` / `trajectory_recall` — did the agent call the expected tools?
 - `trajectory_in_order_match` — same tools, in the expected relative order?

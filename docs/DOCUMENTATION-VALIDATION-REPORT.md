@@ -1,5 +1,37 @@
 # Documentation Validation Report
 
+## 2026-08-09 re-verification — read this first, supersedes nothing below (additive)
+
+Per this report's own recommendation #3 ("re-verify this whole knowledge base after any of the
+14 risks above gets resolved"), a second 6-parallel-pass re-audit ran today, this time checking
+the 2026-08-08 docs against the current code (2 real fixes landed since then: PR #52 multi-cluster
+`clusters.json`, PR #53 corrected tool-scaling baseline). Several checks used live evidence, not
+just static reading: `gcloud iam roles describe` against real predefined roles, `mcp/tests/
+test_no_mutation.py` executed live (2/2 passed), `terraform test` executed live (4/4 passed),
+`pytest tests/test_multi_cluster_registry.py tests/test_mcp_router.py` executed live (13/13
+passed).
+
+**Real staleness found and fixed today** (10 files):
+- `docs/architecture/evaluation.md` — didn't mention either of today's 2 eval-harness bug fixes, the 2 new regression tests, or the corrected baseline at all. Added a full section.
+- `docs/architecture/evidence-architecture.md` — the example evidence object had `source` and `tool` **swapped** relative to the real `ev_entry` shape in `agent/nodes/evidence_extractor.py:131-143` (`source` actually holds the tool name; `mcp_source` holds the MCP source). Fixed to match the real code exactly.
+- `docs/operations/deployment.md` — claimed CI "posts as a PR comment"; checked the actual workflow YAML, no such step exists. Removed the false claim, added the `terraform test` step that's real but was undocumented.
+- `docs/operations/terraform.md` — same missing `terraform test` step; `main.tf`'s row didn't mention it now also renders `clusters.json`; the "wipe-on-apply limitation" framing for `clusters.json` was stale (fixed 2026-08-09, no longer a limitation).
+- `docs/architecture/gke-vs-nongke.md`, `docs/runbooks/add-non-gke-cluster.md`, `docs/runbooks/mcp-failure.md`, `docs/governance/scaling.md` — all four still told a reader the cluster registry gets wiped on a second cluster entry and pointed at a dead anchor link (`cluster-routing.md#known-operational-limitation`, which no longer exists) — all fixed to reflect the real, working multi-cluster mechanism. (`scaling.md` was missed in the first pass through this list — an independent reviewer caught it before merge.)
+- `docs/architecture/langgraph-workflow.md`, `docs/architecture/investigation-loop.md` — both claimed `recursion_limit=60` was "hardcoded in `agent/main.py:423,443`" — it's now a shared constant (`agent/graph.py:29`) imported by both `agent/main.py` and `agent/eval/run_eval.py`, specifically to prevent the eval-harness drift that caused today's bug #2. Fixed.
+- `docs/operations/daily-health-check.md` — linked to a heading in `logging.md` that doesn't exist; the real content lives in `observability.md`. Fixed the link.
+- `docs/least-privilege-iam.md` — still missing `roles/aiplatform.agentDefaultAccess`, a gap the 2026-08-08 report already flagged as unfixed (item 4 below) — fixed today.
+- `docs/architecture/memory.md`, `docs/architecture/cluster-routing.md`, `docs/architecture/dynamic-mcp-routing.md`, `docs/architecture/mcp-architecture.md` — several citation line-number drifts of 2-3 lines (content still correct, exact line numbers were off) — corrected.
+
+**New deliverable produced from this pass**: [Implemented vs Planned — Master Status Matrix](management/implemented-vs-planned-matrix.md), consolidating every status label (✅/🟡/🔵/❌) found across all 6 audits into one table, each with file:line or live-command evidence.
+
+**Confirmed still accurate** (the large majority of the 51 pages): all 9 LangGraph node descriptions, the confidence-scoring formula, the read-only IAM/security proof, the metrics/alerts inventory (11/11 each, unchanged), the CD-to-Agent-Engine path, and the core evidence pipeline design all held up against direct code re-verification.
+
+**Real finding, not yet acted on**: only 3 of 9 LangGraph nodes (`context_resolver`, `mcp_router`, `rca_builder`) have direct test coverage; the other 6 have real, working code but zero direct or full-graph test evidence. No test in the repo exercises the compiled graph end-to-end. This is a genuine test-coverage gap, not a documentation gap — flagged here since it surfaced during this pass.
+
+---
+
+# Documentation Validation Report (original — 2026-08-08 pass)
+
 > **Last Verified:** 2026-08-08
 > **Method:** 6 parallel deep-read research passes against the live repository (`~/projects/sre-agent-gateway`, GCP project `sreagent-t2-demo`), each covering a distinct subsystem, followed by synthesis into 51 documentation pages. Every substantive claim in the resulting docs carries a file:line citation traceable back to the source research. This report is a second pass, checking the documentation's own coverage and honesty against what was actually found.
 

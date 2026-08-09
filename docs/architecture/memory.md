@@ -17,7 +17,7 @@ The GCS archive is complete and unconditional — every investigation's evidence
 
 ## How memory is written
 
-`_mb_store()` (`agent/main.py:747-787`) writes a fact string (cluster, namespace, pod, incident type, root cause, confidence) to Vertex AI Memory Bank. Dedup key: `pod + incident_type` (stable Kubernetes identifiers — not semantic similarity), checked against existing memories in the same cluster/namespace scope before writing.
+`_mb_store()` (`agent/main.py:749-789`) writes a fact string (cluster, namespace, pod, incident type, root cause, confidence) to Vertex AI Memory Bank. Dedup key: `pod + incident_type` (stable Kubernetes identifiers — not semantic similarity), checked against existing memories in the same cluster/namespace scope before writing.
 
 ## The exact write-gate condition
 
@@ -25,7 +25,7 @@ The GCS archive is complete and unconditional — every investigation's evidence
 if confidence_band == "auto":
     cls._mb_store(...)
 ```
-(`agent/main.py:955`) — **only** `auto`-band RCAs get written to persistent memory. Anything else (`review`, `escalate`) only goes into a per-container, non-durable, 20-entry-max fallback list.
+(`agent/main.py:957`) — **only** `auto`-band RCAs get written to persistent memory. Anything else (`review`, `escalate`) only goes into a per-container, non-durable, 20-entry-max fallback list.
 
 Since `confidence_band` only reaches `auto` when `derive_outcome()` returns `CONFIRMED` (strong evidence, independently corroborated, zero unresolved contradictions, zero active competing hypotheses — see [Confidence Scoring](confidence.md)), this is a genuine multi-condition validation gate, not a bare numeric cutoff.
 
@@ -39,7 +39,7 @@ The code is explicit and self-critical about this history. A comment block dated
 
 ## How memory is queried / how it influences planning
 
-`_mb_recall()` (`agent/main.py:799-838`) retrieves up to 3 memories scoped to the current investigation's cluster+namespace, formats them as a short "Past incidents on this cluster/namespace (validate during investigation)" string, and injects it as `payload["memory_context"]`. This flows all the way into the `rca_builder` prompt (with a fallback string "No past investigations on record" if nothing was recalled). A structured `memory_bank_recall` log event is emitted per recalled memory, to make recurrence trackable.
+`_mb_recall()` (`agent/main.py:801-840`) retrieves up to 3 memories scoped to the current investigation's cluster+namespace, formats them as a short "Past incidents on this cluster/namespace (validate during investigation)" string, and injects it as `payload["memory_context"]`. This flows all the way into the `rca_builder` prompt (with a fallback string "No past investigations on record" if nothing was recalled). A structured `memory_bank_recall` log event is emitted per recalled memory, to make recurrence trackable.
 
 **Important**: the recalled text explicitly says "validate during investigation" — it's presented as a hint to the model, not asserted as ground truth. But the model is still free to weight it however it reasons; there's no code-level mechanism forcing the model to independently re-verify a recalled memory before using it.
 

@@ -55,7 +55,7 @@ This is the layer that actually matters for whether the agent can use this path 
 3. Grant the Cloud Run runtime SA `roles/gkehub.gatewayReader` (it currently only has `roles/container.viewer`).
 4. Convert the manual `gcloud` Fleet-registration/RBAC steps into Terraform (or at minimum, a repeatable script — there is currently no wrapper script for `generate-gateway-rbac`).
 5. Add a field to `clusters.json`'s schema to distinguish "reach via Connect Gateway" from "reach via direct endpoint" — no such field exists today.
-6. Fix `clusters.json`'s single-cluster-only template so a second (on-prem) cluster entry survives a `terraform apply` (see [Cluster Routing](cluster-routing.md#known-operational-limitation)).
+6. ~~Fix `clusters.json`'s single-cluster-only template so a second (on-prem) cluster entry survives a `terraform apply`~~ — **DONE 2026-08-09**: `var.additional_clusters` now supports any number of clusters, including non-GKE ones, and every entry survives `terraform apply` by design (Terraform is now the sole source of truth). See [Cluster Routing](cluster-routing.md). What's still open for on-prem specifically is items 1-5 above (Connect Gateway networking/auth/RBAC), not the registry-survival issue.
 7. Turn on `DATA_READ` audit logging for `connectgateway.googleapis.com`, or accept the current audit gap as a documented risk.
 
 None of this is started as Terraform/automation today — see [Adding a Non-GKE / On-Prem Cluster](../runbooks/add-non-gke-cluster.md) for the current manual runbook based on what's actually been proven.

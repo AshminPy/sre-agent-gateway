@@ -59,7 +59,7 @@ The loop is: `task_planner` → `mcp_router` → `tool_executor` → (`evidence_
 
 ## Two safety nets worth knowing about (they are different things)
 
-1. **LangGraph's own `recursion_limit=60`** (`agent/main.py:423,443`) — a hard cap on total graph steps, set when the graph is invoked. This is generous headroom (each loop iteration touches ~4-5 nodes), not the operative limit day-to-day.
+1. **LangGraph's own `recursion_limit=60`** — a hard cap on total graph steps, set when the graph is invoked. This is generous headroom (each loop iteration touches ~4-5 nodes), not the operative limit day-to-day. The value is `GRAPH_RECURSION_LIMIT = 60` (`agent/graph.py:29`), a single shared constant imported by both `agent/main.py:421,442` (the deployed agent) and `agent/eval/run_eval.py:140` (the local eval harness) — **not** independently hardcoded in each (fixed 2026-08-09; previously `agent/main.py` hardcoded `60` directly and `run_eval.py`'s local mode silently used LangGraph's built-in default of 25, causing 4 golden-case eval runs to fail with "Recursion limit of 25 reached" for reasons unrelated to real agent behavior). Guarded against drifting apart again by `tests/test_recursion_limit_consistency.py`.
 2. **`investigation.max_steps = 5`** — the real, intentional cap on investigation *loop iterations*, enforced by `loop_controller`. This is the number that actually governs "how many times will the agent check something before giving up." See [Investigation Loop](investigation-loop.md).
 
 ## A dead code path worth knowing about

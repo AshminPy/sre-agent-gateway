@@ -23,7 +23,7 @@ Every evidence item gets a sequential ID (`ev_001`, `ev_002`, ...) assigned when
 
 ## GCS evidence storage
 
-`write_evidence()` (`agent/gcs_client.py:27-61`) writes each evidence item to `gs://{EVIDENCE_BUCKET}/{run_id}/{evidence_id}.json`. **Retry logic**: up to 2 attempts, 1-second gap between them. If both fail, the function returns a sentinel string (`gcs_write_failed:{path}`) instead of raising — the investigation continues, but the evidence item is marked `gcs_write_failed=True`.
+`write_evidence()` (`agent/gcs_client.py:27-61`, verified) writes each evidence item to `gs://{EVIDENCE_BUCKET}/{run_id}/{evidence_id}.json`. **Retry logic**: up to 2 attempts, 1-second gap between them. If both fail, the function returns a sentinel string (`gcs_write_failed:{path}`) instead of raising — the investigation continues, but the evidence item is marked `gcs_write_failed=True`.
 
 ## Evidence references
 
@@ -62,20 +62,27 @@ Both use uniform bucket-level access and bucket-level (not project-level) IAM.
 
 ## A real evidence object (sanitized/illustrative shape)
 
+Exact shape from `ev_entry` in `agent/nodes/evidence_extractor.py:131-143` — note `source` holds
+the **tool name** and `mcp_source` holds the **MCP source** (an earlier version of this doc had
+these two fields swapped; corrected 2026-08-09). There is no `evidence_id` field inside the
+entry — the ID only exists as the outer dict key (`evidence_store[ev_id]`).
+
 ```json
 {
   "ev_002": {
-    "evidence_id": "ev_002",
+    "ok": true,
+    "source": "list_k8s_events",
+    "mcp_source": "gke_remote_mcp",
+    "cluster": "sre-test-cluster",
+    "region": "us-central1",
+    "resource_type": "pod",
+    "resource_id": "test-incidents/payment-worker-7f9",
     "summary": "Pod payment-worker-7f9 OOMKilled at 14:32, container payment-worker",
     "key_facts": [
       "OOMKilled, exit code 137",
       "memory limit 512Mi exceeded",
       "restart count 4"
     ],
-    "cluster": "sre-test-cluster",
-    "region": "us-central1",
-    "source": "gke_remote_mcp",
-    "tool": "list_k8s_events",
     "raw_ref": "gs://sreagent-t2-demo-evidence/run_20260808_143012_ab3d/ev_002.json",
     "gcs_write_failed": false
   }
