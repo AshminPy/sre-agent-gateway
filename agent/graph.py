@@ -18,6 +18,16 @@ from agent.nodes.rca_builder        import rca_builder
 
 log = logging.getLogger("sre-agent.graph")
 
+# LangGraph's own step-count safety net (distinct from investigation.max_steps=5
+# in agent/state.py, which governs loop_controller's own exit decision — this is
+# a much larger ceiling, since each loop iteration touches ~4-5 graph nodes).
+# LangGraph's built-in default is 25, which is too low for this graph's normal
+# shape and was silently being used by agent/eval/run_eval.py's local mode
+# (only agent/main.py's investigate() passed a recursion_limit config,
+# independently hardcoded — the two drifted apart with no test catching it).
+# Both callers must import this constant, not hardcode their own number.
+GRAPH_RECURSION_LIMIT = 60
+
 
 def _after_input(state: AgentState) -> str:
     return "failed" if state["investigation"].get("status") == "failed" else "ok"

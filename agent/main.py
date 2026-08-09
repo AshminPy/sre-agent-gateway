@@ -418,9 +418,10 @@ def investigate(payload: dict) -> dict:
                     "sre.severity": severity,
                     "sre.source_type": envelope.get("source_type", "manual"),
                 })
+                from agent.graph import GRAPH_RECURSION_LIMIT
                 graph  = _get_graph()
                 state  = get_initial_state(envelope)
-                result = graph.invoke(state, config={"recursion_limit": 60})
+                result = graph.invoke(state, config={"recursion_limit": GRAPH_RECURSION_LIMIT})
                 inv_for_span = result.get("investigation", {}) or {}
                 ctx_for_span = result.get("resolved_context", {}) or {}
                 set_span_attributes(span, {
@@ -438,9 +439,10 @@ def investigate(payload: dict) -> dict:
                     "sre.estimated_cost_usd": _safe_float(inv_for_span.get("estimated_cost_usd", 0.0)),
                 })
         else:
+            from agent.graph import GRAPH_RECURSION_LIMIT
             graph  = _get_graph()
             state  = get_initial_state(envelope)
-            result = graph.invoke(state, config={"recursion_limit": 60})
+            result = graph.invoke(state, config={"recursion_limit": GRAPH_RECURSION_LIMIT})
 
         summary = result.get("final_summary", {}) or {}
         inv     = result["investigation"]

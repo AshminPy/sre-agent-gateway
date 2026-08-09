@@ -1,0 +1,348 @@
+{
+  "summary": {
+    "passed": 3,
+    "total": 14
+  },
+  "scores": [
+    {
+      "case_id": "crashloop-001",
+      "passed": false,
+      "trajectory_precision": 0.667,
+      "trajectory_recall": 1.0,
+      "in_order_match": true,
+      "keyword_accuracy": 0.5,
+      "confidence": 0.5321,
+      "confidence_band": "escalate",
+      "confidence_ok": false,
+      "outcome": "possible",
+      "outcome_ok": true,
+      "max_confidence_ok": true,
+      "predicted_tools": [
+        "get_k8s_logs",
+        "list_k8s_events",
+        "describe_k8s_resource"
+      ],
+      "expected_tools": [
+        "get_k8s_logs",
+        "list_k8s_events"
+      ],
+      "root_cause": "The pod 'crashloop-pod' in 'sre-test-cluster' (us-central1) is intentionally crashing with exit code 1, as configured in its container 'crasher' (ev_001, ev_003).",
+      "latency_seconds": 73.28
+    },
+    {
+      "case_id": "oomkilled-001",
+      "passed": false,
+      "trajectory_precision": 0.667,
+      "trajectory_recall": 1.0,
+      "in_order_match": true,
+      "keyword_accuracy": 1.0,
+      "confidence": 0.5321,
+      "confidence_band": "escalate",
+      "confidence_ok": false,
+      "outcome": "possible",
+      "outcome_ok": true,
+      "max_confidence_ok": true,
+      "predicted_tools": [
+        "get_k8s_resource",
+        "get_k8s_logs",
+        "describe_k8s_resource"
+      ],
+      "expected_tools": [
+        "get_k8s_resource",
+        "get_k8s_logs"
+      ],
+      "root_cause": "The 'memory-hog' container in pod oomkilled-pod is repeatedly OOMKilled because it exceeds its 103Mi memory limit, as evidenced by its OOMKilled status and exit code 137 (ev_003).",
+      "latency_seconds": 65.25
+    },
+    {
+      "case_id": "imagepull-001",
+      "passed": false,
+      "trajectory_precision": 0.667,
+      "trajectory_recall": 1.0,
+      "in_order_match": false,
+      "keyword_accuracy": 0.333,
+      "confidence": 0.615,
+      "confidence_band": "escalate",
+      "confidence_ok": false,
+      "outcome": "possible",
+      "outcome_ok": true,
+      "max_confidence_ok": true,
+      "predicted_tools": [
+        "list_k8s_events",
+        "describe_k8s_resource",
+        "get_k8s_resource"
+      ],
+      "expected_tools": [
+        "get_k8s_resource",
+        "list_k8s_events"
+      ],
+      "root_cause": "The pod 'imagepull-pod' is failing to pull the image 'gcr.io/google-containers/nonexistent-image:v99.9.9' because the image does not exist (ev_001, ev_002).",
+      "latency_seconds": 69.74
+    },
+    {
+      "case_id": "configmap-001",
+      "passed": true,
+      "trajectory_precision": 0.667,
+      "trajectory_recall": 0.5,
+      "in_order_match": false,
+      "keyword_accuracy": 1.0,
+      "confidence": 0.65,
+      "confidence_band": "review",
+      "confidence_ok": true,
+      "outcome": "probable",
+      "outcome_ok": true,
+      "max_confidence_ok": true,
+      "predicted_tools": [
+        "list_k8s_events",
+        "get_k8s_resource",
+        "list_k8s_events"
+      ],
+      "expected_tools": [
+        "list_k8s_events",
+        "describe_k8s_resource"
+      ],
+      "root_cause": "The pod 'auth-service' is stuck in 'ContainerCreating' because it cannot mount the ConfigMap 'app-config', which does not exist (ev_001, ev_002).",
+      "latency_seconds": 141.2
+    },
+    {
+      "case_id": "init-001",
+      "passed": true,
+      "trajectory_precision": 0.333,
+      "trajectory_recall": 0.5,
+      "in_order_match": false,
+      "keyword_accuracy": 1.0,
+      "confidence": 0.65,
+      "confidence_band": "review",
+      "confidence_ok": true,
+      "outcome": "probable",
+      "outcome_ok": true,
+      "max_confidence_ok": true,
+      "predicted_tools": [
+        "list_k8s_events",
+        "get_k8s_logs",
+        "describe_k8s_resource"
+      ],
+      "expected_tools": [
+        "list_k8s_events",
+        "get_k8s_resource"
+      ],
+      "root_cause": "The init container 'wait-for-db' in pod 'inventory-service' is repeatedly failing to connect to 'db-service' on port 5432, preventing the main container from starting (ev_003).",
+      "latency_seconds": 81.21
+    },
+    {
+      "case_id": "selector-001",
+      "passed": false,
+      "trajectory_precision": 0.667,
+      "trajectory_recall": 1.0,
+      "in_order_match": false,
+      "keyword_accuracy": 0.0,
+      "confidence": 0.65,
+      "confidence_band": "review",
+      "confidence_ok": true,
+      "outcome": "probable",
+      "outcome_ok": true,
+      "max_confidence_ok": true,
+      "predicted_tools": [
+        "list_k8s_events",
+        "get_k8s_resource",
+        "describe_k8s_resource"
+      ],
+      "expected_tools": [
+        "describe_k8s_resource",
+        "get_k8s_resource"
+      ],
+      "root_cause": "The 'auth-service' pods in the 'test-incidents' namespace are stuck in 'ContainerCreating' state because the required 'app-config' ConfigMap is not found (ev_001, ev_002, ev_003).",
+      "latency_seconds": 49.11
+    },
+    {
+      "case_id": "cascading-001",
+      "passed": false,
+      "trajectory_precision": 0.333,
+      "trajectory_recall": 0.5,
+      "in_order_match": false,
+      "keyword_accuracy": 0.0,
+      "confidence": 0.515,
+      "confidence_band": "escalate",
+      "confidence_ok": true,
+      "outcome": "possible",
+      "outcome_ok": true,
+      "max_confidence_ok": true,
+      "predicted_tools": [
+        "get_k8s_logs",
+        "describe_k8s_resource",
+        "get_k8s_resource"
+      ],
+      "expected_tools": [
+        "get_k8s_logs",
+        "list_k8s_events"
+      ],
+      "root_cause": "The 'order-api' pods are not being created or are immediately failing, as evidenced by the deployment having 0 ready replicas (ev_003) and individual pods not being found (ev_001, ev_002).",
+      "latency_seconds": 27.92
+    },
+    {
+      "case_id": "pending-001",
+      "passed": false,
+      "trajectory_precision": 0.667,
+      "trajectory_recall": 1.0,
+      "in_order_match": true,
+      "keyword_accuracy": 0.0,
+      "confidence": 0.65,
+      "confidence_band": "review",
+      "confidence_ok": true,
+      "outcome": "probable",
+      "outcome_ok": true,
+      "max_confidence_ok": true,
+      "predicted_tools": [
+        "list_k8s_events",
+        "describe_k8s_resource",
+        "get_k8s_resource"
+      ],
+      "expected_tools": [
+        "list_k8s_events",
+        "get_k8s_resource"
+      ],
+      "root_cause": "The pod 'batch-worker-7' does not exist in the 'sre-test-cluster' (ev_002).",
+      "latency_seconds": 119.01
+    },
+    {
+      "case_id": "onprem-001",
+      "passed": false,
+      "trajectory_precision": 0.0,
+      "trajectory_recall": 0.0,
+      "in_order_match": false,
+      "keyword_accuracy": 0.0,
+      "confidence": 0.0,
+      "confidence_band": "escalate",
+      "confidence_ok": false,
+      "outcome": "insufficient_evidence",
+      "outcome_ok": true,
+      "max_confidence_ok": true,
+      "predicted_tools": [],
+      "expected_tools": [
+        "list_pods",
+        "get_current_logs",
+        "list_events"
+      ],
+      "root_cause": "No evidence was extracted, so root cause cannot be determined.",
+      "latency_seconds": 4.84
+    },
+    {
+      "case_id": "insufficient-evidence-001",
+      "passed": false,
+      "trajectory_precision": 0.0,
+      "trajectory_recall": 0.0,
+      "in_order_match": false,
+      "keyword_accuracy": 0.0,
+      "confidence": 0.5,
+      "confidence_band": "escalate",
+      "confidence_ok": true,
+      "outcome": "possible",
+      "outcome_ok": false,
+      "max_confidence_ok": true,
+      "predicted_tools": [
+        "get_k8s_logs",
+        "list_k8s_events",
+        "describe_k8s_resource"
+      ],
+      "expected_tools": [
+        "get_k8s_resource"
+      ],
+      "root_cause": "The pod 'ghost-pod-42' was deleted, and its associated Deployment 'ghost-pod' was also deleted, leading to its disappearance (ev_001, ev_003).",
+      "latency_seconds": 54.79
+    },
+    {
+      "case_id": "conflicting-evidence-001",
+      "passed": false,
+      "trajectory_precision": 0.667,
+      "trajectory_recall": 0.5,
+      "in_order_match": false,
+      "keyword_accuracy": 0.0,
+      "confidence": 0.0,
+      "confidence_band": "escalate",
+      "confidence_ok": true,
+      "outcome": "insufficient_evidence",
+      "outcome_ok": false,
+      "max_confidence_ok": true,
+      "predicted_tools": [
+        "list_k8s_events",
+        "get_k8s_logs",
+        "list_k8s_events"
+      ],
+      "expected_tools": [
+        "get_k8s_resource",
+        "list_k8s_events"
+      ],
+      "root_cause": "",
+      "latency_seconds": 54.52
+    },
+    {
+      "case_id": "ambiguous-routing-001",
+      "passed": false,
+      "trajectory_precision": 0.0,
+      "trajectory_recall": 1.0,
+      "in_order_match": true,
+      "keyword_accuracy": 0.0,
+      "confidence": 0.0,
+      "confidence_band": "escalate",
+      "confidence_ok": true,
+      "outcome": "insufficient_evidence",
+      "outcome_ok": true,
+      "max_confidence_ok": true,
+      "predicted_tools": [],
+      "expected_tools": [],
+      "root_cause": "No evidence was extracted, so root cause cannot be determined.",
+      "latency_seconds": 4.0
+    },
+    {
+      "case_id": "mcp-gateway-failure-001",
+      "passed": false,
+      "trajectory_precision": 0.4,
+      "trajectory_recall": 1.0,
+      "in_order_match": true,
+      "keyword_accuracy": 0.0,
+      "confidence": 0.565,
+      "confidence_band": "escalate",
+      "confidence_ok": true,
+      "outcome": "possible",
+      "outcome_ok": false,
+      "max_confidence_ok": false,
+      "predicted_tools": [
+        "describe_k8s_resource",
+        "list_k8s_events",
+        "get_k8s_resource",
+        "list_k8s_api_resources",
+        "get_k8s_resource"
+      ],
+      "expected_tools": [
+        "get_k8s_resource"
+      ],
+      "root_cause": "The pod 'edge-gateway-1' and its corresponding deployment do not exist in the cluster (ev_001, ev_005). This suggests a misconfiguration or deletion.",
+      "latency_seconds": 90.97
+    },
+    {
+      "case_id": "secret-001",
+      "passed": true,
+      "trajectory_precision": 0.333,
+      "trajectory_recall": 0.5,
+      "in_order_match": false,
+      "keyword_accuracy": 0.667,
+      "confidence": 0.65,
+      "confidence_band": "review",
+      "confidence_ok": true,
+      "outcome": "probable",
+      "outcome_ok": true,
+      "max_confidence_ok": true,
+      "predicted_tools": [
+        "list_k8s_events",
+        "get_k8s_logs",
+        "get_k8s_resource"
+      ],
+      "expected_tools": [
+        "list_k8s_events",
+        "describe_k8s_resource"
+      ],
+      "root_cause": "The user-service pod failed to start because the required Kubernetes Secret 'db-credentials' was not found, leading to a CreateContainerConfigError (ev_001, ev_002, ev_003).",
+      "latency_seconds": 23.54
+    }
+  ]
+}

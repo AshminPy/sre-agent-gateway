@@ -127,6 +127,9 @@ def score_case(result: dict[str, Any], case: dict[str, Any]) -> dict[str, Any]:
         "predicted_tools":      predicted_tools,
         "expected_tools":       expected_traj,
         "root_cause":           root_cause[:200],
+        # Was computed by run_local()/run_remote() but silently dropped here
+        # before - never actually reached the saved results JSON.
+        "latency_seconds":      summary.get("_latency_seconds"),
     }
 
 
@@ -134,7 +137,7 @@ def score_case(result: dict[str, Any], case: dict[str, Any]) -> dict[str, Any]:
 
 def run_local(case: dict[str, Any]) -> dict[str, Any]:
     """Run agent locally using the LangGraph graph directly."""
-    from agent.graph import compile_graph
+    from agent.graph import compile_graph, GRAPH_RECURSION_LIMIT
     from agent.state import get_initial_state
 
     payload = {
@@ -147,7 +150,11 @@ def run_local(case: dict[str, Any]) -> dict[str, Any]:
     initial_state = get_initial_state(payload)
 
     start = time.time()
-    final_state = graph.invoke(initial_state)
+    # Must match agent/main.py's investigate() — both import the same constant
+    # so this can't silently drift back to LangGraph's built-in default of 25
+    # (which is too low for this graph's normal shape and previously caused
+    # local-mode-only eval failures unrelated to real agent/tool behavior).
+    final_state = graph.invoke(initial_state, config={"recursion_limit": GRAPH_RECURSION_LIMIT})
     elapsed = round(time.time() - start, 2)
 
     summary = final_state.get("final_summary", {})
