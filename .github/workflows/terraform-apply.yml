@@ -216,6 +216,16 @@ jobs:
             -var="enable_custom_mcp=${{ vars.ENABLE_CUSTOM_MCP || 'false' }}" \
             -var="custom_mcp_image=${{ steps.mcp_image.outputs.image || 'us-docker.pkg.dev/cloudrun/container/placeholder' }}"
           cd ../..
+          # 2026-08-09: added a delay here as a HYPOTHESIS being tested, not a proven
+          # fix -- based on exactly one data point on each side (see
+          # docs/management/implemented-vs-planned-matrix.md discussion / session notes):
+          # a CI attach attempted 23s after this exact recreate failed with a generic
+          # `code: 13 INTERNAL` from Google; a manual retry of the SAME engine ~15.5min
+          # later succeeded. If this still fails intermittently after this change,
+          # the real gap needed may be longer than 90s (or the timing theory may be
+          # wrong entirely) -- don't assume this delay alone is a confirmed fix.
+          echo "Waiting 90s after engine recreate before retrying attach (see comment above)..."
+          sleep 90
           bash scripts/attach_gateway_to_engine.sh
         working-directory: .
 
