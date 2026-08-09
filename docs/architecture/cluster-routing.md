@@ -1,15 +1,15 @@
 # Cluster Routing
 
 > **Implementation Status:** IMPLEMENTED
-> **Last Verified:** 2026-08-08 — `agent/mcp_client.py:645-775`
-> **Source of Truth:** `agent/mcp_client.py:645-775` (`resolve_cluster_routing()`)
+> **Last Verified:** 2026-08-08 — `agent/mcp_client.py:648-777`
+> **Source of Truth:** `agent/mcp_client.py:648-777` (`resolve_cluster_routing()`)
 > **Owner:** SRE Agent platform team.
 
 This page is about **which cluster** an incident is about. It's a separate question from **which MCP source** to use once the cluster is known — see [Dynamic MCP Routing](dynamic-mcp-routing.md) for that.
 
 ## How the agent determines the correct cluster — the 5-tier priority chain
 
-`resolve_cluster_routing()` (`agent/mcp_client.py:645-775`) runs these tiers **in order**, stopping at the first one that resolves to exactly one cluster:
+`resolve_cluster_routing()` (`agent/mcp_client.py:648-777`) runs these tiers **in order**, stopping at the first one that resolves to exactly one cluster:
 
 | Tier | Name (verbatim from code) | Check |
 |---|---|---|

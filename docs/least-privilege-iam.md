@@ -19,6 +19,7 @@ are the only roles it holds. Defined in `iac/agent/iam.tf`.
 |---|---|---|
 | `roles/aiplatform.expressUser` | Project A | Model inference, sessions, memory (Agent Identity baseline) |
 | `roles/aiplatform.user` | Project A | Memory Bank generate/retrieve |
+| `roles/aiplatform.agentDefaultAccess` | Project A | Agent Runtime default access (live in `iac/agent/iam.tf:15` — added here 2026-08-09, was previously live but missing from this audit page) |
 | `roles/serviceusage.serviceUsageConsumer` | Project A | API/quota access |
 | `roles/browser` | Project A | `resourcemanager.projects.get` (documented Agent Identity prerequisite) |
 | `roles/agentregistry.viewer` | Project A | Read Agent Registry (MCP-server discovery) |

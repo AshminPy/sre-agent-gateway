@@ -30,7 +30,7 @@ Two MCP sources are registered in code (`MCP_REGISTRY`, `agent/mcp_client.py:98-
 - **Authentication**: GCP access token via Workload Identity/ADC.
 - **Authorization**: Agent Identity's cross-project IAM roles on the target GKE project (`roles/container.viewer`, `roles/mcp.toolUser`, `roles/logging.viewer`, `roles/monitoring.viewer` — see [Authorization and Permissions](../governance/security.md)).
 - **Network path**: through Agent Gateway, over Google's backbone.
-- **Timeout / failure behavior**: on any non-200 response, the agent auto-falls back to the custom MCP (`_map_to_custom_tool()`, `agent/mcp_client.py:322-332,441-455`).
+- **Timeout / failure behavior**: on any non-200 response, the agent auto-falls back to the custom MCP (`_map_to_custom_tool()`, `agent/mcp_client.py:324-334,443-457`).
 - **Logging**: failures logged to `sre-agent-tool-failures` with `mcp_source="gke_remote_mcp"`.
 - **Owner**: Google (the service itself); SRE Agent platform team (the IAM/routing wiring).
 - **Maturity flag**: Google labels this **Preview / Pre-GA** (`agent/mcp_client.py:105`) — a vendor-maturity caveat to be aware of, not a defect in our code.

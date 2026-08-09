@@ -1,7 +1,7 @@
 # Updating the Agent / CI/CD
 
 > **Implementation Status:** IMPLEMENTED
-> **Last Verified:** 2026-08-08 — `.github/workflows/terraform-apply.yml`, `.github/workflows/terraform-plan.yml`
+> **Last Verified:** 2026-08-09 — `.github/workflows/terraform-apply.yml`, `.github/workflows/terraform-plan.yml`
 > **Source of Truth:** `.github/workflows/terraform-apply.yml`
 > **Owner:** SRE Agent platform team.
 
@@ -10,10 +10,16 @@
 ```
 developer change (agent/, mcp/, or iac/agent/)
   → branch, PR
-  → terraform-plan.yml runs on the PR (validate + plan, posts as a PR comment)
+  → terraform-plan.yml runs on the PR (validate → terraform test → plan)
   → merge to main
   → terraform-apply.yml runs
 ```
+
+**Correction (2026-08-09):** an earlier version of this doc claimed `terraform-plan.yml`
+"posts as a PR comment" — checked directly against the workflow YAML, no such step exists
+(the job has `pull-requests: write` permission but nothing in the file uses it to post a
+comment). Removed that claim. A `terraform test` step (`iac/agent/tests/*.tftest.hcl`) was
+also added to the workflow on 2026-08-09 (PR #52) — now reflected above.
 
 ## What happens after someone merges a PR
 
@@ -39,7 +45,7 @@ A failure at any non-conditional step fails the whole job — there's no `contin
 
 ## What tests run before deployment
 
-- `terraform validate` + `terraform plan` (PR-time, via `terraform-plan.yml`).
+- `terraform validate` + `terraform test` (native `.tftest.hcl` tests, e.g. `iac/agent/tests/clusters_json.tftest.hcl`) + `terraform plan` (PR-time, via `terraform-plan.yml`).
 - The live smoke test (post-apply, in `terraform-apply.yml` — this is a *post*-deployment gate, meaning a bad deploy has already gone live by the time this runs, but it does catch it and fail the job).
 - **The golden evaluation suite is NOT run automatically in CI today.** Running it (`python -m agent.eval.run_eval --mode local` or `--mode remote`) is a manual step — see [Evaluation](../architecture/evaluation.md). This is a real gap: a prompt/model change could pass CI and still regress eval pass rate without anyone noticing until a human runs the suite by hand.
 

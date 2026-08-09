@@ -53,7 +53,7 @@ All numeric limits come from `get_initial_state()` in `agent/state.py:100-139` u
 | `min_steps` (minimum iterations before the loop is allowed to stop early) | **2** | No — hardcoded |
 | `max_duration_seconds` (wall-clock timeout) | **540** (9 minutes) | No — hardcoded |
 | `MAX_TOKENS_PER_RUN` | **100,000** (0 disables the check) | **Yes** — the one limit that is env-var configurable |
-| LangGraph `recursion_limit` | **60** | Hardcoded in `agent/main.py:423,443` — a separate, much larger safety net, not the operative limit |
+| LangGraph `recursion_limit` | **60** | `GRAPH_RECURSION_LIMIT` constant, `agent/graph.py:29` — imported by both `agent/main.py:421,442` and `agent/eval/run_eval.py:140` (not independently hardcoded, fixed 2026-08-09), a separate, much larger safety net, not the operative limit |
 
 `loop_controller.py:97-179` checks these conditions **in this exact priority order** every iteration — first match wins:
 

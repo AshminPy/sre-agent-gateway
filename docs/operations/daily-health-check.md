@@ -21,7 +21,7 @@ Cloud Logging (Log Analytics), query:
 resource.type="aiplatform.googleapis.com/ReasoningEngine"
 jsonPayload.status="error"
 ```
-Compare the count against `jsonPayload.run_id:*` (total invocations) over the same window. **Caveat**: both `status` and `run_id` are emitted on two separate log paths per run (see [Logging](logging.md#a-known-double-counting-issue) for why) — treat absolute counts as roughly 2x actual until that's fixed; the *ratio* of errors-to-invocations is still meaningful since both are inflated equally.
+Compare the count against `jsonPayload.run_id:*` (total invocations) over the same window. **Caveat**: both `status` and `run_id` are emitted on two separate log paths per run (see [Known accuracy issue: several metrics likely double-count](observability.md#known-accuracy-issue-several-metrics-likely-double-count) for why) — treat absolute counts as roughly 2x actual until that's fixed; the *ratio* of errors-to-invocations is still meaningful since both are inflated equally.
 
 ## 3. Are investigations taking longer than usual?
 

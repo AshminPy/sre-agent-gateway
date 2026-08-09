@@ -1,7 +1,7 @@
 # Terraform / Infrastructure Management
 
 > **Implementation Status:** IMPLEMENTED
-> **Last Verified:** 2026-08-08 — `iac/agent/*.tf`
+> **Last Verified:** 2026-08-09 — `iac/agent/*.tf`
 > **Owner:** SRE Agent platform team.
 
 ## Repository layout
@@ -29,7 +29,7 @@ One live environment today: GCP project `sreagent-t2-demo` (agent stack) + `srea
 | `cloudrun_mcp.tf` | Optional custom Cloud Run MCP (currently disabled live) |
 | `iam.tf` | Least-privilege IAM for the runtime identity + platform service agents |
 | `iap_egressor.tf` | Registry-scoped `iap.egressor` grant |
-| `main.tf` | Core data lookups, Agent Identity principal construction |
+| `main.tf` | Core data lookups, Agent Identity principal construction, `clusters.json` rendering (`jsonencode(...)` over `var.additional_clusters` merged with the default cluster — added 2026-08-09) |
 | `model_armor.tf` | Model Armor templates (request/response) |
 | `monitoring.tf` | Log-based metrics, alert policies, notification channel |
 | `networking.tf` | Agent-side VPC, subnet, Cloud NAT for egress |
@@ -55,9 +55,19 @@ GCS, bucket `sreagent-t2-demo-tfstate`, prefix `agent` for the main stack. Decla
 ## What must NEVER be changed manually
 
 - The gateway-to-engine binding — this is **intentionally** out-of-band (not tracked in Terraform state, managed by `scripts/attach_gateway_to_engine.sh`) — don't try to "fix" this by adding it to Terraform; the provider doesn't support it yet.
-- `clusters.json` in the cluster-config bucket — it IS Terraform-managed today (which is itself the source of the wipe-on-apply limitation — see [Cluster Routing](../architecture/cluster-routing.md)); manual edits will be silently reverted on the next apply.
+- `clusters.json` in the cluster-config bucket — it IS Terraform-managed today (rendered by `main.tf` from `var.additional_clusters`, see [Cluster Routing](../architecture/cluster-routing.md)); manual edits will be silently reverted on the next apply. This is by design, not a bug — Terraform is the sole source of truth. To add a cluster, edit `var.additional_clusters` and apply, don't hand-edit the file (multi-cluster support fixed 2026-08-09 — this used to be a real single-cluster-only limitation before that fix).
 - Anything in the evidence/eval buckets — both have `prevent_destroy = true` specifically to prevent accidental data loss.
 - IAM bindings, ever, without going through a reviewed PR — this is the security-sensitive surface most likely to cause real harm if hand-edited.
+
+## Native Terraform tests
+
+`iac/agent/tests/*.tftest.hcl` — real `terraform test` runs (added 2026-08-09), using isolated
+test-only modules with no provider/credential dependency, so they run in CI without real GCP
+access. Example: `clusters_json.tftest.hcl` (4 test runs — default-only backward-compat, a
+2-synthetic-cluster render, an exact-name-collision failure, a whitespace-padded-collision
+failure) verifies the `clusters.json` rendering logic in isolation. Run in CI as a step in
+`terraform-plan.yml`, right after `terraform validate` and before `terraform plan`. Run locally
+with `terraform -chdir=iac/agent test`.
 
 ## Drift detection and recovery
 

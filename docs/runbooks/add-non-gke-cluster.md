@@ -32,7 +32,7 @@ Nothing described here is wired into the deployed agent yet. What's proven: Conn
 9. **Network requirements**: confirm the built Load Balancer/NEG actually allows the agent's Agent-Gateway-routed traffic to reach the Cloud Run service — this is the piece most likely to need iteration.
 10. **Failure modes**: test the outage/recovery behavior deliberately (scale `gke-connect-agent` to 0, confirm the error is at least somewhat diagnosable, confirm automatic recovery on scale-back — this was tested and works for the prototype membership).
 11. **Audit logging**: turn on `DATA_READ` audit logging for `connectgateway.googleapis.com` at the project level (currently off, meaning successful reads leave no audit trail) — or explicitly, consciously accept that gap and document the risk acceptance.
-12. **Add to `clusters.json`**: same wipe-on-apply caveat as [Adding a New GKE Cluster](add-gke-cluster.md) applies — fix the template first.
+12. **Add to `clusters.json`**: use `var.additional_clusters` with `type = "custom"` — same mechanism as [Adding a New GKE Cluster](add-gke-cluster.md), fixed 2026-08-09, no separate template fix needed anymore.
 
 ---
 

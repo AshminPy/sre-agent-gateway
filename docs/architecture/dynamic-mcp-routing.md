@@ -26,11 +26,11 @@ The `cluster_type` field on the already-resolved cluster's registry entry (see [
 
 ## Where routing logic is implemented
 
-`agent/nodes/mcp_router.py:110-136` (source selection) and `agent/mcp_client.py:645-775` (`resolve_cluster_routing()`, the cluster-identity chain that determines *which* cluster and therefore which registry entry's `cluster_type` gets used).
+`agent/nodes/mcp_router.py:110-136` (source selection) and `agent/mcp_client.py:648-777` (`resolve_cluster_routing()`, the cluster-identity chain that determines *which* cluster and therefore which registry entry's `cluster_type` gets used).
 
 ## What happens if two MCP servers can answer the same question?
 
-Doesn't happen by design — routing is 1:1 per cluster (one `cluster_type` → exactly one source), not a "pick the best of several candidates" decision. If GKE Remote MCP fails at runtime, the code auto-falls-back to the custom MCP for that specific tool call (`_map_to_custom_tool()`, `agent/mcp_client.py:322-332`) — this is a failure-recovery mechanism, not routing ambiguity.
+Doesn't happen by design — routing is 1:1 per cluster (one `cluster_type` → exactly one source), not a "pick the best of several candidates" decision. If GKE Remote MCP fails at runtime, the code auto-falls-back to the custom MCP for that specific tool call (`_map_to_custom_tool()`, `agent/mcp_client.py:324-334`) — this is a failure-recovery mechanism, not routing ambiguity.
 
 ## How do we prevent incorrect routing?
 

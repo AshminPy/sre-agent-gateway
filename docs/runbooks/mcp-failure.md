@@ -43,7 +43,7 @@
 
 **How to verify**: check the resolved cluster's `type` field in `clusters.json` — source selection is 100% deterministic based on this field (`agent/nodes/mcp_router.py:110-136`), so a "wrong" selection almost always means the registry entry itself has the wrong `type`.
 
-**Resolution**: fix `clusters.json` (see [Adding a New GKE Cluster](add-gke-cluster.md) for how to edit it, and the wipe-on-apply caveat).
+**Resolution**: fix the cluster's `type` field in `var.additional_clusters` (or `var.gke_cluster_name`'s default entry) in Terraform and `apply` — see [Adding a New GKE Cluster](add-gke-cluster.md). Never hand-edit `clusters.json` in GCS directly; it's Terraform-managed and any manual edit is reverted on the next apply.
 
 ## 15. GKE Remote MCP failure
 
