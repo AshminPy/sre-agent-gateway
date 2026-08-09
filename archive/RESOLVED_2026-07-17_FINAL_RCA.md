@@ -168,7 +168,7 @@ configuration difference between t2-demo and the working `cleanroom` project
 authz-extension `timeout`), IAM roles and service agents, environment
 variables, mTLS endpoint registration, org policy (193 constraints,
 identical), VPC-SC-adjacent documentation — all matched or empirically
-tested and rejected as the cause. Full history in `TROUBLESHOOTING_LOG.md`.
+tested and rejected as the cause. Full history in `RESOLVED_2026-07-17_TROUBLESHOOTING_LOG.md`.
 
 **Actual second root cause:** the *original* engine resource
 (`8599129257987276800`) had accumulated some form of backend state —
@@ -193,7 +193,7 @@ code changes.
 
 ## 2026-08-07 addendum — re-verified against Google support's suggested fix, under today's live config
 
-Filed a Google support case (draft: `MODEL_ARMOR_GOOGLE_SUPPORT_CASE.md`) citing this RCA. A
+Filed a Google support case (draft: `SUPERSEDED_2026-08-04_MODEL_ARMOR_GOOGLE_SUPPORT_CASE.md`) citing this RCA. A
 Google Customer Engineer's response proposed `GOOGLE_API_USE_MTLS_ENDPOINT=never` /
 `GOOGLE_API_USE_CLIENT_CERTIFICATE=false` as the fix, reasoning that the client library
 auto-switches to the mTLS endpoint when a client cert is present. Correctly flagged by the user

@@ -35,7 +35,7 @@ earlier today.
 | `agent/confidence/` (7 files, 855 lines) | `policy.py`, `evidence_domains.py`, `models.py`, `scorer.py`, `claim_builder.py` + `__init__.py` |
 | `tests/` (9 files, 861 lines) | 55 tests — unit tests for every scorer component + integration tests with the LLM call mocked |
 | `docs/confidence-framework-design.md` | Step-1 design doc (schema + policy), written before implementation |
-| `CONFIDENCE_FRAMEWORK_REPORT.md` | This file |
+| `SUPERSEDED_2026-08-04_CONFIDENCE_FRAMEWORK_REPORT.md` | This file |
 
 Not yet committed — sitting locally on `main`, matching how you've wanted to review before I
 push. `git diff --stat`: 7 files changed, 276 insertions(+), 183 deletions(-) in modified files,
@@ -241,7 +241,7 @@ suite proves the *mechanism* is correct, not that the *weights* are right.
 Nothing is committed yet, so rollback today is trivial: the changes are uncommitted local edits
 on `main` plus new untracked files. `git checkout -- agent/main.py agent/nodes/ agent/state.py
 agent/prompts.py pyproject.toml && rm -rf agent/confidence tests docs/confidence-framework-design.md
-CONFIDENCE_FRAMEWORK_REPORT.md` fully reverts. Once committed/merged: revert the merge commit
+SUPERSEDED_2026-08-04_CONFIDENCE_FRAMEWORK_REPORT.md` fully reverts. Once committed/merged: revert the merge commit
 (single PR, single revert) — this was built as one coherent change specifically so it reverts
 as a unit, not a tangle of interdependent commits.
 

@@ -49,7 +49,7 @@ A full 49-check audit of the implementation against Google's docs found
 several real, independent issues unrelated to this investigation — tracked
 separately as GitHub issues #29–#36 (Cloud Trace/Model Armor hostname
 mismatches, two Python correctness bugs, script diagnostics gaps). See
-`AUDIT_REPORT.md`. Not blocking; not part of this resolution.
+`RESOLVED_2026-07-17_AUDIT_REPORT.md`. Not blocking; not part of this resolution.
 
 ## Repos
 - **This repo** (`testing2-gcp-sre-agent`) — the live `t2-demo` deployment,
@@ -84,6 +84,6 @@ python3 invoke_agent.py --scenario imagepull --verbose
   `sreagent-gateway-verified`.
 
 # Next action
-None required for this investigation — closed. See `FINAL_RCA.md` for the
+None required for this investigation — closed. See `RESOLVED_2026-07-17_FINAL_RCA.md` for the
 permanent record. Follow-up production-readiness items tracked separately
 in GitHub issues #29–#36.

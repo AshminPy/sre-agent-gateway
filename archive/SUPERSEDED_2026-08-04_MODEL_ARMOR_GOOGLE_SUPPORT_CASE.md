@@ -1,7 +1,7 @@
 # Google Cloud Support Case Draft — Model Armor on Vertex AI Agent Engine + Agent Gateway
 
 > Draft for a Google Cloud support case. Not yet submitted. Compiled 2026-08-04 from this
-> repo's own investigation records (`TROUBLESHOOTING_LOG.md`, `FINAL_RCA.md`, `RCA_REPORT.md`)
+> repo's own investigation records (`RESOLVED_2026-07-17_TROUBLESHOOTING_LOG.md`, `RESOLVED_2026-07-17_FINAL_RCA.md`, `RESOLVED_2026-07-17_RCA_REPORT.md`)
 > — every quote/error below is copied verbatim from those files, not reconstructed from memory.
 > No screenshots exist in this repo for this investigation — only text log output, included
 > below. If you have console screenshots to add, attach them to the case separately.
@@ -52,7 +52,7 @@ we believe this is a genuine documentation gap, not something we missed.
 Pod imagepull-pod in test-incidents cannot pull its image. Investigate.
 ```
 
-**Result (verbatim from our logs, `TROUBLESHOOTING_LOG.md` line 735):**
+**Result (verbatim from our logs, `RESOLVED_2026-07-17_TROUBLESHOOTING_LOG.md` line 735):**
 
 ```
 ⚠ BLOCKED by Model Armor: Input blocked by safety filter (prompt injection or harmful content detected)
@@ -186,7 +186,7 @@ Model Armor resolved before production launch.
 
 ## Attachments to prepare before filing
 
-- [ ] Full text of `TROUBLESHOOTING_LOG.md` sections referenced above (or relevant excerpts)
+- [ ] Full text of `RESOLVED_2026-07-17_TROUBLESHOOTING_LOG.md` sections referenced above (or relevant excerpts)
 - [ ] `iac/agent/agent_gateway.tf`, `iac/agent/model_armor.tf` (current, Model-Armor-disabled config)
 - [ ] Console screenshots of the Agent Gateway config and Model Armor template config (not
       captured in this repo — take fresh screenshots before filing)
