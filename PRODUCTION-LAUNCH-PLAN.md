@@ -44,11 +44,17 @@ and pytest runs):
   `GOOGLE_SUPPORT_RESPONSE_DRAFT_2026-08-07.md` (a reply from us is still pending) and
   `archive/RESOLVED_2026-08-08_MODEL_ARMOR_CONTENT_AUTHZ_TEST.md` (confirmed: no working
   Terraform path exists to wire `CONTENT_AUTHZ` to Agent Gateway — an API-level rejection,
-  not a config mistake). This is now a **documented, deliberate "not wired at the gateway"
-  decision** with an actionable, not-yet-applied agent-code-level tuning plan (confidence
-  threshold, floor settings, template splitting) — not an unresolved blocker with no path
-  forward. See [ADR-005](docs/ADR-005-read-only-by-design.md) and
-  [Security Operations](docs/governance/security.md).
+  not a config mistake). **Correction to an earlier draft of this note**: this is not fully
+  "resolved to a deliberate tradeoff" — the gateway-level gap is a real, confirmed platform
+  limitation (documented, not a mistake), but the app-level fallback (`agent/main.py`'s
+  `_sanitize()`) is ALSO currently inactive in the live config, since it only activates
+  when the gateway is *off* (`enable_agent_gateway=false`) and the live deployment has the
+  gateway *on* — meaning **Model Armor filters nothing today, at either layer**. That's a
+  real, open gap, not something to treat as settled. What's directly actionable and not yet
+  applied: Google's own tuning guidance (confidence threshold to `HIGH`, check org floor
+  settings, split templates) — but applying it doesn't by itself close the "nothing is
+  active right now" gap. See [Security Operations](docs/governance/security.md) for the
+  full picture and current compensating controls.
 - **Not re-verified today, status below still assumed current**: PagerDuty integration
   (still nothing built), Connect Gateway on-prem connectivity, cost validation specifics.
   Don't treat their unchanged 🟡/⬜ marks as freshly confirmed — they're carried forward,
@@ -207,9 +213,11 @@ More clusters; Prometheus/Grafana/Elastic/Cloud-Logging MCP; runbook/Confluence 
   *is* directly actionable, from Google's own guidance, and not yet applied: set
   prompt-injection/jailbreak confidence to `HIGH` on the operational-data template, check
   org-level floor settings first (they can override), split input/output and
-  log-ingestion/chat templates. This is now a documented, deliberate "not wired at the
-  gateway" architecture decision — see [ADR-005](docs/ADR-005-read-only-by-design.md) —
-  not an unresolved blocker with no path forward.
+  log-ingestion/chat templates. **Important correction**: the gateway-level gap is
+  documented and understood, but the app-level fallback is *also* currently inactive in
+  the live config (it only runs when the gateway is off) — Model Armor filters nothing
+  today at either layer. Applying Google's tuning guidance alone does not close this; see
+  [Security Operations](docs/governance/security.md) for the full picture.
 
 - **Original 2026-08-04 note (superseded above, kept for history): Model Armor is now an MVP blocker.** Originally scoped as a documented
   control gap with compensating controls, not a to-fix-now blocker (P9). **Reversed per

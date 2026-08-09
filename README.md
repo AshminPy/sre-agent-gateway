@@ -3,8 +3,10 @@
 An AI **Site Reliability Engineering** agent that investigates Kubernetes
 incidents on GKE — read-only — and produces a structured Root Cause Analysis.
 It runs on **Vertex AI Agent Engine**, reasons with **Gemini**, remembers past
-investigations in a **Memory Bank**, filters inputs/outputs with **Model Armor**,
-and (optionally) has all of its egress governed by an **Agent Gateway**.
+investigations in a **Memory Bank**, and (optionally) has all of its egress
+governed by an **Agent Gateway**. Model Armor content filtering is built and
+templated (`iac/agent/model_armor.tf`) but currently inactive in the default
+gateway-enabled deployment — see [What it does](#what-it-does) below.
 
 Everything is Terraform. The agent runs in **Project A**; the GKE cluster it
 investigates lives in **Project B** (yours, existing or demo). Clone, fill in two
@@ -55,11 +57,16 @@ known gaps flagged honestly) see
   default — see [the status matrix](docs/management/implemented-vs-planned-matrix.md)).
 - **Multi-cluster** — any number of GKE or non-GKE clusters via one Terraform
   variable, deterministic 5-tier routing to the correct one.
-- **Model Armor** filters agent-code-level inputs/outputs (prompt-injection,
-  PII, malicious URLs). **Not** wired at the Agent Gateway itself
-  (`CONTENT_AUTHZ`) — that's a deliberate, documented decision, not a gap; see
-  [ADR-005](docs/ADR-005-read-only-by-design.md) and
-  [Security Operations](docs/governance/security.md).
+- **Model Armor** templates exist for prompt-injection/PII/malicious-URL
+  filtering (`iac/agent/model_armor.tf`), but **currently filter nothing in
+  the live deployment**: not at the Agent Gateway (`CONTENT_AUTHZ` — no
+  working Terraform path exists to wire it, confirmed by a real API
+  rejection) and not in agent code either — the app-level fallback only
+  activates when the gateway is *off* (`enable_agent_gateway=false`), and the
+  live config has the gateway on. This is a real, currently-open control gap,
+  not a deliberately-accepted one — see
+  [Security Operations](docs/governance/security.md) for the full picture and
+  compensating controls.
 - **Memory Bank** — remembers prior RCAs per cluster/namespace.
 - **Full observability** — structured run logs, 11 log-based metrics, 11 alert
   policies, OpenTelemetry traces.

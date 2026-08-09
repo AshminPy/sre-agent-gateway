@@ -1,8 +1,11 @@
 # Agent Gateway — egress governance for the agent (AGENT_TO_ANYWHERE).
 #
 # All resources here are gated on var.enable_agent_gateway. When enabled, the
-# gateway decodes and authorizes the agent's outbound MCP tool calls and can
-# inspect content via Model Armor. The engine is attached to the gateway by a
+# gateway decodes and authorizes the agent's outbound MCP tool calls via IAP
+# REQUEST_AUTHZ (header/attribute-based). It does NOT inspect content via
+# Model Armor -- no working Terraform path exists to wire CONTENT_AUTHZ to
+# this gateway (confirmed by a real API rejection, see
+# archive/RESOLVED_2026-08-08_MODEL_ARMOR_CONTENT_AUTHZ_TEST.md). The engine is attached to the gateway by a
 # post-apply script (scripts/attach_gateway_to_engine.sh) because the reasoning
 # engine's agent_gateway_config field is not yet exposed by the Terraform provider.
 #
