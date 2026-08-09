@@ -55,7 +55,7 @@ jobs:
       # engine's gemini-2.5-pro — producing a false "1 to change" plan diff that,
       # if applied, downgrades the model AND wipes agentGatewayConfig (Terraform
       # apply on this resource clears any out-of-band field it doesn't manage,
-      # see TROUBLESHOOTING_LOG.md). Keep this in sync with terraform.tfvars.
+      # see archive/RESOLVED_2026-07-17_TROUBLESHOOTING_LOG.md). Keep this in sync with terraform.tfvars.
       #
       # enable_custom_mcp defaults to the ENABLE_CUSTOM_MCP repo variable (unset
       # = "false") so this workflow file alone never silently turns the feature
@@ -178,7 +178,7 @@ jobs:
         working-directory: .
 
       # Self-heals a known, recurring, undocumented flake (see
-      # TROUBLESHOOTING_LOG.md / deploy-state — third occurrence as of
+      # archive/RESOLVED_2026-07-17_TROUBLESHOOTING_LOG.md / deploy-state — third occurrence as of
       # 2026-08-07, no official Google doc or public trace found despite
       # research): the engine's backend occasionally accumulates bad state
       # and every attach attempt against it fails with
@@ -225,7 +225,7 @@ jobs:
       # fails the job if it doesn't get back a well-formed RCA. The gateway
       # bind operation can report done=true while the runtime connection is
       # still broken (this is exactly how the original mTLS failure hid —
-      # see TROUBLESHOOTING_LOG.md) — this step is what would have caught it
+      # see archive/RESOLVED_2026-07-17_TROUBLESHOOTING_LOG.md) — this step is what would have caught it
       # in CI instead of requiring manual investigation.
       #
       # google-cloud-aiplatform pin fixed 2026-08-07: >=1.160.0 does not
