@@ -1,0 +1,284 @@
+{
+  "status": "done",
+  "rca_report": "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n  SRE INCIDENT ROOT CAUSE ANALYSIS REPORT\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n  INCIDENT DETAILS\n    Report ID     : sre-rca-20260809-221019-rijj\n    Generated At  : 2026-08-09T22:11:57Z\n    Investigation : 97.9s  |  Tool calls: 3  |  Loops: 0\n    Cluster       : sre-test-cluster\n    Namespace     : test-incidents\n    Workload      : notification-relay\n    Severity      : HIGH\n    Incident Type : Unknown\n\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n  1.  EXECUTIVE SUMMARY\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n  Incident type: Unknown. Root cause: The 'notification-relay'\n  pod and its associated ReplicaSet do not exist in the\n  'test-incidents' namespace, indicating th\u2026. Confidence:\n  REVIEW. Outcome: PROBABLE. Recommended action: [\"Verify the\n  'notification-relay' Deployment is missing by running:\n  `kubectl get deployment notification-relay -n test-incidents\n  --context=sre-test-cluster`.\", \"If the Deployment is\n  missing, re-apply the correct Kubernetes manifest for the\n  'notification-relay' service to the 'sre-test-cluster' in\n  th. Human review recommended before actioning. See the Root\n  Cause Analysis section below for the full evidence-backed\n  reasoning.\n\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n  2.  ROOT CAUSE ANALYSIS\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n  Primary Cause:\n    The 'notification-relay' pod and its associated ReplicaSet\n    do not exist in the 'test-incidents' namespace, indicating\n    the deployment was either deleted or never created (ev_002,\n    ev_003).\n\n  Evidence (3 items):\n    [ev_001] (referenced in investigation)\n    [ev_002] First, I checked for the pod 'notification-relay' directly. The API server returned 'NotFound', contradicting the initia\n    [ev_003] To understand why the pod was missing, I checked for its controlling ReplicaSet, also named 'notification-relay'. The AP\n\n  Similar Past Incidents : Prior context recalled (373 chars) \u2014 agent used past investigations\n\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n  3.  CONFIDENCE BREAKDOWN\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n  Outcome                    : PROBABLE\n  Investigation Completeness : 0.60  (complete_with_gaps)\n  Root-Cause Confidence      : 0.65  (review_required)\n  Completeness gaps:\n    \u2022 Missing required evidence domain(s): kubernetes_status\n  Root-cause reasons:\n    \u2022 1/3 claim(s) are inference or hypothesis, not directly observed\n    \u2022 Only 1.0 independently-weighted evidence source(s) behind the claim\n    \u2022 Missing required evidence for this incident type: kubernetes_status\n  Policy version              : 1.0.0-uncalibrated\n\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n  4.  IMPACT ASSESSMENT\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n  Workload        : notification-relay\n  Incident Type   : Unknown\n  Service Status  : DEGRADED \u2014 verify active pod count\n  First/Last Seen : from k8s event timestamps in evidence above\n  User Impact     : Dependent services may be affected\n  MTTR            : not yet tracked \u2014 pending future enhancement\n\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n  5.  REMEDIATION\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n  Immediate Actions:\n    1. Verify the 'notification-relay' Deployment is missing by running: `kubectl get deployment notification-relay -n test-incidents --context=sre-test-clus\n    2. If the Deployment is missing, re-apply the correct Kubernetes manifest for the 'notification-relay' service to the 'sre-test-cluster' in the 'test-inc\n    3. After applying the manifest, confirm the pod is created and reaches a 'Running' state: `kubectl get pods -l app=notification-relay -n test-incidents -\n\n  Commands:\n    $ Verify the 'notification-relay' Deployment is missing by running: `kubectl get deployment notification-relay -n test-inc\n    $ After applying the manifest, confirm the pod is created and reaches a 'Running' state: `kubectl get pods -l app=notifica\n\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n  6.  INVESTIGATION METADATA\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n  AI Confidence   : 65%  (Band: REVIEW)\n  Human Review    : REVIEW \u2014 human review recommended before actioning\n  Memory Bank     : Prior context recalled (373 chars) \u2014 agent used past investigations\n  Model           : Gemini 2.5 Flash via Vertex AI Agent Engine\n  Tokens          : 8453  (est. cost: $0.002176)\n\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n  INVESTIGATION COMPLETE \u2014 HUMAN REVIEW REQUIRED\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n  Generated by SRE Agent  |  sre-rca-20260809-221019-rijj  |  2026-08-09T22:11:57Z",
+  "errors": [],
+  "working_theory": "The 'notification-relay' pod and its ReplicaSet do not exist. The entire deployment is missing.",
+  "confidence_band": "review",
+  "schema_version": "2.0",
+  "outcome": "probable",
+  "run_id": "run_20260809_221019_rijj",
+  "confidence_deprecated": true,
+  "requires_human_review": true,
+  "tool_calls": 3.0,
+  "root_cause_confidence": {
+    "reasons": [
+      "1/3 claim(s) are inference or hypothesis, not directly observed",
+      "Only 1.0 independently-weighted evidence source(s) behind the claim",
+      "Missing required evidence for this incident type: kubernetes_status"
+    ],
+    "components": {
+      "direct_support": 0.667,
+      "independent_corroboration": 0.5,
+      "missing_evidence_penalty": 0.1,
+      "alternative_hypothesis_penalty": 0.0,
+      "contradiction_penalty": 0.0,
+      "claim_grounding": 1.0,
+      "time_correlation": 1.0,
+      "resource_identity_match": 1.0
+    },
+    "band": "review_required",
+    "score": 0.65
+  },
+  "evidence_ids": [
+    "ev_001",
+    "ev_002",
+    "ev_003"
+  ],
+  "investigation_completeness": {
+    "missing_required_domains": [
+      "kubernetes_status"
+    ],
+    "band": "complete_with_gaps",
+    "components": {
+      "routing_confirmed": 1.0,
+      "freshness": 1.0,
+      "tool_success": 1.0,
+      "iteration_budget": 1.0,
+      "required_evidence_coverage": 0.0,
+      "identity_confirmed": 1.0
+    },
+    "evidence_domains_present": [
+      "unknown"
+    ],
+    "gaps": [
+      "Missing required evidence domain(s): kubernetes_status"
+    ],
+    "score": 0.6
+  },
+  "summary": {
+    "sre_feedback": null,
+    "contradictions": [],
+    "incident_summary": "The notification-relay service is down in sre-test-cluster (us-central1) because the pod and its ReplicaSet are missing.",
+    "hypotheses": [
+      {
+        "missing_evidence": [],
+        "hypothesis_id": "hyp_001",
+        "contradicting_evidence_ids": [
+          "ev_002"
+        ],
+        "supporting_evidence_ids": [],
+        "description": "The pod exists but is in a crash loop or error state, preventing it from serving traffic.",
+        "status": "eliminated"
+      },
+      {
+        "missing_evidence": [
+          "A 'kubectl get deployment notification-relay' command would confirm or deny the existence of the parent deployment."
+        ],
+        "hypothesis_id": "hyp_002",
+        "contradicting_evidence_ids": [
+          "ev_003"
+        ],
+        "supporting_evidence_ids": [],
+        "status": "weakened",
+        "description": "The pod exists but has a different name, managed by a deployment named 'notification-relay'."
+      }
+    ],
+    "confidence_band": "review",
+    "sre_notes": null,
+    "outcome": "probable",
+    "evidence_chain": [
+      "ev_001",
+      "ev_002",
+      "ev_003"
+    ],
+    "evidence_gaps": [
+      "The existence of the 'notification-relay' Deployment object itself was not checked. While the missing ReplicaSet makes its absence highly likely, it was not directly confirmed."
+    ],
+    "run_id": "run_20260809_221019_rijj",
+    "investigation_context": {
+      "namespace": "test-incidents",
+      "cluster_routing_reason": "'sre-test-cluster' matched a registered cluster id exactly.",
+      "actual_mcp_sources": [
+        "gke_remote_mcp"
+      ],
+      "cluster_region": "us-central1",
+      "cluster": "sre-test-cluster",
+      "cluster_routing_method": "exact_id",
+      "primary_mcp_source": "gke_remote_mcp",
+      "project_id": "sreagent-demo"
+    },
+    "reasoning_trace": [
+      "The initial report stated the service was not receiving traffic, but pods 'appeared' to be up. This suggested a subtle failure.",
+      "First, I checked for the pod 'notification-relay' directly. The API server returned 'NotFound' (ev_002), contradicting the initial report and indicating the pod does not exist.",
+      "To understand why the pod was missing, I checked for its controlling ReplicaSet, also named 'notification-relay'. The API server again returned 'NotFound' (ev_003).",
+      "The absence of both the pod and its ReplicaSet rules out transient pod issues (like a crash loop) and points to a missing higher-level controller, likely the Deployment.",
+      "The conclusion is that the entire application is not deployed, which is why no traffic is being received."
+    ],
+    "gcs_enriched": true,
+    "root_cause_confidence": {
+      "reasons": [
+        "1/3 claim(s) are inference or hypothesis, not directly observed",
+        "Only 1.0 independently-weighted evidence source(s) behind the claim",
+        "Missing required evidence for this incident type: kubernetes_status"
+      ],
+      "components": {
+        "direct_support": 0.667,
+        "independent_corroboration": 0.5,
+        "missing_evidence_penalty": 0.1,
+        "alternative_hypothesis_penalty": 0.0,
+        "contradiction_penalty": 0.0,
+        "claim_grounding": 1.0,
+        "time_correlation": 1.0,
+        "resource_identity_match": 1.0
+      },
+      "band": "review_required",
+      "score": 0.65
+    },
+    "suggested_remediation": [
+      "Verify the 'notification-relay' Deployment is missing by running: `kubectl get deployment notification-relay -n test-incidents --context=sre-test-cluster`.",
+      "If the Deployment is missing, re-apply the correct Kubernetes manifest for the 'notification-relay' service to the 'sre-test-cluster' in the 'test-incidents' namespace.",
+      "After applying the manifest, confirm the pod is created and reaches a 'Running' state: `kubectl get pods -l app=notification-relay -n test-incidents --context=sre-test-cluster -w`."
+    ],
+    "confidence_deprecated": true,
+    "schema_version": "2.0",
+    "investigation_completeness": {
+      "missing_required_domains": [
+        "kubernetes_status"
+      ],
+      "gaps": [
+        "Missing required evidence domain(s): kubernetes_status"
+      ],
+      "components": {
+        "routing_confirmed": 1.0,
+        "freshness": 1.0,
+        "iteration_budget": 1.0,
+        "tool_success": 1.0,
+        "required_evidence_coverage": 0.0,
+        "identity_confirmed": 1.0
+      },
+      "evidence_domains_present": [
+        "unknown"
+      ],
+      "band": "complete_with_gaps",
+      "score": 0.6
+    },
+    "validation_status": "pending",
+    "confidence_score": 0.65,
+    "requires_human_review": true,
+    "policy_version": "1.0.0-uncalibrated",
+    "likely_root_cause": "The 'notification-relay' pod and its associated ReplicaSet do not exist in the 'test-incidents' namespace, indicating the deployment was either deleted or never created (ev_002, ev_003).",
+    "sources_skipped": [],
+    "alternative_hypotheses_considered": [
+      {
+        "missing_evidence": [],
+        "contradicting_evidence_ids": [
+          "ev_002"
+        ],
+        "supporting_evidence_ids": [],
+        "description": "The pod exists but is in a crash loop or error state, preventing it from serving traffic.",
+        "status": "eliminated"
+      },
+      {
+        "missing_evidence": [
+          "A 'kubectl get deployment notification-relay' command would confirm or deny the existence of the parent deployment."
+        ],
+        "contradicting_evidence_ids": [
+          "ev_003"
+        ],
+        "supporting_evidence_ids": [],
+        "status": "weakened",
+        "description": "The pod exists but has a different name, managed by a deployment named 'notification-relay'."
+      }
+    ],
+    "tools_called": [
+      "list_k8s_events",
+      "get_k8s_resource",
+      "describe_k8s_resource"
+    ],
+    "failed_tools": [],
+    "claims": [
+      {
+        "support_strength": 1.0,
+        "grounding_status": "grounded",
+        "text": "The pod named 'notification-relay' was not found in the 'test-incidents' namespace on cluster 'sre-test-cluster'.",
+        "contradicting_evidence_ids": [],
+        "supporting_evidence_ids": [
+          "ev_002"
+        ],
+        "claim_type": "observed_fact",
+        "claim_id": "claim_001"
+      },
+      {
+        "support_strength": 1.0,
+        "grounding_status": "grounded",
+        "text": "The ReplicaSet for 'notification-relay' was not found in the 'test-incidents' namespace on cluster 'sre-test-cluster'.",
+        "contradicting_evidence_ids": [],
+        "supporting_evidence_ids": [
+          "ev_003"
+        ],
+        "claim_type": "observed_fact",
+        "claim_id": "claim_002"
+      },
+      {
+        "support_strength": 1.0,
+        "grounding_status": "grounded",
+        "contradicting_evidence_ids": [],
+        "text": "The absence of both the pod and its ReplicaSet strongly suggests the entire deployment for 'notification-relay' is missing, not just a transient pod issue.",
+        "supporting_evidence_ids": [
+          "ev_002",
+          "ev_003"
+        ],
+        "claim_id": "claim_003",
+        "claim_type": "supported_inference"
+      }
+    ]
+  },
+  "observability": {
+    "latency_ms": 97936.0,
+    "project_id": "sreagent-demo",
+    "confidence": 0.65,
+    "tokens_output": 995.0,
+    "investigation_completeness_score": 0.6,
+    "confidence_band": "review",
+    "cluster": "sre-test-cluster",
+    "outcome": "probable",
+    "model_latency_s": 92.672,
+    "run_id": "run_20260809_221019_rijj",
+    "pod": "notification-relay",
+    "human_review": true,
+    "connect_gateway_status": null,
+    "namespace": "test-incidents",
+    "pagerduty_incident_id": null,
+    "policy_version": "1.0.0-uncalibrated",
+    "mcp_latency_s": 3.28,
+    "cluster_routing_method": "exact_id",
+    "tools_called": 3.0,
+    "loop_exit_reason": "confidence_sufficient",
+    "primary_mcp_source": "gke_remote_mcp",
+    "event_type": "sre_agent_run",
+    "status": "done",
+    "tokens_total": 8453.0,
+    "cluster_region": "us-central1",
+    "cluster_routing_reason": "'sre-test-cluster' matched a registered cluster id exactly.",
+    "tokens_input": 5084.0,
+    "estimated_cost_usd": 0.002176,
+    "deployment": "notification-relay",
+    "evidence_count": 3.0,
+    "total_latency_s": 97.936,
+    "incident_type": "Unknown",
+    "contradictions_count": 0.0,
+    "trace_id": "",
+    "evidence_ids": [
+      "ev_001",
+      "ev_002",
+      "ev_003"
+    ],
+    "root_cause_confidence_score": 0.65,
+    "selected_mcp": "gke_remote_mcp",
+    "evidence_storage_ok": true,
+    "error_count": 0.0,
+    "agent_gateway_authz_mode": null
+  },
+  "executive_summary": "Incident type: Unknown. Root cause: The 'notification-relay' pod and its associated ReplicaSet do not exist in the 'test-incidents' namespace, indicating th\u2026. Confidence: REVIEW. Outcome: PROBABLE. Recommended action: [\"Verify the 'notification-relay' Deployment is missing by running: `kubectl get deployment notification-relay -n test-incidents --context=sre-test-cluster`.\", \"If the Deployment is missing, re-apply the correct Kubernetes manifest for the 'notification-relay' service to the 'sre-test-cluster' in th. Human review recommended before actioning. See the Root Cause Analysis section below for the full evidence-backed reasoning.",
+  "confidence": 0.65
+}
