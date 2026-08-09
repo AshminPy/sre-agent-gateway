@@ -15,9 +15,23 @@ see [`archive/RESOLVED_2026-07-17_RCA_REPORT.md`](archive/RESOLVED_2026-07-17_RC
 you hit a gateway-binding failure (`error.code: 3` on the attach step). The
 short version is in [Troubleshooting](#troubleshooting) below.
 
+**Multi-cluster support**: register any number of clusters (GKE or non-GKE) via
+`var.additional_clusters` in `iac/agent/variables.tf` — no manual GCS edits, no
+app code changes. See the [runbook](docs/runbooks/add-gke-cluster.md).
+
+**"Where is X implemented?"** — start at
+[`docs/onboarding/code-reference-map.md`](docs/onboarding/code-reference-map.md),
+the single lookup table for every major capability's real file, function,
+Terraform, tests, and how to prove it's running. For the current, honest
+implemented-vs-planned status of every capability (not marketing copy), see
+[`docs/management/implemented-vs-planned-matrix.md`](docs/management/implemented-vs-planned-matrix.md).
+Full knowledge base entry point: [`docs/README.md`](docs/README.md).
+
 **Roadmap:** see [`NEXTSTEPS.md`](NEXTSTEPS.md) for the researched, ordered plan
 for what's next (RCA output format, observability, security review, evaluation,
 cost, MCP expansion, production readiness, and a LangGraph→ADK 2.0 migration).
+Moving a change into your own company/work repo? See
+[`docs/promotion/01-test-to-work-process.md`](docs/promotion/01-test-to-work-process.md).
 
 ![Architecture](docs/architecture.png)
 
@@ -31,15 +45,26 @@ known gaps flagged honestly) see
 
 - **9-node LangGraph investigation** — normalize → resolve context → plan →
   route MCP → execute tools → extract evidence → evaluate → loop → build RCA.
-- **Read-only, safe** — a hard allowlist blocks any mutating Kubernetes verb.
+- **Read-only, proven, not just intended** — three independent layers agree:
+  a hard tool allowlist with no mutating Kubernetes verb, the real IAM
+  permission set granted (zero create/patch/delete), and a live-passing
+  regression test that blocks any mutating call pattern from ever being
+  added. See [`docs/management/show-me-the-implementation.md`](docs/management/show-me-the-implementation.md) Q7.
 - **GKE Remote MCP** (Google-managed) as the primary tool source, with an
-  optional custom Cloud Run MCP fallback.
-- **Model Armor** on inputs and outputs (prompt-injection, PII, malicious URLs).
+  optional custom Cloud Run MCP fallback (code-complete, not deployed by
+  default — see [the status matrix](docs/management/implemented-vs-planned-matrix.md)).
+- **Multi-cluster** — any number of GKE or non-GKE clusters via one Terraform
+  variable, deterministic 5-tier routing to the correct one.
+- **Model Armor** filters agent-code-level inputs/outputs (prompt-injection,
+  PII, malicious URLs). **Not** wired at the Agent Gateway itself
+  (`CONTENT_AUTHZ`) — that's a deliberate, documented decision, not a gap; see
+  [ADR-005](docs/ADR-005-read-only-by-design.md) and
+  [Security Operations](docs/governance/security.md).
 - **Memory Bank** — remembers prior RCAs per cluster/namespace.
-- **Full observability** — structured run logs, 6 log-based metrics, 3 alert
+- **Full observability** — structured run logs, 11 log-based metrics, 11 alert
   policies, OpenTelemetry traces.
 - **Agent Gateway** (optional) — decodes and authorizes the agent's MCP calls
-  and inspects content, with IAP `REQUEST_AUTHZ` + Model Armor `CONTENT_AUTHZ`.
+  via IAP `REQUEST_AUTHZ` (header/attribute-based, no payload inspection).
 - **Least-privilege IAM** throughout (see [docs/least-privilege-iam.md](docs/least-privilege-iam.md)).
 
 ## Repository layout

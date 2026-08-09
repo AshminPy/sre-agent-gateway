@@ -24,12 +24,12 @@ locals {
 # 2026-08-07: removed the PSC-I network_attachment (sre-agent-egress-na) and
 # its dedicated subnet (networking.tf's agent_gateway_psc) that were added
 # 2026-07-16/17 purely to test an unrelated gateway-bind hypothesis — already
-# confirmed NOT the cause that same investigation (FINAL_RCA.md /
-# TROUBLESHOOTING_LOG.md; real cause was accumulated engine-side state, fixed
+# confirmed NOT the cause that same investigation (archive/RESOLVED_2026-07-17_FINAL_RCA.md /
+# archive/RESOLVED_2026-07-17_TROUBLESHOOTING_LOG.md; real cause was accumulated engine-side state, fixed
 # by engine recreation). This deployment's actual traffic (Google APIs + GKE
 # Remote MCP) needs no VPC connectivity per this comment block's own citation
 # above; re-verified live with a real agent invocation right after this
-# change deployed (not assumed) — see TROUBLESHOOTING_LOG.md for that result.
+# change deployed (not assumed) — see archive/RESOLVED_2026-07-17_TROUBLESHOOTING_LOG.md for that result.
 # Removing this now — rather than leaving it as "harmless" — because the
 # custom Cloud Run MCP target (a real private-VPC destination,
 # INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER) needs its OWN correctly-scoped PSC
@@ -44,7 +44,7 @@ resource "google_network_services_agent_gateway" "sre_egress" {
   location = var.region
   # description and protocols=["MCP"] removed 2026-07-16 to exact-match
   # sreagent-cleanroom-test's working gateway (which has neither field set) —
-  # see CURRENT_STATE.md "Proposed change". protocols=["MCP"] was previously
+  # see archive/RESOLVED_2026-07-17_CURRENT_STATE.md "Proposed change". protocols=["MCP"] was previously
   # believed required per the official codelab (agw-cuj-arun-egress-gmcp) for
   # MCP request-attribute parsing; testing empirically rather than assuming,
   # per direct instruction to match the working project exactly first.

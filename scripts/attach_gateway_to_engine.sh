@@ -5,7 +5,7 @@
 # exposed by the Terraform Google provider, so Terraform builds the gateway and
 # the engine, and this post-apply step binds them via a REST PATCH.
 #
-# WHY BUNDLED WITH SOURCE (critical, see TROUBLESHOOTING_LOG.md 2026-07-16):
+# WHY BUNDLED WITH SOURCE (critical, see archive/RESOLVED_2026-07-17_TROUBLESHOOTING_LOG.md 2026-07-16):
 # the Agent Gateway does TLS inspection using a dynamically-provisioned,
 # self-signed root CA. The reasoning engine's trust store only gets that CA
 # baked in when a source-code deployment request ALREADY includes the gateway

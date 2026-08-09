@@ -54,7 +54,7 @@ def _get_client():
         # (aiplatform.googleapis.com) with no mTLS branch at all — verified
         # directly against the installed source (_api_client.py), so an mTLS
         # hostname substitution, if it happens, happens below this library,
-        # not because of anything set here. See TROUBLESHOOTING_LOG.md,
+        # not because of anything set here. See archive/RESOLVED_2026-07-17_TROUBLESHOOTING_LOG.md,
         # 2026-07-16, for the full evidence trail.
         _client = genai.Client(
             vertexai=True,
@@ -65,7 +65,7 @@ def _get_client():
                  MODEL, PROJECT_ID, MODEL_ENDPOINT_LOCATION)
 
         # Temporary startup diagnostics for the mTLS endpoint-selection
-        # investigation (TROUBLESHOOTING_LOG.md, 2026-07-16). No credentials
+        # investigation (archive/RESOLVED_2026-07-17_TROUBLESHOOTING_LOG.md, 2026-07-16). No credentials
         # or certificate contents are logged, only metadata.
         try:
             resolved_base_url = getattr(
