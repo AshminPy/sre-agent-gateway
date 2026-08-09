@@ -11,7 +11,7 @@ investigates lives in **Project B** (yours, existing or demo). Clone, fill in tw
 project IDs, and deploy.
 
 **Proven working end-to-end, including the governed Agent Gateway path** —
-see [`RCA_REPORT.md`](RCA_REPORT.md) for the full investigation and fix if
+see [`archive/RESOLVED_2026-07-17_RCA_REPORT.md`](archive/RESOLVED_2026-07-17_RCA_REPORT.md) for the full investigation and fix if
 you hit a gateway-binding failure (`error.code: 3` on the attach step). The
 short version is in [Troubleshooting](#troubleshooting) below.
 
@@ -194,7 +194,7 @@ make validate   # terraform validate both stacks
 If `make attach-gateway` (or `scripts/attach_gateway_to_engine.sh` directly)
 fails with `{"code": 3, "message": "The Reasoning Engine failed to be
 updated."}`, work through these in order — this exact sequence resolved a
-real, multi-day production incident (full writeup: [`RCA_REPORT.md`](RCA_REPORT.md)):
+real, multi-day production incident (full writeup: [`archive/RESOLVED_2026-07-17_RCA_REPORT.md`](archive/RESOLVED_2026-07-17_RCA_REPORT.md)):
 
 1. **Confirm the script bundles source + gateway config in one call.**
    `scripts/attach_gateway_to_engine.sh` does this correctly as shipped —

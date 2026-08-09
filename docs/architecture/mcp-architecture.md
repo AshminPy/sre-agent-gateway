@@ -34,7 +34,7 @@ Two MCP sources are registered in code (`MCP_REGISTRY`, `agent/mcp_client.py:98-
 - **Logging**: failures logged to `sre-agent-tool-failures` with `mcp_source="gke_remote_mcp"`.
 - **Owner**: Google (the service itself); SRE Agent platform team (the IAM/routing wiring).
 - **Maturity flag**: Google labels this **Preview / Pre-GA** (`agent/mcp_client.py:105`) — a vendor-maturity caveat to be aware of, not a defect in our code.
-- **STATUS: IMPLEMENTED, live-verified** as the primary/default path — see `CURRENT_STATE.md`.
+- **STATUS: IMPLEMENTED, live-verified** as the primary/default path — see `../../archive/RESOLVED_2026-07-17_CURRENT_STATE.md`.
 
 ### 2. `k8s_mcp` — custom Cloud Run MCP (fallback / on-prem path)
 

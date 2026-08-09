@@ -1,7 +1,7 @@
 # Agent Gateway
 
 > **Implementation Status:** IMPLEMENTED (IAP REQUEST_AUTHZ, enforcing); Model Armor CONTENT_AUTHZ NOT IMPLEMENTED/BLOCKED at the API level
-> **Last Verified:** 2026-08-08 — `iac/agent/agent_gateway.tf`, live `terraform.tfvars`, `MODEL_ARMOR_CONTENT_AUTHZ_TEST_2026-08-08.md`
+> **Last Verified:** 2026-08-08 — `iac/agent/agent_gateway.tf`, live `terraform.tfvars`, `../../archive/RESOLVED_2026-08-08_MODEL_ARMOR_CONTENT_AUTHZ_TEST.md`
 > **Source of Truth:** `iac/agent/agent_gateway.tf:39-125`
 > **Owner:** SRE Agent platform team.
 >
@@ -77,7 +77,7 @@ Several places in this repo's comments (`iac/agent/model_armor.tf`, `docs/ADR-00
 Error 400: The request was invalid: unsupported Google API for AuthzExtension: modelarmor.googleapis.com
 ```
 
-(`MODEL_ARMOR_CONTENT_AUTHZ_TEST_2026-08-08.md:127-136`). This is an API-level rejection, not a config mistake — there is currently no known Terraform-expressible way to wire Model Armor content inspection into Agent Gateway's `AuthzExtension` mechanism. See [Security Operations](../governance/security.md#model-armor) for the full governance picture, including the app-level fallback that's also currently inactive.
+(`../../archive/RESOLVED_2026-08-08_MODEL_ARMOR_CONTENT_AUTHZ_TEST.md:127-136`). This is an API-level rejection, not a config mistake — there is currently no known Terraform-expressible way to wire Model Armor content inspection into Agent Gateway's `AuthzExtension` mechanism. See [Security Operations](../governance/security.md#model-armor) for the full governance picture, including the app-level fallback that's also currently inactive.
 
 ---
 
