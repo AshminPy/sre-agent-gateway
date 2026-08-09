@@ -26,6 +26,14 @@ from agent.graph import GRAPH_RECURSION_LIMIT
 # which this pattern does not match (GRAPH_RECURSION_LIMIT is not all-digits).
 _HARDCODED_LIMIT = re.compile(r'"recursion_limit"\s*:\s*\d+')
 
+# The original bug's other half: run_eval.py's run_local() didn't hardcode a wrong
+# number, it passed NO recursion_limit config at all. An import-only check (does the
+# file mention GRAPH_RECURSION_LIMIT anywhere) would keep passing even if the config
+# kwarg were later dropped while the now-unused import stayed behind — so this checks
+# the constant is actually wired into a "recursion_limit": ... assignment, not merely
+# imported.
+_WIRED_LIMIT = re.compile(r'"recursion_limit"\s*:\s*GRAPH_RECURSION_LIMIT')
+
 
 def test_main_py_recursion_limit_is_not_hardcoded():
     source = inspect.getsource(main_mod)
@@ -34,7 +42,11 @@ def test_main_py_recursion_limit_is_not_hardcoded():
         "use agent.graph.GRAPH_RECURSION_LIMIT instead, or it can silently drift from "
         "the eval harness again."
     )
-    assert "GRAPH_RECURSION_LIMIT" in source
+    assert _WIRED_LIMIT.search(source), (
+        "agent/main.py imports GRAPH_RECURSION_LIMIT but never actually passes it as "
+        '"recursion_limit": GRAPH_RECURSION_LIMIT — an orphaned import doesn\'t protect '
+        "against silently invoking the graph with no recursion_limit config at all."
+    )
 
 
 def test_run_eval_py_recursion_limit_is_not_hardcoded():
@@ -44,7 +56,12 @@ def test_run_eval_py_recursion_limit_is_not_hardcoded():
         "import and use agent.graph.GRAPH_RECURSION_LIMIT instead, or local eval runs "
         "can silently drift from the deployed agent's setting again."
     )
-    assert "GRAPH_RECURSION_LIMIT" in source
+    assert _WIRED_LIMIT.search(source), (
+        "agent/eval/run_eval.py imports GRAPH_RECURSION_LIMIT but never actually passes "
+        'it as "recursion_limit": GRAPH_RECURSION_LIMIT — an orphaned import doesn\'t '
+        "protect against silently falling back to LangGraph's default of 25 again, "
+        "which is exactly how the original bug happened."
+    )
 
 
 def test_graph_recursion_limit_is_reasonably_above_langgraph_default():
