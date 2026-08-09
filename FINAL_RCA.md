@@ -191,6 +191,55 @@ definition. Nothing in this codebase hardcodes engine IDs; both
 dynamically via `terraform output`, so recreation required no follow-up
 code changes.
 
+## 2026-08-07 addendum — re-verified against Google support's suggested fix, under today's live config
+
+Filed a Google support case (draft: `MODEL_ARMOR_GOOGLE_SUPPORT_CASE.md`) citing this RCA. A
+Google Customer Engineer's response proposed `GOOGLE_API_USE_MTLS_ENDPOINT=never` /
+`GOOGLE_API_USE_CLIENT_CERTIFICATE=false` as the fix, reasoning that the client library
+auto-switches to the mTLS endpoint when a client cert is present. Correctly flagged by the user
+that this RCA's source-inspection evidence was from 2026-07-16 — a lot has changed in the repo
+since (multiple engine recreations, Agent Gateway's PSC-I removed 2026-08-07, general config
+drift) — so re-tested empirically against the CURRENT live setup rather than relying on the old
+finding alone.
+
+**Pre-check:** `pip index versions google-genai` (2026-08-07) shows the latest available release
+is still 1.47.0 — the exact version this RCA's original source inspection covered. No newer
+`google-genai` release exists that could have added mTLS-switching logic since.
+
+**Live test:** added `GOOGLE_API_USE_MTLS_ENDPOINT = "never"` to the reasoning engine's env vars
+(scoped local experiment, not committed — `terraform apply` + `-replace=` on the engine + the
+usual mandatory re-attach), then ran a real investigation (`invoke_agent.py --scenario
+imagepull`) against the new engine (id `2960142037938077696`).
+
+**Result: no SSL/certificate error occurred, with or without this env var.** Server-side logs
+(`run_id=run_20260807_172929_mvzo`) show a fully successful investigation: real evidence gathered
+from GKE Remote MCP (`HTTP Request: POST https://container.googleapis.com/mcp/read-only "HTTP/1.1
+200 OK"`, twice), a real RCA built and saved (`outcome=possible confidence=0.375`,
+`gs://sreagent-t2-demo-eval/runs/run_20260807_172929_mvzo.json`). The client-side
+`invoke_agent.py` call *did* time out at 300s — but the server logs show this was caused by
+**Gemini API rate limiting** (`WARNING: Rate limited — waiting 30s/60s before retry`, pushing
+real latency to 307.4s), unrelated to the env var, and the investigation completed successfully
+server-side regardless.
+
+**Conclusion: this RCA's fix stands, re-verified under today's live config, not just July's.**
+The env var made no observable difference — consistent with it being dead code for this client
+library, as already proven by direct source inspection. The bundled-atomic-PATCH fix
+(`attach_gateway_to_engine.sh`) remains the actual, necessary, and sufficient fix. Google's
+suggested env var was reverted immediately after this test (not committed).
+
+**One unrelated, minor observation from this test, not investigated further:** `rca_builder.py`'s
+own `_write_observability_log()` (the separate `sre-agent-investigations` log entry) hit a `403
+unregistered in Agent Registry` this one time — possibly the freshly-recreated engine's Agent
+Registry state hadn't fully propagated yet. Didn't affect the actual investigation (a different,
+unaffected log path in `agent/main.py` captured the same run successfully). Worth a note, not
+worth chasing without a repro.
+
+**New lead from Google's reply, not yet checked:** a possible bug in `configure_mtls_channel()`
+only mounting client certs on the outer session (internal token-refresh/IAM calls may bypass the
+mTLS channel) on some client library versions — Google couldn't confirm affected versions.
+Unrelated to the above test (no mTLS-related error occurred here to attribute to it), but worth
+keeping in mind if a *different* mTLS-shaped failure appears in the future.
+
 ## Follow-up work (not yet done)
 1. Apply the same fix pattern to the `testing-gcp-sre-agent` repo (original, separate repo) — it has its own uncommitted in-progress port of earlier fixes; needs review before applying this on top.
 2. Consider exact-pinning the two dependency versions if the floor pins prove fragile over time.
