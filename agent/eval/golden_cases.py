@@ -25,7 +25,12 @@ GOLDEN_CASES = [
             },
         },
         # Tools MUST be called in this order (at minimum). Extra calls are allowed.
-        "expected_trajectory": ["list_pods", "get_pod_logs", "get_events"],
+        # Names match GKE_REMOTE_TOOLS (agent/mcp_client.py) — this case targets
+        # sre-test-cluster (type=gke), so it routes through gke_remote_mcp, never
+        # the custom MCP's differently-named CUSTOM_K8S_TOOLS. Reasoned from the
+        # incident type (crash reason lives in logs; loop pattern confirmed by
+        # events), not copied from any one observed run.
+        "expected_trajectory": ["get_k8s_logs", "list_k8s_events"],
         "expected_keywords": ["CrashLoopBackOff", "exit"],
         "expected_confidence_min": 0.65,
     },
@@ -40,7 +45,9 @@ GOLDEN_CASES = [
                 "cluster": "sre-test-cluster",
             },
         },
-        "expected_trajectory": ["list_pods", "get_pod", "get_pod_logs"],
+        # GKE_REMOTE_TOOLS names. Resource status carries the OOMKilled reason
+        # (exit 137, memory limit); logs corroborate.
+        "expected_trajectory": ["get_k8s_resource", "get_k8s_logs"],
         "expected_keywords": ["OOMKilled", "137", "memory"],
         "expected_confidence_min": 0.65,
     },
@@ -55,7 +62,9 @@ GOLDEN_CASES = [
                 "cluster": "sre-test-cluster",
             },
         },
-        "expected_trajectory": ["list_pods", "get_events"],
+        # GKE_REMOTE_TOOLS names. Resource status carries the pull-error message;
+        # events confirm the ImagePullBackOff/ErrImagePull pattern.
+        "expected_trajectory": ["get_k8s_resource", "list_k8s_events"],
         "expected_keywords": ["ImagePullBackOff", "ErrImagePull", "image"],
         "expected_confidence_min": 0.65,
     },
@@ -70,7 +79,9 @@ GOLDEN_CASES = [
                 "cluster": "sre-test-cluster",
             },
         },
-        "expected_trajectory": ["list_pods", "get_events", "describe_pod"],
+        # GKE_REMOTE_TOOLS names. Events show why it's stuck; describe surfaces
+        # the mount/ConfigMap detail.
+        "expected_trajectory": ["list_k8s_events", "describe_k8s_resource"],
         "expected_keywords": ["ContainerCreating", "ConfigMap", "app-config"],
         "expected_confidence_min": 0.65,
     },
@@ -85,7 +96,9 @@ GOLDEN_CASES = [
                 "cluster": "sre-test-cluster",
             },
         },
-        "expected_trajectory": ["list_pods", "get_events"],
+        # GKE_REMOTE_TOOLS names. Events show what's blocking the init phase;
+        # resource status shows the init container's own state.
+        "expected_trajectory": ["list_k8s_events", "get_k8s_resource"],
         "expected_keywords": ["Init", "init container", "db-service"],
         "expected_confidence_min": 0.65,
     },
@@ -99,7 +112,11 @@ GOLDEN_CASES = [
                 "cluster": "sre-test-cluster",
             },
         },
-        "expected_trajectory": ["list_pods", "get_events"],
+        # GKE_REMOTE_TOOLS names. This is a label/selector mismatch, not a crash —
+        # events on the pods won't show it. Describe surfaces the pod's labels;
+        # get_k8s_resource on the Service surfaces its selector, so the mismatch
+        # is visible by comparing the two.
+        "expected_trajectory": ["describe_k8s_resource", "get_k8s_resource"],
         "expected_keywords": ["selector", "endpoint", "label"],
         "expected_confidence_min": 0.50,
     },
@@ -113,7 +130,12 @@ GOLDEN_CASES = [
                 "cluster": "sre-test-cluster",
             },
         },
-        "expected_trajectory": ["list_pods", "get_pod_logs", "get_events"],
+        # GKE_REMOTE_TOOLS names. Logs on order-api should reveal the true
+        # upstream cause (order-db); events corroborate the crash pattern.
+        # This is the MINIMUM for the first pod investigated — a real
+        # cascading-failure investigation may call more tools tracing into
+        # order-db, which is allowed (extra calls are fine, per the rule above).
+        "expected_trajectory": ["get_k8s_logs", "list_k8s_events"],
         "expected_keywords": ["database", "order-db", "OOMKilled"],
         "expected_confidence_min": 0.50,
     },
@@ -128,7 +150,9 @@ GOLDEN_CASES = [
                 "cluster": "sre-test-cluster",
             },
         },
-        "expected_trajectory": ["list_pods", "get_events"],
+        # GKE_REMOTE_TOOLS names. Events carry the FailedScheduling reason;
+        # resource status shows the pod's own resource requests for context.
+        "expected_trajectory": ["list_k8s_events", "get_k8s_resource"],
         "expected_keywords": ["Pending", "FailedScheduling", "Insufficient"],
         "expected_confidence_min": 0.50,
     },
@@ -149,6 +173,12 @@ GOLDEN_CASES = [
                 "cluster": "onprem-dc1-cluster",
             },
         },
+        # NOT changed in the 2026-08-09 stale-name fix — these three names
+        # (list_pods, get_current_logs, list_events) are CUSTOM_K8S_TOOLS
+        # names (agent/mcp_client.py), which is correct here since this case
+        # routes through k8s_mcp, not gke_remote_mcp. They were never stale;
+        # they just happen to look similar to the old GKE-side names that
+        # WERE stale in every other case in this file.
         "expected_trajectory": ["list_pods", "get_current_logs", "list_events"],
         "expected_keywords": ["CrashLoopBackOff", "exit"],
         "expected_confidence_min": 0.50,
@@ -168,7 +198,9 @@ GOLDEN_CASES = [
                 "cluster": "sre-test-cluster",
             },
         },
-        "expected_trajectory": ["list_pods"],
+        # GKE_REMOTE_TOOLS name. A single resource lookup is enough to discover
+        # the pod is gone — that absence itself is the evidence for this case.
+        "expected_trajectory": ["get_k8s_resource"],
         "expected_keywords": ["unknown", "insufficient"],
         "expected_confidence_min": 0.0,
         "expected_outcome": ["insufficient_evidence", "unknown"],
@@ -189,7 +221,9 @@ GOLDEN_CASES = [
                 "cluster": "sre-test-cluster",
             },
         },
-        "expected_trajectory": ["list_pods", "get_events"],
+        # GKE_REMOTE_TOOLS names. Resource lookup plus events surfaces the
+        # cross-cluster disagreement in the collected evidence.
+        "expected_trajectory": ["get_k8s_resource", "list_k8s_events"],
         "expected_keywords": ["conflicting", "cluster"],
         "expected_confidence_min": 0.0,
         "expected_outcome": ["conflicting_evidence"],
@@ -229,7 +263,9 @@ GOLDEN_CASES = [
                 "cluster": "sre-test-cluster",
             },
         },
-        "expected_trajectory": ["list_pods"],
+        # GKE_REMOTE_TOOLS name. The attempted resource lookup is what fails
+        # (GKE Remote MCP degraded) — that failure itself is the case under test.
+        "expected_trajectory": ["get_k8s_resource"],
         "expected_keywords": ["unknown", "failed"],
         "expected_confidence_min": 0.0,
         "expected_outcome": ["insufficient_evidence", "unknown"],
@@ -246,7 +282,9 @@ GOLDEN_CASES = [
                 "cluster": "sre-test-cluster",
             },
         },
-        "expected_trajectory": ["list_pods", "get_events", "describe_pod"],
+        # GKE_REMOTE_TOOLS names. Events carry the missing-Secret mount reason;
+        # describe_k8s_resource confirms the volume/secret reference on the pod spec.
+        "expected_trajectory": ["list_k8s_events", "describe_k8s_resource"],
         "expected_keywords": ["Secret", "db-credentials", "ContainerCreating"],
         "expected_confidence_min": 0.65,
     },

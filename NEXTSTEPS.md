@@ -478,6 +478,27 @@ accuracy as the *combined* tool surface grows (beyond today's 6 + 27, never show
 together) has never been load/accuracy-tested — worth a deliberate check once a 3rd source is
 actually added, not before.
 
+### STATUS: 2026-08-09 — tool-scaling baseline CORRECTED, official baseline established
+
+The first baseline run (below, `tool-scaling-baseline-2026-08-09.md`) had two real eval-harness
+bugs the user caught: stale `expected_trajectory` tool names in `golden_cases.py` (causing a
+misleading 0% trajectory-match reading), and a `recursion_limit` mismatch between local eval mode
+(silently defaulted to LangGraph's built-in 25) and the deployed agent (60), which crashed 4/14
+cases. Both fixed: 12 golden cases' expected tool names rewritten from the current real tool
+definitions; `agent.graph.GRAPH_RECURSION_LIMIT = 60` added as a single shared constant imported by
+both `agent/main.py` and `agent/eval/run_eval.py`. Two new regression tests guard against silent
+recurrence: `tests/test_golden_cases_tool_names.py`, `tests/test_recursion_limit_consistency.py`.
+Reran the same 14 scenarios clean: **14/14 completed execution (0 recursion crashes, was 10/14)**,
+**12/14 correct tools called (trajectory recall ≥ 0.5)**, **100% correct MCP source selection**,
+**0 tool execution failures**. Full old-vs-new numbers, and three new findings surfaced by the
+clean rerun (a cross-contamination case-mixup on `selector-001`, a silent zero-tool-call result on
+`onprem-001`, and confirmation that 3 golden cases have no live fixture at all) are in
+`docs/baselines/tool-scaling-baseline-2026-08-09-corrected.md` — that file is now the official
+baseline for the future source-#3 comparison. The original run is kept, unmodified, as historical
+evidence of the harness bugs. **#2 Authoritative routing/tool-scaling baseline: now PASS** (was
+PARTIAL). Next up per the user's sequencing: backlog item #4 (verify real custom MCP deployment
+state) — directly relevant to Finding C above (`onprem-001`'s unexplained zero-tool-call result).
+
 ---
 
 ## 6. (Item #7) RCA accuracy eval suite: golden dataset + LLM-judge scoring + confidence-calibration checks
