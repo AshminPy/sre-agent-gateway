@@ -28,6 +28,44 @@ variable "gke_cluster_name" {
   default     = "sre-test-cluster"
 }
 
+# Extra clusters beyond the default one above, keyed by canonical cluster name
+# (this becomes each entry's "name" field in clusters.json — must be unique and
+# must not collide with var.gke_cluster_name; enforced below by a real
+# validation block, not a `check` block — `check` blocks only ever emit a
+# warning, they never fail plan/apply, so one was tried here and rejected in
+# review before this fix landed). Terraform is the sole source of truth for
+# clusters.json — there is no lifecycle.ignore_changes on the bucket object,
+# so hand-edits to the file in GCS are NOT supported and will be overwritten
+# on the next apply. Add clusters here instead. Defaults to empty so existing
+# single-cluster deployments are unaffected.
+variable "additional_clusters" {
+  description = "Extra clusters (beyond var.gke_cluster_name) the agent can investigate, keyed by canonical cluster name. Merged into clusters.json alongside the default cluster."
+  type = map(object({
+    aliases            = optional(list(string), [])
+    project            = string
+    region             = string
+    type               = optional(string, "gke")
+    environment        = optional(string, "production")
+    allowed_namespaces = optional(list(string), [])
+    owner              = optional(string, "")
+    enabled            = optional(bool, true)
+  }))
+  default = {}
+
+  # Cross-variable validation (Terraform >= 1.9 — see versions.tf) — this
+  # actually fails plan/apply, unlike a `check` block. trimspace() on both
+  # sides so a whitespace-padded key (e.g. " sre-test-cluster") can't sneak
+  # past the comparison and then silently collapse with the real entry when
+  # agent/mcp_client.py's registry parser calls .strip() on every name.
+  validation {
+    condition = !contains(
+      [for k in keys(var.additional_clusters) : trimspace(k)],
+      trimspace(var.gke_cluster_name)
+    )
+    error_message = "additional_clusters contains a key that collides with var.gke_cluster_name (after trimming whitespace) — pick a distinct name for the additional cluster."
+  }
+}
+
 variable "notification_email" {
   description = "Email address that receives Cloud Monitoring alerts (high error rate, high escalation rate, cost spike)."
   type        = string

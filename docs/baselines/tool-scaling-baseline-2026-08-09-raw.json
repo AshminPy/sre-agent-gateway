@@ -1,0 +1,259 @@
+{
+  "summary": {
+    "passed": 0,
+    "total": 14
+  },
+  "scores": [
+    {
+      "case_id": "crashloop-001",
+      "passed": false,
+      "trajectory_precision": 0.0,
+      "trajectory_recall": 0.0,
+      "in_order_match": false,
+      "keyword_accuracy": 1.0,
+      "confidence": 0.525,
+      "confidence_band": "escalate",
+      "confidence_ok": false,
+      "outcome": "possible",
+      "outcome_ok": true,
+      "max_confidence_ok": true,
+      "predicted_tools": [
+        "get_k8s_logs",
+        "list_k8s_events"
+      ],
+      "expected_tools": [
+        "list_pods",
+        "get_pod_logs",
+        "get_events"
+      ],
+      "root_cause": "The pod 'crashloop-pod' is intentionally exiting with code 1, as indicated by its logs (ev_001). This is causing the CrashLoopBackOff state."
+    },
+    {
+      "case_id": "oomkilled-001",
+      "passed": false,
+      "trajectory_precision": 0.0,
+      "trajectory_recall": 0.0,
+      "in_order_match": false,
+      "keyword_accuracy": 0.333,
+      "confidence": 0.4893,
+      "confidence_band": "escalate",
+      "confidence_ok": false,
+      "outcome": "possible",
+      "outcome_ok": true,
+      "max_confidence_ok": true,
+      "predicted_tools": [
+        "get_k8s_resource",
+        "get_k8s_logs",
+        "list_k8s_events"
+      ],
+      "expected_tools": [
+        "list_pods",
+        "get_pod",
+        "get_pod_logs"
+      ],
+      "root_cause": "The pod 'oomkilled-pod' is repeatedly OOMKilled because a GCE quota exceeded in us-central1-f prevented node scaling, leading to resource contention (ev_003)."
+    },
+    {
+      "case_id": "imagepull-001",
+      "passed": false,
+      "trajectory_precision": 0.0,
+      "trajectory_recall": 0.0,
+      "in_order_match": false,
+      "keyword_accuracy": 0.333,
+      "confidence": 0.625,
+      "confidence_band": "escalate",
+      "confidence_ok": false,
+      "outcome": "possible",
+      "outcome_ok": true,
+      "max_confidence_ok": true,
+      "predicted_tools": [
+        "get_k8s_resource",
+        "list_k8s_events"
+      ],
+      "expected_tools": [
+        "list_pods",
+        "get_events"
+      ],
+      "root_cause": "The pod imagepull-pod failed to pull image 'gcr.io/google-containers/nonexistent-image:v99.9.9' because the image was not found in the registry (ev_002)."
+    },
+    {
+      "case_id": "configmap-001",
+      "passed": false,
+      "trajectory_precision": 0.0,
+      "trajectory_recall": 0.0,
+      "in_order_match": false,
+      "keyword_accuracy": 1.0,
+      "confidence": 0.65,
+      "confidence_band": "review",
+      "confidence_ok": true,
+      "outcome": "probable",
+      "outcome_ok": true,
+      "max_confidence_ok": true,
+      "predicted_tools": [
+        "list_k8s_events",
+        "get_k8s_resource",
+        "list_k8s_api_resources"
+      ],
+      "expected_tools": [
+        "list_pods",
+        "get_events",
+        "describe_pod"
+      ],
+      "root_cause": "The pod auth-service is stuck in ContainerCreating because the ConfigMap 'app-config' is not found, preventing volume mounting (ev_001, ev_002)."
+    },
+    {
+      "case_id": "init-001",
+      "passed": false,
+      "trajectory_precision": 0.0,
+      "trajectory_recall": 0.0,
+      "in_order_match": false,
+      "keyword_accuracy": 0.333,
+      "confidence": 0.65,
+      "confidence_band": "review",
+      "confidence_ok": true,
+      "outcome": "probable",
+      "outcome_ok": true,
+      "max_confidence_ok": true,
+      "predicted_tools": [
+        "list_k8s_events",
+        "get_k8s_resource",
+        "describe_k8s_resource"
+      ],
+      "expected_tools": [
+        "list_pods",
+        "get_events"
+      ],
+      "root_cause": "The inventory-service pod was initially blocked from scheduling due to GCE quota exhaustion (ev_001), leading to a delayed start and subsequent Init:0/2 status (ev_002, ev_003)."
+    },
+    {
+      "case_id": "selector-001",
+      "passed": false,
+      "trajectory_precision": 0.0,
+      "trajectory_recall": 0.0,
+      "in_order_match": false,
+      "keyword_accuracy": 0.0,
+      "confidence": 0.0,
+      "confidence_band": "escalate",
+      "confidence_ok": false,
+      "outcome": "insufficient_evidence",
+      "outcome_ok": true,
+      "max_confidence_ok": true,
+      "predicted_tools": [
+        "list_k8s_events",
+        "describe_k8s_resource",
+        "get_k8s_resource"
+      ],
+      "expected_tools": [
+        "list_pods",
+        "get_events"
+      ],
+      "root_cause": ""
+    },
+    {
+      "case_id": "cascading-001",
+      "passed": false,
+      "error": "Recursion limit of 25 reached without hitting a stop condition. You can increase the limit by setting the `recursion_limit` config key.\nFor troubleshooting, visit: https://python.langchain.com/docs/troubleshooting/errors/GRAPH_RECURSION_LIMIT"
+    },
+    {
+      "case_id": "pending-001",
+      "passed": false,
+      "error": "Recursion limit of 25 reached without hitting a stop condition. You can increase the limit by setting the `recursion_limit` config key.\nFor troubleshooting, visit: https://python.langchain.com/docs/troubleshooting/errors/GRAPH_RECURSION_LIMIT"
+    },
+    {
+      "case_id": "onprem-001",
+      "passed": false,
+      "trajectory_precision": 0.0,
+      "trajectory_recall": 0.0,
+      "in_order_match": false,
+      "keyword_accuracy": 0.0,
+      "confidence": 0.0,
+      "confidence_band": "escalate",
+      "confidence_ok": false,
+      "outcome": "insufficient_evidence",
+      "outcome_ok": true,
+      "max_confidence_ok": true,
+      "predicted_tools": [],
+      "expected_tools": [
+        "list_pods",
+        "get_current_logs",
+        "list_events"
+      ],
+      "root_cause": "No evidence was extracted, so root cause cannot be determined."
+    },
+    {
+      "case_id": "insufficient-evidence-001",
+      "passed": false,
+      "trajectory_precision": 0.0,
+      "trajectory_recall": 0.0,
+      "in_order_match": false,
+      "keyword_accuracy": 0.0,
+      "confidence": 0.5,
+      "confidence_band": "escalate",
+      "confidence_ok": true,
+      "outcome": "possible",
+      "outcome_ok": false,
+      "max_confidence_ok": true,
+      "predicted_tools": [
+        "get_k8s_logs",
+        "list_k8s_api_resources",
+        "list_k8s_events"
+      ],
+      "expected_tools": [
+        "list_pods"
+      ],
+      "root_cause": "The pod 'ghost-pod-42' was deleted or never existed, as confirmed by the 'resource not found' error (ev_001)."
+    },
+    {
+      "case_id": "conflicting-evidence-001",
+      "passed": false,
+      "error": "Recursion limit of 25 reached without hitting a stop condition. You can increase the limit by setting the `recursion_limit` config key.\nFor troubleshooting, visit: https://python.langchain.com/docs/troubleshooting/errors/GRAPH_RECURSION_LIMIT"
+    },
+    {
+      "case_id": "ambiguous-routing-001",
+      "passed": false,
+      "trajectory_precision": 0.0,
+      "trajectory_recall": 1.0,
+      "in_order_match": true,
+      "keyword_accuracy": 0.0,
+      "confidence": 0.0,
+      "confidence_band": "escalate",
+      "confidence_ok": true,
+      "outcome": "insufficient_evidence",
+      "outcome_ok": true,
+      "max_confidence_ok": true,
+      "predicted_tools": [],
+      "expected_tools": [],
+      "root_cause": "No evidence was extracted, so root cause cannot be determined."
+    },
+    {
+      "case_id": "mcp-gateway-failure-001",
+      "passed": false,
+      "error": "Recursion limit of 25 reached without hitting a stop condition. You can increase the limit by setting the `recursion_limit` config key.\nFor troubleshooting, visit: https://python.langchain.com/docs/troubleshooting/errors/GRAPH_RECURSION_LIMIT"
+    },
+    {
+      "case_id": "secret-001",
+      "passed": false,
+      "trajectory_precision": 0.0,
+      "trajectory_recall": 0.0,
+      "in_order_match": false,
+      "keyword_accuracy": 0.0,
+      "confidence": 0.65,
+      "confidence_band": "review",
+      "confidence_ok": true,
+      "outcome": "probable",
+      "outcome_ok": true,
+      "max_confidence_ok": true,
+      "predicted_tools": [
+        "list_k8s_events",
+        "get_k8s_logs",
+        "describe_k8s_resource"
+      ],
+      "expected_tools": [
+        "list_pods",
+        "get_events",
+        "describe_pod"
+      ],
+      "root_cause": "The Kubernetes Deployment 'user-service' is missing, preventing the creation of any 'user-service' pods (ev_003)."
+    }
+  ]
+}
