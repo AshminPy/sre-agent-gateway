@@ -21,8 +21,11 @@ agent.tar.gz
 
 # ── Terraform (both stacks) ────────────────────────────────────────────────
 # State can contain sensitive values — use the GCS remote backend for teams.
+# .terraform.lock.hcl is intentionally NOT excluded (2026-08-10) — HashiCorp's
+# own recommendation is to commit it for reproducible provider versions across
+# machines/CI; unlike state, it contains no sensitive values, only provider
+# source/version/checksum pins.
 **/.terraform/
-**/.terraform.lock.hcl
 **/terraform.tfstate
 **/terraform.tfstate.*
 **/*.tfplan
