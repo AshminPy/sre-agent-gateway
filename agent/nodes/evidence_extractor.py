@@ -60,7 +60,7 @@ def evidence_extractor(state: AgentState) -> dict:
 
         ev_entry = {
             "ok": False,
-            "source": tool,
+            "tool": tool,
             "mcp_source": mcp_source,
             "cluster": ctx.get("cluster_name", ""),
             "region": ctx.get("cluster_region", ""),
@@ -130,7 +130,7 @@ def evidence_extractor(state: AgentState) -> dict:
 
     ev_entry = {
         "ok": True,
-        "source": tool,
+        "tool": tool,
         "mcp_source": mcp_source,
         "cluster": ctx.get("cluster_name", ""),
         "region": ctx.get("cluster_region", ""),

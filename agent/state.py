@@ -75,7 +75,7 @@ class AgentState(TypedDict):
     # Raw MCP output NEVER enters state — lives in GCS only
     evidence_ids:       Annotated[List[str], _append]
     evidence_store:     Annotated[Dict[str, Any], operator.or_]
-    # { ev_001: { facts, summary, raw_ref, source, tool, cluster } }
+    # { ev_001: { facts, summary, raw_ref, tool, mcp_source, cluster } }
 
     # ── Evaluation chain ──────────────────────────────────────────
     evaluation_ids:     Annotated[List[str], _append]
