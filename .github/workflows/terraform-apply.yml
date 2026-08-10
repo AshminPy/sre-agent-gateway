@@ -177,59 +177,23 @@ jobs:
           fi
         working-directory: .
 
-      # Self-heals a known, recurring, undocumented flake (see
-      # archive/RESOLVED_2026-07-17_TROUBLESHOOTING_LOG.md / deploy-state — third occurrence as of
-      # 2026-08-07, no official Google doc or public trace found despite
-      # research): the engine's backend occasionally accumulates bad state
-      # and every attach attempt against it fails with
-      # `code: 3, "The Reasoning Engine failed to be updated"`, regardless of
-      # how correct the PATCH itself is. The only known working fix is to
-      # recreate the engine (terraform apply -replace=) and re-attach — this
-      # automates exactly that, ONCE, instead of requiring a human to notice
-      # the CI failure and do it manually. Capped at one retry on purpose: a
-      # different failure (bad credentials, a real code bug, gateway
-      # misconfiguration) should still fail the job loudly, not loop.
-      - name: Attach gateway to engine (self-heals one known recurring flake)
-        run: |
-          set +e
-          bash scripts/attach_gateway_to_engine.sh 2>&1 | tee /tmp/attach_attempt1.log
-          STATUS=${PIPESTATUS[0]}
-          set -e
-          if [ "$STATUS" -eq 0 ]; then
-            exit 0
-          fi
-          if ! grep -q "The Reasoning Engine failed to be updated" /tmp/attach_attempt1.log; then
-            echo "Attach failed with a DIFFERENT error than the known recurring flake — not auto-retrying, see log above." >&2
-            exit "$STATUS"
-          fi
-          echo "::warning::Attach hit the known recurring 'Reasoning Engine failed to be updated' flake — recreating the engine and retrying once."
-          cd iac/agent
-          terraform apply -auto-approve -replace="google_vertex_ai_reasoning_engine.sre_agent" \
-            -var="project_a_id=${{ secrets.GCP_PROJECT_A_ID }}" \
-            -var="project_b_id=${{ secrets.GCP_PROJECT_B_ID }}" \
-            -var="region=${{ secrets.GCP_REGION }}" \
-            -var="notification_email=${{ secrets.NOTIFICATION_EMAIL }}" \
-            -var="github_repo=${{ github.repository }}" \
-            -var="tfstate_bucket=${{ secrets.TFSTATE_BUCKET }}" \
-            -var="create_wif=false" \
-            -var="gemini_model=gemini-2.5-pro" \
-            -var="enable_custom_mcp=${{ vars.ENABLE_CUSTOM_MCP || 'false' }}" \
-            -var="custom_mcp_image=${{ steps.mcp_image.outputs.image || 'us-docker.pkg.dev/cloudrun/container/placeholder' }}"
-          cd ../..
-          # 2026-08-09: added a delay here as a HYPOTHESIS being tested, not a proven
-          # fix -- based on exactly one data point on each side (see
-          # docs/management/implemented-vs-planned-matrix.md discussion / session notes):
-          # a CI attach attempted 23s after this exact recreate failed with a generic
-          # `code: 13 INTERNAL` from Google; a manual retry of the SAME engine ~15.5min
-          # later succeeded. If this still fails intermittently after this change,
-          # the real gap needed may be longer than 90s (or the timing theory may be
-          # wrong entirely) -- don't assume this delay alone is a confirmed fix.
-          echo "Waiting 90s after engine recreate before retrying attach (see comment above)..."
-          sleep 90
-          bash scripts/attach_gateway_to_engine.sh
-        working-directory: .
+      # 2026-08-10: scripts/attach_gateway_to_engine.sh is no longer run
+      # automatically here. The gateway binding (`agentGatewayConfig`) is now
+      # part of the google_vertex_ai_reasoning_engine.sre_agent Terraform
+      # resource itself (iac/agent/agent_engine.tf, google-beta >= 7.40.0) —
+      # the "Apply (ensure infra + Artifact Registry repo exist)" step above
+      # already applies it as an ordinary in-place update, same as any other
+      # config change. Verified live before this cutover: a fresh binding
+      # (Test A) and a source-only update with the binding unchanged (Test B)
+      # both preserved agentGatewayConfig, Agent Identity, and the Reasoning
+      # Engine/Gateway IDs, with zero replacement in either case.
+      #
+      # attach_gateway_to_engine.sh itself is UNCHANGED and stays in the repo
+      # as a manual emergency rollback tool — see its own header. It is not
+      # invoked by this workflow anymore; run it by hand only if a real
+      # deployment needs to fall back to the old out-of-band PATCH path.
 
-      # Real end-to-end proof, not just "the PATCH call succeeded": invokes
+      # Real end-to-end proof, not just "the apply succeeded": invokes
       # the deployed agent on a live fixture (k8s/imagepull-pod.yaml, a
       # standing ImagePullBackOff pod in the Project B test cluster) and
       # fails the job if it doesn't get back a well-formed RCA. The gateway
