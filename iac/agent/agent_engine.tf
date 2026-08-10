@@ -84,7 +84,16 @@ locals {
 }
 
 # The SRE agent.
+#
+# provider = google-beta: `spec.deployment_spec.agent_gateway_config` (below)
+# only exists in google-beta (>= 7.40.0, see versions.tf) as of 2026-08-10 —
+# confirmed absent from the plain `google` provider's schema at the same
+# version. Scoped to THIS resource only — google_vertex_ai_reasoning_engine.
+# memory_bank (below) has no gateway config and stays on the default `google`
+# provider; nothing else in this stack changes provider.
 resource "google_vertex_ai_reasoning_engine" "sre_agent" {
+  provider = google-beta
+
   project      = var.project_a_id
   region       = var.region
   display_name = "sre-agent-gcp"
@@ -121,6 +130,29 @@ resource "google_vertex_ai_reasoning_engine" "sre_agent" {
         content {
           name  = env.key
           value = env.value
+        }
+      }
+
+      # Phase 2 of the attach_gateway_to_engine.sh -> Terraform migration
+      # (2026-08-10, see docs/ADR-002 and the rollback tag
+      # rollback-pre-agent-gateway-config-tf-2026-08-10). Binds this engine's
+      # OUTBOUND MCP traffic to the existing AGENT_TO_ANYWHERE gateway
+      # (agent_gateway.tf) — the exact same binding the script has performed
+      # out-of-band since the gateway was introduced. Guarded by
+      # var.enable_agent_gateway so a gateway-disabled deployment never
+      # references google_network_services_agent_gateway.sre_egress[0] when
+      # its count is 0.
+      #
+      # attach_gateway_to_engine.sh is NOT removed by this change (see the
+      # script's own header) — it stays available as the rollback path until
+      # both Phase 3/4 live tests (gateway binding, then a source-only update
+      # with the binding unchanged) pass against a real deployment.
+      dynamic "agent_gateway_config" {
+        for_each = var.enable_agent_gateway ? [1] : []
+        content {
+          agent_to_anywhere_config {
+            agent_gateway = google_network_services_agent_gateway.sre_egress[0].id
+          }
         }
       }
     }
