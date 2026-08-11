@@ -61,6 +61,33 @@ jobs:
       - name: Init
         run: terraform init -backend-config="bucket=${{ secrets.TFSTATE_BUCKET }}" -backend-config="prefix=agent"
 
+      # Reads the currently-deployed custom MCP Cloud Run image BEFORE the
+      # first apply below. Real regression found and fixed 2026-08-11 while
+      # adding the mcp/ path-filter gate on the build step further down:
+      # Terraform CLI vars are not sticky across separate `apply` invocations
+      # — the first apply's -var list never included custom_mcp_image, so
+      # omitting it always meant "use variables.tf's placeholder default" for
+      # THAT plan, regardless of what's actually running. Confirmed live via
+      # `terraform plan` against real deployed state before this fix: without
+      # this step, a push that skips the build below (agent-only or
+      # Terraform-only change) would have had this apply silently downgrade
+      # the live custom MCP service back to the Google placeholder image.
+      # Empty/failed describe (service doesn't exist yet, or the feature is
+      # off) falls back to the same placeholder the variable's own default
+      # already uses — identical behavior to before this fix in that case.
+      - name: Read currently-deployed MCP image
+        id: current_mcp_image
+        run: |
+          CURRENT=$(gcloud run services describe sre-k8s-mcp \
+            --project="${{ secrets.GCP_PROJECT_A_ID }}" \
+            --region="${{ secrets.GCP_REGION }}" \
+            --format="value(spec.template.spec.containers[0].image)" 2>/dev/null || true)
+          if [ -z "$CURRENT" ]; then
+            CURRENT="us-docker.pkg.dev/cloudrun/container/placeholder"
+          fi
+          echo "image=$CURRENT" >> "$GITHUB_OUTPUT"
+        working-directory: .
+
       # gemini_model is pinned here explicitly because iac/agent/terraform.tfvars
       # (the file holding the real production value) is gitignored and never
       # reaches CI's checkout. Without this, CI silently falls back to
@@ -93,7 +120,8 @@ jobs:
             -var="tfstate_bucket=${{ secrets.TFSTATE_BUCKET }}" \
             -var="create_wif=false" \
             -var="gemini_model=gemini-2.5-pro" \
-            -var="enable_custom_mcp=${{ vars.ENABLE_CUSTOM_MCP || 'false' }}"
+            -var="enable_custom_mcp=${{ vars.ENABLE_CUSTOM_MCP || 'false' }}" \
+            -var="custom_mcp_image=${{ steps.current_mcp_image.outputs.image }}"
 
       # Build & push the custom MCP image only when the feature is enabled AND
       # this push actually touched mcp/ (real path-filter check via the
