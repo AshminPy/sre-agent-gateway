@@ -88,8 +88,7 @@ always silently ran on that Python-side default. Implemented:
 - Regression tests: `tests/test_loop_controller_token_budget.py` (6 tests — env var
   default/override/invalid-value/disable, under/over-budget exit behavior).
 
-**Not implemented yet** — documented here per instruction; #63 implementation is a
-separate, later PR with its own tests and Terraform plan.
+**Status:** the monitoring/token-budget slice above is implemented — [PR #102](https://github.com/AshminPy/sre-agent-gateway/pull/102), CI green, not yet merged or deployed. **Only the dollar-cost removal (removing `estimated_cost_usd` and the manually-maintained Terraform pricing variables) remains** — that is a separate, later #63 PR with its own tests and Terraform plan, not started.
 
 ### Phase 1 — must fix and validate
 

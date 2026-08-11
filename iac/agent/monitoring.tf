@@ -275,6 +275,7 @@ resource "time_sleep" "wait_for_metrics" {
     google_logging_metric.errors,
     google_logging_metric.escalations,
     google_logging_metric.investigation_cost,
+    google_logging_metric.token_usage,
     google_logging_metric.tool_failures,
     google_logging_metric.routing_failures,
     google_logging_metric.unresolved_cluster,
