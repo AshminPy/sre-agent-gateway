@@ -41,6 +41,8 @@ locals {
       PROJECT_ID            = var.project_a_id
       REGION                = var.region
       GEMINI_MODEL          = var.gemini_model
+      GEMINI_PRICE_INPUT    = tostring(var.gemini_price_input_per_1m)
+      GEMINI_PRICE_OUTPUT   = tostring(var.gemini_price_output_per_1m)
       EVAL_BUCKET           = "gs://${google_storage_bucket.eval.name}"
       EVIDENCE_BUCKET       = google_storage_bucket.evidence.name
       CLUSTER_CONFIG_BUCKET = google_storage_bucket.cluster_config.name
