@@ -1,0 +1,45 @@
+name: python-tests
+
+# Runs the pytest suite on PRs touching agent/** or tests/**. Added 2026-08-11
+# (issue #63 PR 1 review) -- until this workflow existed, PRs to this repo had
+# only a terraform plan check; a change that broke Python logic but produced
+# a clean Terraform plan (exactly what happened with log_node_tokens() during
+# this same review) had no CI signal to catch it. Deliberately lightweight:
+# no GCP credentials, no Terraform -- the suite is credential-independent by
+# design (adapter/SDK clients are constructed lazily, never at import time;
+# verified locally with GCP env vars stripped entirely before adding this).
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "agent/**"
+      - "tests/**"
+      - ".github/workflows/python-tests.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          # agent/requirements.txt pins google-cloud-aiplatform[agent_engines]>=1.160.0,
+          # which does not exist on PyPI (same finding terraform-apply.yml's smoke-test
+          # step already works around -- real latest release is 1.148.1). Install
+          # everything else from requirements.txt, then the corrected aiplatform pin.
+          grep -v "google-cloud-aiplatform" agent/requirements.txt > /tmp/agent-requirements.txt
+          pip install --quiet -r /tmp/agent-requirements.txt
+          pip install --quiet "google-cloud-aiplatform[agent_engines]>=1.148.1"
+          pip install --quiet pytest
+
+      - name: Run pytest
+        run: python3 -m pytest tests/ -v
