@@ -277,3 +277,4 @@ def get_session_usage() -> dict:
         "session_cost_usd":       _calculate_cost(_session_tokens_input, _session_tokens_output),
         "session_model_latency_s": round(_session_duration_s, 3),
     }
+# path-filter test: agent-only touch, no mcp/ change
