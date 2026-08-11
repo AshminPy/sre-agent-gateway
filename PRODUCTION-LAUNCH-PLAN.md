@@ -7,6 +7,70 @@
 
 _Created 2026-07-28. Status is evidence-based: marked ✅/🟡 only where backed by real code/config (file:line). Scanned the working repo (agent/, mcp/, iac/agent/) before writing. Supersedes the ordering in NEXTSTEPS.md for production-launch work; NEXTSTEPS.md is retained for the deeper per-item research._
 
+## 2026-08-11 update — Phase 1/Phase 2 restructure, read this first (supersedes the 2026-08-09 section below as the current status source)
+
+Reframed around **Phase 1 (production MVP)** vs **Phase 2 (post-MVP)**, tracked by GitHub
+issue number rather than the Priority-1-12 scheme below. The Priority write-ups are kept
+as historical detail — this section is the current plan.
+
+### Phase 1 — Production MVP
+
+**Keep (already real, verified live this session):**
+- Gemini 2.5 Pro as the deployed model
+- The `agent/llm/` adapter design (issue #63 PR 1 — provider-neutral interface,
+  Gemini-only adapter, `LLM_PROFILE`-driven selection)
+- Accurate token tracking (input/cached/candidates/reasoning/tool-use/total, all captured
+  and aggregated correctly — verified live, 20/20 per-call log entries summed exactly to
+  the final reported totals)
+- Run ID, provider, and model telemetry
+- Read-only investigation (no write/exec/port-forward anywhere in `mcp/` — enforced by
+  `mcp/tests/test_no_mutation.py`)
+- Evidence-backed RCA (every claim cites a real evidence ID)
+- Human approval required before any remediation (no auto-remediation exists)
+
+**#63 scope change:** the per-request estimated dollar cost is being **removed**, not
+made dynamic. It was always computed from manually configured Terraform pricing variables
+— real spend visibility belongs to Google Cloud Billing, not a hand-maintained rate table
+in this repo. Token counting stays exactly as accurate as PR 1 left it; only the dollar
+conversion goes away. (This replaces the earlier "PR 2: dynamic per-investigation
+pricing" sketch floated right after PR 1 merged — that approach is deferred to Phase 2's
+"Billing-export cost attribution," not built now.)
+
+**Phase 1 blockers, in order:**
+1. **#63** — cost cleanup (see below)
+2. **#74** — cross-investigation token/state leakage (`_session_tokens_*` module-level
+   globals in the Gemini adapter can mix data between separate Agent Engine invocations
+   sharing a warm process)
+3. **#95** — reliable service-status and user-impact detection (the real fix #61's
+   Option A fallback text deferred)
+4. Final security, rollback, and production end-to-end validation
+
+**Deferred, not blocking Phase 1:** #32 and #92 (Model Armor output-block verification and
+its dependencies) — Model Armor is intentionally disabled at both the gateway and app
+layers right now (see the Model Armor status note further down); no path to close these
+until that's resolved, and that resolution is out of scope for the Phase 1 MVP gate.
+
+**Do not begin Phase 2 work** until every Phase 1 blocker above is closed.
+
+### Phase 2 — post-MVP
+
+- Dynamic per-investigation pricing (fetched, cached, versioned rate source — the
+  approach originally sketched for #63's "PR 2," now correctly scoped here instead)
+- Additional LLM provider adapters (the `agent/llm/` interface was built for this; only
+  Gemini is implemented today, deliberately)
+- True one-variable (`LLM_PROFILE`) switching between multiple configured providers —
+  only meaningful once a second adapter actually exists
+- Billing-export cost attribution by investigation (join Cloud Billing export data back
+  to `run_id`, replacing the removed per-request dollar estimate with something backed by
+  real billing data instead of a manual rate table)
+
+### Working rule for this phase
+
+Handle one Phase 1 blocker at a time — implementation, regression tests, and a diff review
+before merging each one. No parallel starts across blockers.
+
+---
+
 ## 2026-08-09 update — read this first
 
 Real progress since the 2026-08-05 status below, verified today via 6 parallel live-code
