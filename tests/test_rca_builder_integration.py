@@ -6,7 +6,12 @@ from tests.conftest import make_evidence, make_state, make_tool_history_entry
 
 
 def _mock_llm_json(monkeypatch, response: dict, usage: dict | None = None):
-    usage = usage or {"tokens_input": 100, "tokens_output": 50, "tokens_total": 150, "cost_usd": 0.0001}
+    usage = usage or {
+        "input_tokens": 100, "cached_input_tokens": 0, "output_tokens": 50,
+        "reasoning_tokens": 0, "tool_tokens": 0, "total_tokens": 150,
+        "billable_output_tokens": 50, "cost_usd": 0.0001,
+        "provider": "gemini", "model": "gemini-2.5-pro", "duration_s": 0.1,
+    }
     monkeypatch.setattr(rca_builder_mod, "llm_json", lambda *a, **k: (dict(response), dict(usage)))
     # Cloud Logging isn't available in the test environment — _write_observability_log already
     # fails silently (try/except) if the client can't be constructed, so no mock needed there.

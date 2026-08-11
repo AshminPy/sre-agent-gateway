@@ -4,7 +4,7 @@ CLI hints (namespace, pod, cluster) always override LLM guesses.
 """
 import logging
 from agent.state import AgentState
-from agent.gemini_client import llm_json
+from agent.llm import llm_json
 from agent.prompts import INPUT_NORMALIZER_SYSTEM, INPUT_NORMALIZER_USER
 from agent.otel import trace_node, log_node_tokens
 
@@ -34,7 +34,7 @@ def input_normalizer(state: AgentState) -> dict:
     incident_type = extracted.get("incident_type", "Unknown")
     log.info(
         "input_normalizer incident_type=%s tokens=%d cost=$%.6f",
-        incident_type, usage["tokens_total"], usage["cost_usd"],
+        incident_type, usage["total_tokens"], usage["cost_usd"],
     )
 
     # CLI hints ALWAYS override LLM guesses.
@@ -64,12 +64,9 @@ def input_normalizer(state: AgentState) -> dict:
         resolved["namespace"], resolved["pod"], hints_applied,
     )
 
+    from agent.llm.accounting import accumulate_usage
+
     return {
         "resolved_context": resolved,
-        "investigation": {
-            "tokens_input":       usage["tokens_input"],
-            "tokens_output":      usage["tokens_output"],
-            "tokens_total":       usage["tokens_total"],
-            "estimated_cost_usd": usage["cost_usd"],
-        },
+        "investigation": accumulate_usage(state["investigation"], usage),
     }

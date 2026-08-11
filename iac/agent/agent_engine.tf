@@ -38,9 +38,15 @@ locals {
   agent_env = merge(
     # ── This agent's own functional config ──────────────────────────────────
     {
-      PROJECT_ID            = var.project_a_id
-      REGION                = var.region
-      GEMINI_MODEL          = var.gemini_model
+      PROJECT_ID   = var.project_a_id
+      REGION       = var.region
+      GEMINI_MODEL = var.gemini_model
+      # Same var as GEMINI_MODEL above, deliberately — LLM_PROFILE (agent/llm/registry.py)
+      # is the provider-neutral selector issue #63 introduced; GEMINI_MODEL is kept for
+      # the Gemini adapter's own model-name resolution and existing tooling. Both must
+      # always name the same model, so both are set from this one variable rather than
+      # two separate ones that could drift apart.
+      LLM_PROFILE           = var.gemini_model
       GEMINI_PRICE_INPUT    = tostring(var.gemini_price_input_per_1m)
       GEMINI_PRICE_OUTPUT   = tostring(var.gemini_price_output_per_1m)
       EVAL_BUCKET           = "gs://${google_storage_bucket.eval.name}"

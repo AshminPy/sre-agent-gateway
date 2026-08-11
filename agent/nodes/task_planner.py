@@ -1,7 +1,7 @@
 """task_planner.py — decides what evidence is needed next."""
 import logging
 from agent.state import AgentState
-from agent.gemini_client import llm_json
+from agent.llm import llm_json
 from agent.prompts import TASK_PLANNER_SYSTEM, TASK_PLANNER_USER
 from agent.otel import trace_node, log_node_tokens
 
@@ -53,19 +53,15 @@ def task_planner(state: AgentState) -> dict:
 
     log.info(
         "task_planner plan=%s gap=%s tokens=%d",
-        task_plan[:80], primary_gap[:80], usage["tokens_total"],
+        task_plan[:80], primary_gap[:80], usage["total_tokens"],
     )
 
-    current_tokens = state["investigation"].get("tokens_total", 0)
-    current_cost   = state["investigation"].get("estimated_cost_usd", 0.0)
+    from agent.llm.accounting import accumulate_usage
 
     return {
         "investigation": {
-            "task_plan":          task_plan,
-            "primary_gap":        primary_gap,
-            "tokens_input":       state["investigation"].get("tokens_input", 0)  + usage["tokens_input"],
-            "tokens_output":      state["investigation"].get("tokens_output", 0) + usage["tokens_output"],
-            "tokens_total":       current_tokens + usage["tokens_total"],
-            "estimated_cost_usd": round(current_cost + usage["cost_usd"], 6),
+            "task_plan":   task_plan,
+            "primary_gap": primary_gap,
+            **accumulate_usage(state["investigation"], usage),
         },
     }

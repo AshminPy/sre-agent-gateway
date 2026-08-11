@@ -243,14 +243,29 @@ def log_node_tokens(node: str, run_id: str, step: int, usage: dict) -> None:
 
     Cloud Logging parses stdout JSON lines as jsonPayload automatically.
     Use this to build log-based metrics and charts per node.
+
+    `usage` is the per-call LLMUsage a node just got back from agent.llm's
+    llm()/llm_json() (see agent/llm/base.py) -- normalized field names, not
+    the accumulated investigation-level tokens_input/tokens_output/
+    tokens_total. Reading the old field names here was a real bug (found
+    2026-08-11 reviewing issue #63 PR 1): every per-node log line silently
+    reported all zeros, since usage.get("tokens_input", 0) etc. never matched
+    any key LLMUsage actually has. tokens_output below is
+    billable_output_tokens (candidates + reasoning, what actually bills at
+    the output rate) -- tokens_candidates/tokens_reasoning preserve the
+    breakdown, same convention as agent/llm/accounting.py's accumulate_usage().
     """
     print(json.dumps({
-        "event_type":    "node_token_usage",
-        "node":          node,
-        "run_id":        run_id,
-        "step":          step,
-        "tokens_input":  usage.get("tokens_input",  0),
-        "tokens_output": usage.get("tokens_output", 0),
-        "tokens_total":  usage.get("tokens_total",  0),
-        "cost_usd":      usage.get("cost_usd", 0.0),
+        "event_type":         "node_token_usage",
+        "node":               node,
+        "run_id":              run_id,
+        "step":                step,
+        "tokens_input":        usage.get("input_tokens", 0),
+        "tokens_cached_input": usage.get("cached_input_tokens", 0),
+        "tokens_output":       usage.get("billable_output_tokens", 0),
+        "tokens_candidates":   usage.get("output_tokens", 0),
+        "tokens_reasoning":    usage.get("reasoning_tokens", 0),
+        "tokens_tool_use":     usage.get("tool_tokens", 0),
+        "tokens_total":        usage.get("total_tokens", 0),
+        "cost_usd":            usage.get("cost_usd", 0.0),
     }, separators=(",", ":")), flush=True)

@@ -6,7 +6,7 @@ import json
 import logging
 
 from agent.state import AgentState
-from agent.gemini_client import llm_json
+from agent.llm import llm_json
 from agent.gcs_client import write_evidence, redact
 from agent.prompts import EVIDENCE_EXTRACTOR_SYSTEM, EVIDENCE_EXTRACTOR_USER
 from agent.otel import trace_node, log_node_tokens
@@ -151,19 +151,12 @@ def evidence_extractor(state: AgentState) -> dict:
         raw_ref,
     )
 
-    usage = usage or {}
-    current_tokens = state["investigation"].get("tokens_total", 0)
-    current_cost = state["investigation"].get("estimated_cost_usd", 0.0)
+    from agent.llm.accounting import accumulate_usage
 
     return {
         "evidence_ids": [ev_id],
         "evidence_store": {ev_id: ev_entry},
         "latest_tool_result": None,
-        "investigation": {
-            "tokens_input": state["investigation"].get("tokens_input", 0) + usage.get("tokens_input", 0),
-            "tokens_output": state["investigation"].get("tokens_output", 0) + usage.get("tokens_output", 0),
-            "tokens_total": current_tokens + usage.get("tokens_total", 0),
-            "estimated_cost_usd": round(current_cost + usage.get("cost_usd", 0.0), 6),
-        },
+        "investigation": accumulate_usage(state["investigation"], usage),
         **({"errors": [f"GCS write failed for {ev_id} — raw audit trail missing, requires human review"]} if gcs_failed else {}),
     }
