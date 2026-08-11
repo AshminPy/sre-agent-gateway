@@ -58,19 +58,33 @@ documentation · human-controlled remediation · no automatic production changes
   variables; real spend visibility belongs to Cloud Billing, not a hand-maintained table.
 - Do not build dynamic pricing in Phase 1 — that's Phase 2.
 
-**Monitoring decision (Option 1, chosen 2026-08-11):** `iac/agent/monitoring.tf`'s
+**Monitoring decision (Option 1, corrected 2026-08-11):** `iac/agent/monitoring.tf`'s
 `google_logging_metric.investigation_cost` + `google_monitoring_alert_policy.cost_spike`
 currently fire on `jsonPayload.estimated_cost_usd > 0.10`. Once that field is removed, this
 alert would go silently dark (filter never matches again, no error). **Replacing it with a
 provider-neutral token-usage warning** instead of just deleting it — same per-investigation
 anomaly-detection purpose (Cloud Billing only gives aggregate spend, no per-`run_id`
-granularity), but keyed on `jsonPayload.tokens_total` (a field `agent/llm/`'s adapter
-design already produces for any provider, not a Gemini-specific dollar figure). Exact
-threshold value TBD when #63 is implemented — will be a real, empirically-chosen number
-(e.g. derived from this session's live baseline runs: ~16K tokens for a normal 5-step
-OOMKilled investigation), not guessed. **Not implemented yet** — documented here per
-instruction; #63 implementation is a separate, later PR with its own tests and Terraform
-plan.
+granularity), keyed on `jsonPayload.tokens_total` (a field `agent/llm/`'s adapter design
+already produces for any provider, not a Gemini-specific dollar figure).
+
+**Threshold design — config-derived, not a static or empirically-guessed number:**
+- `max_tokens_per_run` becomes the single Terraform source of truth (new variable,
+  `iac/agent/variables.tf`), passed to Agent Engine as `MAX_TOKENS_PER_RUN`
+  (`iac/agent/agent_engine.tf`'s `local.agent_env`) — same pattern already established for
+  `gemini_price_input_per_1m`/`GEMINI_PRICE_INPUT` before this cleanup, and for
+  `LLM_PROFILE`/`GEMINI_MODEL` (one variable, no drift between the Terraform value and the
+  deployed env var).
+- A configurable `token_warning_ratio` variable, default `0.8` (80%).
+- The alert's actual threshold = `max_tokens_per_run * token_warning_ratio`, computed once
+  at apply time and passed to the alert policy — never hardcoded and never guessed from a
+  sample run.
+- Rejects the earlier draft of this decision, which floated an empirically-observed ~16K
+  number from this session's live baseline as the threshold — that was exactly the kind of
+  manually-derived number this whole #63 cleanup exists to remove; corrected here before
+  #63 implementation starts.
+
+**Not implemented yet** — documented here per instruction; #63 implementation is a
+separate, later PR with its own tests and Terraform plan.
 
 ### Phase 1 — must fix and validate
 
@@ -190,9 +204,21 @@ implementation; use regional templates in `us-central1`
 request/response templates where appropriate; `template_metadata.enforcement_type =
 INSPECT_ONLY`; Model Armor Cloud Logging enabled; `HIGH` confidence for
 prompt-injection/jailbreak during initial tuning; keep the existing IAP `REQUEST_AUTHZ`
-policy, add Model Armor as a **separate** `CONTENT_AUTHZ` policy — never replace IAP; grant
-only the officially documented roles to Google-managed service agents, never to Agent
-Identity; separate branch + tested rollback before touching the gateway; never test in
+policy, add Model Armor as a **separate** `CONTENT_AUTHZ` policy — never replace IAP.
+
+**Permissions, verified against official docs 2026-08-11**
+(`docs.cloud.google.com/model-armor/access-control/roles-permissions`): the **Vertex AI
+Reasoning Engine Service Agent** needs `roles/aiplatform.reasoningEngineServiceAgent`,
+which grants `modelarmor.callouts.invoke`, `modelarmor.templates.useToSanitizeInput`,
+`modelarmor.templates.useToSanitizeModelResponse`, and
+`modelarmor.templates.useToSanitizeUserPrompt` — this is what actually lets the
+CONTENT_AUTHZ extension invoke Model Armor sanitization on Agent Engine traffic. The
+official docs are explicit: *"Do not grant service agent roles to any principals except
+service agents."* **Do not grant this role, or any Model Armor role, to Agent Identity**
+(this repo's application runtime identity) — only to the Google-managed Reasoning Engine
+Service Agent, per that documented restriction, not a local convention.
+
+Separate branch + tested rollback before touching the gateway; never test in
 production first; **no `INSPECT_AND_BLOCK` in Phase 1**. `failOpen` and `INSPECT_ONLY` are
 different controls — inspect-only logs findings without blocking, it is not a preventive
 control; don't claim complete coverage without real Model Armor logs/spans as proof.
@@ -297,7 +323,7 @@ order within Phase 1, grouped by dependency, not strict issue-number order.
 | 2 | 63 | Gemini cost pricing hardcoded to Flash rates while Pro deployed | Phase 1 | ✅ PR #100 merged (adapter+tokens); cost-removal not yet done | Money-accuracy bug already partially fixed; remainder is this session's next PR | none | Diff + tests + `terraform plan` for the cost-removal PR |
 | 3 | 74 | Token/cost/latency counters are process-global | Phase 1 | ✅ confirmed real (same root class the #63 2,548-token gap came from) | Cross-investigation data leakage risk on warm containers | none | Two back-to-back live investigations on the same warm instance show no cross-contamination |
 | 4 | 94 | Recurring Terraform drift (TELEMETRY env var + source_archive) | Phase 1 | ✅ confirmed real — reproduced in every `terraform plan` run this session (PR #99, #100, LLM_PROFILE wiring) | Repeatedly seen live, never yet root-caused | none | A `terraform plan` immediately after apply shows 0 changes |
-| 5 | 73 | Missing-cluster requests silently default to `sre-test-cluster` | Phase 1 | inherited (a related claim was found **stale** during the 2026-08-09 audit per the note above — re-verify exact current behavior before treating as open) | Safety-critical: never guess a cluster | none | Test: unknown cluster name stops safely, no default |
+| 5 | 73 | Missing-cluster requests silently default to `sre-test-cluster` | Phase 1 | ✅ **real, verified 2026-08-11** — `context_resolver.py` itself safe-stops correctly, but `agent/main.py:399` (`investigate()`) and `agent/main.py:915` (`SREAgent.query()`, the actual production entrypoint) both do `payload.get("cluster", "sre-test-cluster")` — the default is applied to the payload *before* it ever reaches the graph, so context_resolver's safe-stop never sees a missing cluster to begin with. Stays open until an E2E missing-cluster test proves no default cluster is used anywhere in the real invocation path, not just inside context_resolver.py | Safety-critical: never guess a cluster | none | E2E test: a payload with no `cluster` field produces a safe-stop, not an investigation against `sre-test-cluster` |
 | 6 | 35 | API-enabled/endpoint-registered checks collapse failures into false | Phase 1 | inherited | Silent failure masking | none | Test: a real disabled API is distinguishable from "not checked" |
 | 7 | 31 | SSE parser can return an empty first frame as success | Phase 1 | inherited | Silent false-positive on a real failure path | none | Test: empty first frame is treated as failure |
 | 8 | 91 | Failed tool calls credited as evidence-domain coverage | Phase 1 | inherited | Confidence-integrity bug | none | Test: a forced tool failure does not raise completeness score |
@@ -327,7 +353,7 @@ order within Phase 1, grouped by dependency, not strict issue-number order.
 | 32 | 84 | VPC/NAT provisioned, never attached to Agent Engine | Phase 1 (decide+resolve) | inherited | Unused security infra implying protection it doesn't provide | none | Either attached+tested, or removed + docs corrected |
 | 33 | 87 | Terraform self-heal can auto-recreate the Reasoning Engine | Phase 1 (near-closed) | ✅ checked this session — the exact `-replace=` self-heal code no longer exists in `terraform-apply.yml` | Strong evidence already resolved by #93; needs one more confirmation pass before closing | none | A `terraform plan`/grep pass confirming no `-replace=` path, cited in the closing comment |
 | 34 | 30 | Model Armor endpoint hostname mismatch | Phase 1 (controlled trial) | ✅ confirmed real earlier this session (memory: gateway-level CONTENT_AUTHZ has no working Terraform path — API-level rejection, not a config mistake) | Gated behind the regional inspect-only trial plan | none | Trial coverage table + test cases, both below |
-| 35 | 32 | Model Armor output-sanitization verdict discarded | Phase 1 (controlled trial) | ✅ fixed in code (PR #96), reopened and deferred to the Model Armor batch — live block-path still unverified | Same trial gate as #30 | 30 | Real MATCH_FOUND during the trial exercises the block path live |
+| 35 | 32 | Model Armor output-sanitization verdict discarded | Phase 1 (controlled trial) | ✅ fixed in code (PR #96), reopened and deferred to the Model Armor batch — live verdict-handling still unverified | Same trial gate as #30 | 30 | Phase 1 is `INSPECT_ONLY` — there is no block path to exercise. Acceptance is: a real `MATCH_FOUND`/detection verdict is logged during the trial; the code's response-verdict handling path is exercised against that real verdict; no request is actually blocked (inspect-only mode never blocks) |
 | 36 | 33 | Agent Registry endpoint registrations have no Terraform representation | **Phase 2** | inherited | Explicitly deferred by management's requirements (drift-reconciliation nice-to-have, not an MVP blocker) | none | N/A for Phase 1 |
 
 ### Already resolved / partial / duplicate / stale / needs-split
@@ -339,13 +365,17 @@ order within Phase 1, grouped by dependency, not strict issue-number order.
   new pins done, pre-existing unpinned steps + lock file + root container remaining).
 - **Duplicate:** none found among the 36 — no two open issues describe the same underlying
   code location and symptom.
-- **Stale claims (not stale issues) found during the 2026-08-09 audit, flagged in this
-  doc's own Priority 5 write-up below:** the claim that `context_resolver.py` defaults a
-  missing cluster to `sre-test-cluster` was already re-confirmed false twice before this
-  session. #73's title makes a similar claim — **re-verify #73's exact current code
-  location before treating it as open**, since it may describe the same already-stale
-  behavior from a different angle. Not resolved here — flagged for the Phase 1 execution
-  pass.
+- **Stale claim, corrected 2026-08-11 (was flagged "needs re-verification" in the earlier
+  draft — now checked directly against the code):** `context_resolver.py`'s own default-to-
+  `sre-test-cluster` claim (this doc's Priority 5 write-up below) was already re-confirmed
+  false twice before this session — that specific function really doesn't default. **#73
+  itself is not stale — it is real, at a different location.** `agent/main.py:399` and
+  `agent/main.py:915` (`SREAgent.query()`, the production entrypoint) both default a
+  missing `cluster` field to `sre-test-cluster` in the payload, before `context_resolver.py`
+  ever runs — so its safe-stop logic never gets the chance to see a missing cluster.
+  Same end-user symptom the old stale claim described, different, still-live root cause.
+  #73 stays open, Phase 1, until an E2E missing-cluster test proves no default is used
+  anywhere in the real invocation path (see the table row above).
 - **Needs split (table above has the full breakdown):** #71, #72, #82, #84, #86, #87,
   #30, #32.
 
@@ -375,21 +405,29 @@ latency · verify no TLS/certificate/gateway/MCP/agent regression.
   move remaining work to Phase 2; never block the whole investigation workflow while
   experimenting.
 
-### Missing GitHub issues (not created — for your approval first)
+### Missing GitHub issues — all four are Phase 1 tracking issues (not created — for your approval first)
 Scanning the requirements above against the 36 existing issues, these gaps have no
-tracking issue today:
-1. **PagerDuty webhook signature/dedup/idempotency test suite** — #88 covers building the
-   receiver; the specific negative-test-case list (invalid signature, duplicate event,
-   timeout, downstream failure) isn't separately tracked and could get dropped if #88 is
-   scoped narrowly.
-2. **Model Armor regional inspect-only trial** — #30/#32 are both bug reports on the
-   *current broken state*; the trial itself (coverage table, test cases, decision gate)
-   has no issue of its own to track as a deliverable with its own acceptance criteria.
-3. **Alert-trigger proof pass** — "an alert exists in Terraform" vs "an alert was triggered
-   and a real notification arrived" are different claims; no issue tracks running that
-   proof pass across all 16 required alerts.
-4. **Phase 1 operational documentation set** — the ~25-item doc list above has no tracking
-   issue; without one it's easy for individual PRs to each skip "update the docs."
+tracking issue today. **All four are Phase 1**, not Phase 2 candidates — each one gates a
+requirement explicitly listed in this doc's Phase 1 sections above, not a post-MVP
+enhancement:
+
+1. **PagerDuty webhook signature/dedup/idempotency test suite** — Phase 1, priority
+   P1-small-fix. #88 covers building the receiver; the specific negative-test-case list
+   (invalid signature, duplicate event, timeout, downstream failure) isn't separately
+   tracked and could get dropped if #88 is scoped narrowly. Gates the "PagerDuty" Phase 1
+   requirement's test list above.
+2. **Model Armor regional inspect-only trial** — Phase 1, priority P1-small-fix (gates the
+   #30/#32 controlled trial itself, not just the underlying bugs). #30/#32 are bug reports
+   on the *current broken state*; the trial (coverage table, test cases, decision gate) has
+   no issue of its own to track as a deliverable with its own acceptance criteria.
+3. **Alert-trigger proof pass** — Phase 1, priority P2-medium-fix. "An alert exists in
+   Terraform" vs "an alert was triggered and a real notification arrived" are different
+   claims; no issue tracks running that proof pass across every required alert. Directly
+   gates the Phase 1 production-readiness gate's Observability section above.
+4. **Phase 1 operational documentation set** — Phase 1, priority P2-medium-fix. The
+   ~25-item doc list above has no tracking issue; without one it's easy for individual PRs
+   to each skip "update the docs." Directly gates the Phase 1 readiness gate's Operations
+   and documentation section above.
 
 Not filing any of these until you approve the list.
 
