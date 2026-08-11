@@ -32,6 +32,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Detects whether THIS push actually touched mcp/ — gates the MCP image
+      # build/Cloud Run update below so an agent-only or Terraform-only change
+      # doesn't pay for a Docker build+push it doesn't need. Pinned to a full
+      # commit SHA (not a floating @v4 tag) per this repo's convention for
+      # third-party actions with write-adjacent side effects.
+      - name: Detect changed paths
+        id: filter
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          filters: |
+            mcp:
+              - 'mcp/**'
+
       - name: Package agent
         run: bash scripts/package_agent.sh
         working-directory: .
@@ -82,12 +95,15 @@ jobs:
             -var="gemini_model=gemini-2.5-pro" \
             -var="enable_custom_mcp=${{ vars.ENABLE_CUSTOM_MCP || 'false' }}"
 
-      # Build & push the custom MCP image only when the feature is enabled and
-      # this push actually touched mcp/ (skips the build entirely on an
-      # agent-only change, and skips it entirely when the feature is off).
+      # Build & push the custom MCP image only when the feature is enabled AND
+      # this push actually touched mcp/ (real path-filter check via the
+      # "Detect changed paths" step above — 2026-08-11: this comment used to
+      # claim that condition without it actually being implemented; the
+      # `if:` below only checked the feature flag, so every agent-only or
+      # Terraform-only push still rebuilt/pushed a fresh image every time).
       - name: Build & push MCP image
         id: mcp_image
-        if: ${{ vars.ENABLE_CUSTOM_MCP == 'true' }}
+        if: ${{ vars.ENABLE_CUSTOM_MCP == 'true' && steps.filter.outputs.mcp == 'true' }}
         run: |
           IMAGE="${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_A_ID }}/sre-agent-repo/sre-k8s-mcp:${{ github.sha }}"
           gcloud auth configure-docker "${{ secrets.GCP_REGION }}-docker.pkg.dev" --quiet
@@ -96,12 +112,14 @@ jobs:
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
         working-directory: .
 
-      # Second apply: only needed when the feature is on, to point Cloud Run at
-      # the image just pushed above (custom_mcp_image is the only var that can
-      # actually differ from the first apply — everything else is identical, so
-      # this plans/applies as a single targeted update, not a full re-apply).
+      # Second apply: only needed when the feature is on AND mcp/ actually
+      # changed (same gate as the build step above — nothing to point Cloud
+      # Run at if no new image was built this run). custom_mcp_image is the
+      # only var that can actually differ from the first apply — everything
+      # else is identical, so this plans/applies as a single targeted update,
+      # not a full re-apply.
       - name: Apply (point Cloud Run at the new MCP image)
-        if: ${{ vars.ENABLE_CUSTOM_MCP == 'true' }}
+        if: ${{ vars.ENABLE_CUSTOM_MCP == 'true' && steps.filter.outputs.mcp == 'true' }}
         run: |
           terraform apply -auto-approve \
             -var="project_a_id=${{ secrets.GCP_PROJECT_A_ID }}" \

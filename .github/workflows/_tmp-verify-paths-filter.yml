@@ -1,0 +1,35 @@
+name: _tmp-verify-paths-filter
+
+# TEMPORARY — verification-only workflow for the MCP path-filter change
+# (see terraform-apply.yml's "Detect changed paths" step). Proves dorny/
+# paths-filter correctly returns mcp=false on an agent-only push and
+# mcp=true on a push that touches mcp/. Deleted before this PR merges —
+# not part of the real pipeline.
+
+on:
+  pull_request:
+    branches: [ci/skip-mcp-build-on-agent-only-change]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect changed paths
+        id: filter
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          filters: |
+            mcp:
+              - 'mcp/**'
+            agent:
+              - 'agent/**'
+            iac_agent:
+              - 'iac/agent/**'
+
+      - name: Report filter outputs
+        run: |
+          echo "mcp=${{ steps.filter.outputs.mcp }}"
+          echo "agent=${{ steps.filter.outputs.agent }}"
+          echo "iac_agent=${{ steps.filter.outputs.iac_agent }}"
