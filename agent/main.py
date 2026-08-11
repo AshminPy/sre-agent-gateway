@@ -173,7 +173,9 @@ def _build_rca_report(
     evidence_count  = obs_event.get("evidence_count", len(evidence_ids))
     latency_ms      = obs_event.get("latency_ms", 0)
     latency_s       = f"{latency_ms / 1000:.1f}s" if latency_ms else "unknown"
-    inv_loops       = _safe_int(inv.get("investigation_loops") or inv.get("loop_count") or 0)
+    # current_step is the real field investigation.py/loop_controller.py actually maintain
+    # (see agent/state.py) -- investigation_loops/loop_count were never real fields, always 0.
+    inv_loops       = _safe_int(inv.get("current_step", 0))
     tokens_total    = obs_event.get("tokens_total", 0)
     estimated_cost  = _safe_float(obs_event.get("estimated_cost_usd", 0.0))
 
@@ -308,15 +310,31 @@ def _build_rca_report(
     L.append(f"  Policy version              : {summary.get('policy_version', 'unknown')}")
     L.append("")
 
+    # Issue #61: these used to be hardcoded claims ("DEGRADED", "Dependent services may be
+    # affected") printed unconditionally, whether or not any evidence backed them. Nothing
+    # in the pipeline actually tracks real service/pod health as a structured fact yet (see
+    # #95, the real fix — a deterministic status check, not built here) -- so the honest
+    # fallback is to say plainly this wasn't independently checked, gated on whether the
+    # investigation actually reached a real conclusion (outcome confirmed/probable, backed
+    # by real evidence) versus one that didn't (insufficient_evidence/unknown/conflicting).
+    if outcome in ("confirmed", "probable") and evidence_ids:
+        service_status = "Not independently checked — see evidence chain above for pod/service state"
+        first_last_seen = "See k8s event timestamps in the evidence above, where collected"
+        user_impact = "Not independently assessed — see evidence chain above"
+    else:
+        service_status = "Not determined — investigation did not reach a confirmed conclusion"
+        first_last_seen = "Not determined — insufficient evidence collected"
+        user_impact = "Not determined — insufficient evidence collected"
+
     L += [
         SEP,
         "  4.  IMPACT ASSESSMENT",
         SEP,
         f"  Workload        : {pod or incident_type}",
         f"  Incident Type   : {incident_type}",
-        "  Service Status  : DEGRADED — verify active pod count",
-        "  First/Last Seen : from k8s event timestamps in evidence above",
-        "  User Impact     : Dependent services may be affected",
+        f"  Service Status  : {service_status}",
+        f"  First/Last Seen : {first_last_seen}",
+        f"  User Impact     : {user_impact}",
         "  MTTR            : not yet tracked — pending future enhancement",
         "",
         SEP,
@@ -345,6 +363,7 @@ def _build_rca_report(
             L.append(f"    • {str(m)[:120]}")
         L.append("")
 
+    from agent.gemini_client import MODEL as _deployed_model
     L += [
         SEP,
         "  6.  INVESTIGATION METADATA",
@@ -352,7 +371,7 @@ def _build_rca_report(
         f"  AI Confidence   : {confidence * 100:.0f}%  (Band: {confidence_band})",
         f"  Human Review    : {review_note}",
         f"  Memory Bank     : {memory_note}",
-        "  Model           : Gemini 2.5 Flash via Vertex AI Agent Engine",
+        f"  Model           : {_deployed_model} via Vertex AI Agent Engine",
     ]
     if tokens_total:
         L.append(f"  Tokens          : {tokens_total}  (est. cost: ${estimated_cost:.6f})")
@@ -964,11 +983,31 @@ class SREAgent:
             cls._save_memory(query_text, root_cause, cluster, namespace)
 
         # 5. Model Armor — sanitize output (redacts PII that leaked from k8s logs)
+        #
+        # Issue #32 fix: _sanitize() never rewrites text either way (Model Armor blocks or
+        # passes, it does not redact in place — see that function's own comment) — so
+        # `sanitized_out != summary_text` can NEVER be true, and the previous code discarded
+        # the `blocked` return value entirely. A real MATCH_FOUND on agent output (PII,
+        # malicious content) produced only a log line: no redaction, no block, no
+        # requires_human_review change, no field in the response. Now: a blocked output
+        # withholds the summary content and forces human review instead of silently
+        # delivering it.
         summary_obj = result.get("summary")
         if summary_obj is not None:
             summary_text = json.dumps(summary_obj) if isinstance(summary_obj, dict) else str(summary_obj)
-            sanitized_out, _ = cls._sanitize(summary_text, is_output=True)
-            if sanitized_out != summary_text:
+            sanitized_out, output_blocked = cls._sanitize(summary_text, is_output=True)
+            if output_blocked:
+                log.warning("Model Armor blocked agent output for run_id=%s — withholding summary content", run_id)
+                result["summary"] = {
+                    "likely_root_cause": "[WITHHELD — flagged by Model Armor output safety filter]",
+                    "confidence_score": 0.0,
+                    "confidence_band": "escalate",
+                    "requires_human_review": True,
+                    "content_flagged": True,
+                }
+                result["requires_human_review"] = True
+                result["content_flagged"] = True
+            elif sanitized_out != summary_text:
                 try:
                     result["summary"] = json.loads(sanitized_out)
                 except (ValueError, TypeError):

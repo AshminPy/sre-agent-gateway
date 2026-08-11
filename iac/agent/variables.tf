@@ -163,6 +163,28 @@ variable "gemini_model" {
   default     = "gemini-2.5-flash"
 }
 
+# Cost-estimation pricing — the ONE place these numbers live. agent/gemini_client.py reads
+# these via GEMINI_PRICE_INPUT/GEMINI_PRICE_OUTPUT and falls back to 0.0 (never a plausible-
+# looking wrong number) if they're ever missing, so a misconfiguration shows up as an obvious
+# "$0.00 cost" instead of a silently-wrong estimate. Defaults below are Gemini 2.5 Pro's real
+# published rate for prompts <= 200K tokens (cloud.google.com/vertex-ai/generative-ai/pricing,
+# verified 2026-08-10) — Pro's real pricing is tiered (>200K tokens costs more), which this
+# single flat rate does NOT model; acceptable because this agent's investigations are
+# hard-capped (5 loop steps, evidence compressed before every prompt) and never realistically
+# approach 200K tokens in one call. Update BOTH values together if var.gemini_model changes to
+# a different model with different pricing — nothing derives one from the other automatically.
+variable "gemini_price_input_per_1m" {
+  description = "USD price per 1M input tokens for var.gemini_model, <= 200K token context. Must match the deployed model's real published rate — see cloud.google.com/vertex-ai/generative-ai/pricing."
+  type        = number
+  default     = 1.25
+}
+
+variable "gemini_price_output_per_1m" {
+  description = "USD price per 1M output tokens for var.gemini_model, <= 200K token context. Must match the deployed model's real published rate — see cloud.google.com/vertex-ai/generative-ai/pricing."
+  type        = number
+  default     = 10.0
+}
+
 
 variable "model_armor_pi_confidence" {
   description = "Model Armor prompt-injection / jailbreak detection confidence threshold."

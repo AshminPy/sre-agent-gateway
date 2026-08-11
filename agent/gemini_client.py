@@ -33,10 +33,16 @@ THINKING_BUDGET = 128 if "pro" in MODEL else 0
 # model-endpoint-location).
 MODEL_ENDPOINT_LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", REGION)
 
-# Gemini 2.5 Flash pricing (on-demand)
-# Verify at: https://cloud.google.com/vertex-ai/generative-ai/pricing
-PRICE_INPUT_PER_1M  = float(os.environ.get("GEMINI_PRICE_INPUT",  "0.15"))
-PRICE_OUTPUT_PER_1M = float(os.environ.get("GEMINI_PRICE_OUTPUT", "0.60"))
+# Pricing for cost estimation — the real values are set by Terraform
+# (iac/agent/variables.tf's gemini_price_input_per_1m/gemini_price_output_per_1m,
+# matched to whatever var.gemini_model actually deploys) and passed in via these
+# two env vars. Fallback default is 0.0, NOT a plausible-looking guessed price —
+# if these env vars are ever missing, cost estimates should obviously read "$0.00"
+# so the misconfiguration is immediately visible, not a silently-wrong number
+# (this is exactly how issue #63 happened: a hardcoded Flash-rate fallback was
+# silently used in production while the deployed model was actually Pro).
+PRICE_INPUT_PER_1M  = float(os.environ.get("GEMINI_PRICE_INPUT",  "0.0"))
+PRICE_OUTPUT_PER_1M = float(os.environ.get("GEMINI_PRICE_OUTPUT", "0.0"))
 
 _client = None
 

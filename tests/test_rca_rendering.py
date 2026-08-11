@@ -1,4 +1,5 @@
 """Verifies the root-cause duplication bug is actually fixed, not just redesigned on paper."""
+
 from agent.main import _build_executive_summary, _build_rca_report, _extract_root_cause
 
 
@@ -81,3 +82,75 @@ def test_executive_summary_and_rca_report_together_do_not_render_the_same_long_p
         "root cause full text rendered in BOTH sections — duplication bug is back"
     )
     assert full_text_in_report, "full root cause text must exist somewhere (the RCA report)"
+
+
+def test_rca_report_model_line_reflects_the_real_deployed_model_not_a_hardcoded_string(monkeypatch):
+    """Regression for issue #62: the RCA report used to always print the literal string
+    'Gemini 2.5 Flash', regardless of which model was actually deployed (GEMINI_MODEL env
+    var / var.gemini_model in Terraform, which is Pro in production)."""
+    import importlib
+
+    import agent.gemini_client as gemini_client_mod
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-pro")
+    importlib.reload(gemini_client_mod)
+    try:
+        summary = _summary()
+        payload = {"cluster": "sre-test-cluster", "namespace": "test-incidents", "pod": "imagepull-pod",
+                   "severity": "high"}
+        obs_event = {"run_id": "run_test", "cluster": "sre-test-cluster", "namespace": "test-incidents",
+                     "pod": "imagepull-pod", "tools_called": 2, "evidence_count": 1, "latency_ms": 1000,
+                     "tokens_total": 100, "estimated_cost_usd": 0.001}
+        report = _build_rca_report(payload, summary, {"confidence_band": "review"}, {}, obs_event, ["ev_003"])
+        assert "gemini-2.5-pro" in report
+        assert "Gemini 2.5 Flash" not in report
+    finally:
+        monkeypatch.delenv("GEMINI_MODEL", raising=False)
+        importlib.reload(gemini_client_mod)
+
+
+def test_rca_report_loop_count_reads_the_real_state_field():
+    """Regression for issue #62: the report read inv['investigation_loops'] / inv['loop_count'],
+    neither of which is ever set anywhere in AgentState -- always rendered 'Loops: 0'. The real
+    field loop_controller.py/task_evaluator.py actually maintain is current_step."""
+    summary = _summary()
+    payload = {"cluster": "sre-test-cluster", "namespace": "test-incidents", "pod": "imagepull-pod",
+               "severity": "high"}
+    obs_event = {"run_id": "run_test", "cluster": "sre-test-cluster", "namespace": "test-incidents",
+                 "pod": "imagepull-pod", "tools_called": 2, "evidence_count": 1, "latency_ms": 1000,
+                 "tokens_total": 100, "estimated_cost_usd": 0.001}
+    report = _build_rca_report(
+        payload, summary, {"confidence_band": "review", "current_step": 3}, {}, obs_event, ["ev_003"],
+    )
+    assert "Loops: 3" in report
+
+
+def test_impact_section_never_asserts_degraded_when_outcome_is_insufficient_evidence():
+    """Regression for issue #61: the report used to say 'Service Status: DEGRADED' and
+    'Dependent services may be affected' unconditionally, even when the investigation
+    never reached a real conclusion. Must say plainly it wasn't determined instead."""
+    summary = _summary(outcome="insufficient_evidence")
+    payload = {"cluster": "sre-test-cluster", "namespace": "test-incidents", "pod": "imagepull-pod",
+               "severity": "high"}
+    obs_event = {"run_id": "run_test", "cluster": "sre-test-cluster", "namespace": "test-incidents",
+                 "pod": "imagepull-pod", "tools_called": 0, "evidence_count": 0, "latency_ms": 500,
+                 "tokens_total": 50, "estimated_cost_usd": 0.0001}
+    report = _build_rca_report(payload, summary, {"confidence_band": "escalate"}, {}, obs_event, [])
+    assert "DEGRADED" not in report
+    assert "Dependent services may be affected" not in report
+    assert "Not determined" in report
+
+
+def test_impact_section_still_does_not_overclaim_even_with_a_confirmed_outcome():
+    """A confirmed outcome with real evidence still must NOT assert a specific service-status
+    claim we never actually checked (that's issue #95's real fix, not this quick one) --
+    honest 'not independently checked' language, not a guessed DEGRADED/healthy verdict."""
+    summary = _summary(outcome="confirmed")
+    payload = {"cluster": "sre-test-cluster", "namespace": "test-incidents", "pod": "imagepull-pod",
+               "severity": "high"}
+    obs_event = {"run_id": "run_test", "cluster": "sre-test-cluster", "namespace": "test-incidents",
+                 "pod": "imagepull-pod", "tools_called": 2, "evidence_count": 1, "latency_ms": 1000,
+                 "tokens_total": 100, "estimated_cost_usd": 0.001}
+    report = _build_rca_report(payload, summary, {"confidence_band": "auto"}, {}, obs_event, ["ev_003"])
+    assert "DEGRADED" not in report
+    assert "Dependent services may be affected" not in report
+    assert "Not independently checked" in report
