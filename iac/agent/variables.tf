@@ -206,3 +206,5 @@ variable "log_analytics_retention_days" {
   type        = number
   default     = 30
 }
+
+# path-filter test: iac/agent/ touch, expect mcp filter=false, iac_agent filter=true
