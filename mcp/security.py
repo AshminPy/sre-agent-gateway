@@ -360,3 +360,4 @@ def _postprocess(result: Any) -> Any:
                 result[key] = trimmed
                 result["truncated"] = truncated
     return result
+# path-filter test: mcp/ touch, expect mcp filter=true
