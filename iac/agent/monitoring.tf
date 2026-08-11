@@ -70,6 +70,28 @@ resource "google_logging_metric" "investigation_cost" {
   depends_on = [google_project_service.apis]
 }
 
+# Provider-neutral token-usage warning (issue #63) — jsonPayload.tokens_total is real,
+# accurate telemetry agent/llm/'s adapter design produces for any provider (not a
+# Gemini-specific dollar figure). Deliberately separate from investigation_cost/cost_spike
+# above, which this change does not touch or remove.
+resource "google_logging_metric" "token_usage" {
+  name            = "sre_agent/investigation_tokens_total"
+  project         = var.project_a_id
+  filter          = "jsonPayload.tokens_total > 0"
+  value_extractor = "EXTRACT(jsonPayload.tokens_total)"
+  metric_descriptor {
+    metric_kind  = "DELTA"
+    value_type   = "DISTRIBUTION"
+    display_name = "SRE Agent Investigation Tokens (total)"
+  }
+  bucket_options {
+    explicit_buckets {
+      bounds = [1000, 5000, 10000, 25000, 50000, 75000, 100000, 150000]
+    }
+  }
+  depends_on = [google_project_service.apis]
+}
+
 resource "google_logging_metric" "confidence_band" {
   name             = "sre_agent/confidence_band"
   project          = var.project_a_id
@@ -341,6 +363,37 @@ resource "google_monitoring_alert_policy" "cost_spike" {
   notification_channels = [google_monitoring_notification_channel.email_oncall.name]
   documentation {
     content   = "Single SRE Agent investigation exceeded $0.10. Check run_id in Cloud Logging for the token breakdown.\nQuery: `jsonPayload.estimated_cost_usd > 0.1`"
+    mime_type = "text/markdown"
+  }
+  depends_on = [time_sleep.wait_for_metrics]
+}
+
+# Provider-neutral token-usage warning (issue #63) — replaces relying on the dollar-based
+# cost_spike alert above as the only per-investigation anomaly signal. Threshold is
+# derived entirely from config: var.max_tokens_per_run (agent/nodes/loop_controller.py's
+# own hard cap, now Terraform-sourced) * var.token_warning_ratio (default 0.8) — computed
+# once at apply time, never a static or empirically-guessed token number. Fires BEFORE
+# loop_controller.py's hard token_budget_exceeded exit, giving early warning.
+resource "google_monitoring_alert_policy" "token_usage_warning" {
+  project      = var.project_a_id
+  display_name = "SRE Agent — Investigation Token Usage Warning"
+  combiner     = "OR"
+  conditions {
+    display_name = "Single investigation tokens > ${var.token_warning_ratio * 100}% of max_tokens_per_run"
+    condition_threshold {
+      filter          = "metric.type=\"logging.googleapis.com/user/sre_agent/investigation_tokens_total\" AND resource.type=\"global\""
+      duration        = "0s"
+      comparison      = "COMPARISON_GT"
+      threshold_value = var.max_tokens_per_run * var.token_warning_ratio
+      aggregations {
+        alignment_period   = "60s"
+        per_series_aligner = "ALIGN_PERCENTILE_99"
+      }
+    }
+  }
+  notification_channels = [google_monitoring_notification_channel.email_oncall.name]
+  documentation {
+    content   = "Single SRE Agent investigation exceeded ${var.token_warning_ratio * 100}% of the configured max_tokens_per_run (${var.max_tokens_per_run} tokens) -- approaching loop_controller.py's hard token_budget_exceeded cap. Check run_id in Cloud Logging.\nQuery: `jsonPayload.tokens_total > ${var.max_tokens_per_run * var.token_warning_ratio}`"
     mime_type = "text/markdown"
   }
   depends_on = [time_sleep.wait_for_metrics]

@@ -67,21 +67,26 @@ anomaly-detection purpose (Cloud Billing only gives aggregate spend, no per-`run
 granularity), keyed on `jsonPayload.tokens_total` (a field `agent/llm/`'s adapter design
 already produces for any provider, not a Gemini-specific dollar figure).
 
-**Threshold design — config-derived, not a static or empirically-guessed number:**
-- `max_tokens_per_run` becomes the single Terraform source of truth (new variable,
-  `iac/agent/variables.tf`), passed to Agent Engine as `MAX_TOKENS_PER_RUN`
-  (`iac/agent/agent_engine.tf`'s `local.agent_env`) — same pattern already established for
-  `gemini_price_input_per_1m`/`GEMINI_PRICE_INPUT` before this cleanup, and for
-  `LLM_PROFILE`/`GEMINI_MODEL` (one variable, no drift between the Terraform value and the
-  deployed env var).
-- A configurable `token_warning_ratio` variable, default `0.8` (80%).
-- The alert's actual threshold = `max_tokens_per_run * token_warning_ratio`, computed once
-  at apply time and passed to the alert policy — never hardcoded and never guessed from a
-  sample run.
-- Rejects the earlier draft of this decision, which floated an empirically-observed ~16K
-  number from this session's live baseline as the threshold — that was exactly the kind of
-  manually-derived number this whole #63 cleanup exists to remove; corrected here before
-  #63 implementation starts.
+**Threshold design — implemented 2026-08-11, monitoring/token-budget slice only:**
+`MAX_TOKENS_PER_RUN` turned out to already exist and already be enforced —
+`agent/nodes/loop_controller.py` has read it from the environment as a hard per-run token
+cap (default `100000`) since before this change; Terraform never set it, so production
+always silently ran on that Python-side default. Implemented:
+- `max_tokens_per_run` (new Terraform variable, `iac/agent/variables.tf`, default `100000`
+  — matches the pre-existing Python fallback exactly, so this alone changes no live
+  behavior) is now the single source of truth, passed to Agent Engine as
+  `MAX_TOKENS_PER_RUN` (`iac/agent/agent_engine.tf`'s `local.agent_env`).
+- `token_warning_ratio` (new variable, default `0.8`, validated to `(0, 1]`).
+- A new `google_logging_metric.token_usage` + `google_monitoring_alert_policy.token_usage_warning`
+  (`iac/agent/monitoring.tf`) whose `threshold_value = var.max_tokens_per_run *
+  var.token_warning_ratio` — computed by Terraform, never hardcoded. Verified live with two
+  different variable pairs (`100000 * 0.8 = 80000`, `50000 * 0.6 = 30000`) — both matched
+  exactly in a real `terraform plan`.
+- Deliberately does **not** touch `google_logging_metric.investigation_cost` /
+  `google_monitoring_alert_policy.cost_spike` or `estimated_cost_usd` anywhere — removing
+  the dollar-cost fields is a separate, later #63 PR, out of scope for this one.
+- Regression tests: `tests/test_loop_controller_token_budget.py` (6 tests — env var
+  default/override/invalid-value/disable, under/over-budget exit behavior).
 
 **Not implemented yet** — documented here per instruction; #63 implementation is a
 separate, later PR with its own tests and Terraform plan.

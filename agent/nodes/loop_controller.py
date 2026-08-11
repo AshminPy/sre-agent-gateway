@@ -12,6 +12,10 @@ log = logging.getLogger("sre-agent.loop_controller")
 
 # Hard cap on tokens consumed per run. Set to 0 to disable.
 # Prevents runaway spend from large log payloads on concurrent runs.
+# Terraform-sourced since issue #63 (iac/agent/variables.tf's max_tokens_per_run ->
+# agent_engine.tf's MAX_TOKENS_PER_RUN) -- the "100000" default below only applies if
+# that env var is ever unset, matching var.max_tokens_per_run's own default exactly so
+# this was never a behavior change, only a source-of-truth move.
 # Parse defensively — a bad env value must not crash agent startup at import.
 try:
     _MAX_TOKENS = int(os.environ.get("MAX_TOKENS_PER_RUN", "100000"))
