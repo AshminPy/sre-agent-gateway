@@ -206,17 +206,29 @@ INSPECT_ONLY`; Model Armor Cloud Logging enabled; `HIGH` confidence for
 prompt-injection/jailbreak during initial tuning; keep the existing IAP `REQUEST_AUTHZ`
 policy, add Model Armor as a **separate** `CONTENT_AUTHZ` policy — never replace IAP.
 
-**Permissions, verified against official docs 2026-08-11**
-(`docs.cloud.google.com/model-armor/access-control/roles-permissions`): the **Vertex AI
-Reasoning Engine Service Agent** needs `roles/aiplatform.reasoningEngineServiceAgent`,
-which grants `modelarmor.callouts.invoke`, `modelarmor.templates.useToSanitizeInput`,
-`modelarmor.templates.useToSanitizeModelResponse`, and
-`modelarmor.templates.useToSanitizeUserPrompt` — this is what actually lets the
-CONTENT_AUTHZ extension invoke Model Armor sanitization on Agent Engine traffic. The
-official docs are explicit: *"Do not grant service agent roles to any principals except
-service agents."* **Do not grant this role, or any Model Armor role, to Agent Identity**
-(this repo's application runtime identity) — only to the Google-managed Reasoning Engine
-Service Agent, per that documented restriction, not a local convention.
+**Permissions, verified against official docs 2026-08-11 — two separate service agents
+need roles, not one:**
+
+1. **Service Extensions service agent** (backs Agent Gateway's egress path), verified
+   against `docs.cloud.google.com/model-armor/model-armor-agent-gateway-integration`:
+   - `roles/modelarmor.calloutUser` — in the project that contains the gateway
+   - `roles/serviceusage.serviceUsageConsumer` — in the project that contains the gateway
+   - `roles/modelarmor.user` — in the project that contains the Model Armor template
+   This is the Agent Gateway side of the integration — required regardless of what runs
+   behind the gateway.
+2. **Vertex AI Reasoning Engine Service Agent** (because this is Agent Runtime/Reasoning
+   Engine traffic specifically, on top of the gateway requirement above), verified against
+   `docs.cloud.google.com/model-armor/access-control/roles-permissions`:
+   `roles/aiplatform.reasoningEngineServiceAgent`, which grants
+   `modelarmor.callouts.invoke`, `modelarmor.templates.useToSanitizeInput`,
+   `modelarmor.templates.useToSanitizeModelResponse`, and
+   `modelarmor.templates.useToSanitizeUserPrompt`.
+
+Both sets are documented and both apply here — this is not "only the Reasoning Engine
+Service Agent." The official docs are explicit: *"Do not grant service agent roles to any
+principals except service agents."* **Do not grant any of these roles to Agent Identity**
+(this repo's application runtime identity) — only to the two Google-managed service agents
+above, per that documented restriction, not a local convention.
 
 Separate branch + tested rollback before touching the gateway; never test in
 production first; **no `INSPECT_AND_BLOCK` in Phase 1**. `failOpen` and `INSPECT_ONLY` are
