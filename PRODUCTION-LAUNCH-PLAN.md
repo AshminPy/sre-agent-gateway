@@ -7,67 +7,391 @@
 
 _Created 2026-07-28. Status is evidence-based: marked ✅/🟡 only where backed by real code/config (file:line). Scanned the working repo (agent/, mcp/, iac/agent/) before writing. Supersedes the ordering in NEXTSTEPS.md for production-launch work; NEXTSTEPS.md is retained for the deeper per-item research._
 
-## 2026-08-11 update — Phase 1/Phase 2 restructure, read this first (supersedes the 2026-08-09 section below as the current status source)
+## 2026-08-11 update — Phase 1/Phase 2 plan, management requirements (supersedes the 2026-08-09 section below as the current status source)
+
+**Correction from the first draft of this section (same day):** that draft classified #92 as
+a Model Armor-related deferral. **Wrong — verified against the real issue**: #92 is *"Agent
+has no pod-log-read permission on the target GKE cluster — logs are unavailable for every
+incident."* That's a core investigation-capability gap (the agent can't read pod logs at
+all), not a Model Armor item, and it's a real Phase 1 blocker — an SRE agent that can't read
+logs can't accurately investigate most real incidents. The actual Model Armor issues are
+**#30** (endpoint hostname mismatch) and **#32** (output-sanitization verdict discarded).
+Corrected throughout below.
 
 Reframed around **Phase 1 (production MVP)** vs **Phase 2 (post-MVP)**, tracked by GitHub
-issue number rather than the Priority-1-12 scheme below. The Priority write-ups are kept
-as historical detail — this section is the current plan.
+issue number rather than the Priority-1-12 scheme below. The Priority write-ups stay as
+historical detail — this section is the current plan.
 
-### Phase 1 — Production MVP
+### Project objective
 
-**Keep (already real, verified live this session):**
+Phase 1 delivers a production-ready, **read-only** SRE investigation workflow:
+
+```
+PagerDuty → authenticated incident invocation → Agent Engine → deterministic cluster
+selection → correct MCP selection → GKE or on-prem/non-GKE cluster → evidence collection
+→ controlled investigation loop → confidence + completeness scoring → evidence-backed RCA
+→ human review
+```
+
+Phase 1 must support: existing GKE cluster via GKE Remote MCP · existing on-prem/non-GKE
+cluster via Connect Gateway · Custom Kubernetes MCP deployed securely in Google Cloud ·
+PagerDuty automatic invocation · accurate confidence scoring · golden evaluation cases ·
+complete observability/monitoring · production security controls · complete operational
+documentation · human-controlled remediation · no automatic production changes.
+
+### Keep (already real, verified live this session)
 - Gemini 2.5 Pro as the deployed model
-- The `agent/llm/` adapter design (issue #63 PR 1 — provider-neutral interface,
-  Gemini-only adapter, `LLM_PROFILE`-driven selection)
-- Accurate token tracking (input/cached/candidates/reasoning/tool-use/total, all captured
-  and aggregated correctly — verified live, 20/20 per-call log entries summed exactly to
-  the final reported totals)
+- The `agent/llm/` adapter design (#63 PR 1 — provider-neutral interface, Gemini-only
+  adapter, `LLM_PROFILE`-driven selection)
+- Accurate token tracking (input/cached/candidates/reasoning/tool-use/total — verified
+  live: 20/20 per-call log entries summed exactly to the final reported totals)
 - Run ID, provider, and model telemetry
-- Read-only investigation (no write/exec/port-forward anywhere in `mcp/` — enforced by
+- Read-only investigation (no write/exec/port-forward anywhere in `mcp/`, enforced by
   `mcp/tests/test_no_mutation.py`)
 - Evidence-backed RCA (every claim cites a real evidence ID)
 - Human approval required before any remediation (no auto-remediation exists)
 
-**#63 scope change:** the per-request estimated dollar cost is being **removed**, not
-made dynamic. It was always computed from manually configured Terraform pricing variables
-— real spend visibility belongs to Google Cloud Billing, not a hand-maintained rate table
-in this repo. Token counting stays exactly as accurate as PR 1 left it; only the dollar
-conversion goes away. (This replaces the earlier "PR 2: dynamic per-investigation
-pricing" sketch floated right after PR 1 merged — that approach is deferred to Phase 2's
-"Billing-export cost attribution," not built now.)
+### #63 — cost cleanup scope (unchanged from the earlier draft, restated for completeness)
+- Keep the `agent/llm/` adapter from PR #100.
+- Keep accurate input/cached/candidate/reasoning/tool-use/total token telemetry.
+- Remove the estimated dollar cost — it depends on manually maintained Terraform rate
+  variables; real spend visibility belongs to Cloud Billing, not a hand-maintained table.
+- Do not build dynamic pricing in Phase 1 — that's Phase 2.
 
-**Phase 1 blockers, in order:**
-1. **#63** — cost cleanup (see below)
-2. **#74** — cross-investigation token/state leakage (`_session_tokens_*` module-level
-   globals in the Gemini adapter can mix data between separate Agent Engine invocations
-   sharing a warm process)
-3. **#95** — reliable service-status and user-impact detection (the real fix #61's
-   Option A fallback text deferred)
-4. Final security, rollback, and production end-to-end validation
+**Monitoring decision (Option 1, chosen 2026-08-11):** `iac/agent/monitoring.tf`'s
+`google_logging_metric.investigation_cost` + `google_monitoring_alert_policy.cost_spike`
+currently fire on `jsonPayload.estimated_cost_usd > 0.10`. Once that field is removed, this
+alert would go silently dark (filter never matches again, no error). **Replacing it with a
+provider-neutral token-usage warning** instead of just deleting it — same per-investigation
+anomaly-detection purpose (Cloud Billing only gives aggregate spend, no per-`run_id`
+granularity), but keyed on `jsonPayload.tokens_total` (a field `agent/llm/`'s adapter
+design already produces for any provider, not a Gemini-specific dollar figure). Exact
+threshold value TBD when #63 is implemented — will be a real, empirically-chosen number
+(e.g. derived from this session's live baseline runs: ~16K tokens for a normal 5-step
+OOMKilled investigation), not guessed. **Not implemented yet** — documented here per
+instruction; #63 implementation is a separate, later PR with its own tests and Terraform
+plan.
 
-**Deferred, not blocking Phase 1:** #32 and #92 (Model Armor output-block verification and
-its dependencies) — Model Armor is intentionally disabled at both the gateway and app
-layers right now (see the Model Armor status note further down); no path to close these
-until that's resolved, and that resolution is out of scope for the Phase 1 MVP gate.
+### Phase 1 — must fix and validate
 
-**Do not begin Phase 2 work** until every Phase 1 blocker above is closed.
+**Reliability and core investigation:** #31 (SSE parser can silently return an empty first
+frame as success) · #35 (API-enabled/endpoint-registered checks collapse failures into
+false) · #63 (cost cleanup, above) · #74 (token/cost/latency counters are process-global,
+can leak between investigations sharing a warm container) · #92 (no pod-log-read
+permission on the target GKE cluster) · #94 (recurring Terraform drift — must be resolved
+or fully explained and controlled) · #95 (reliable service-status/user-impact detection).
 
-### Phase 2 — post-MVP
+**Cluster and routing safety:** #73 (missing-cluster requests must never default to
+`sre-test-cluster`) · #85 (custom Cloud Run MCP must become operational for the on-prem
+path) · #86 (complete only the parts required for the existing GKE + on-prem clusters) ·
+#89 (complete routing-safety E2E test suite). Requirements: GKE routes only to GKE Remote
+MCP; on-prem/non-GKE routes only to Custom MCP; selection is deterministic, never
+model-chosen; unknown/missing/disabled/conflicting/ambiguous cluster info stops safely,
+never defaults; evidence proven to come from the selected cluster, never mixed across
+clusters/investigations; routing reason + cluster + namespace + workload + MCP source
+always recorded.
 
-- Dynamic per-investigation pricing (fetched, cached, versioned rate source — the
-  approach originally sketched for #63's "PR 2," now correctly scoped here instead)
-- Additional LLM provider adapters (the `agent/llm/` interface was built for this; only
-  Gemini is implemented today, deliberately)
-- True one-variable (`LLM_PROFILE`) switching between multiple configured providers —
-  only meaningful once a second adapter actually exists
-- Billing-export cost attribution by investigation (join Cloud Billing export data back
-  to `run_id`, replacing the removed per-request dollar estimate with something backed by
-  real billing data instead of a manual rate table)
+**Custom MCP and Connect Gateway:** runs securely in Google Cloud; Cloud Run MCP reaches
+the registered non-GKE cluster through Connect Gateway with short-lived auth, no stored
+kubeconfig or long-lived credentials; least-privilege IAM + K8s RBAC; every tool stays
+read-only (no create/update/patch/delete/exec/port-forward); auth+authz between Agent
+Gateway and Custom MCP; every supported tool verified through the deployed cloud path, not
+only local testing; Connect-Gateway-unavailable / MCP-unavailable / authz-denied /
+wrong-cluster scenarios tested; onboarding, removal, credential flow, failure handling,
+rollback documented.
 
-### Working rule for this phase
+**PagerDuty (#88):** authenticated webhook receiver; validate PD signatures; normalize
+fields (incident ID, service, environment, cluster, project, region, namespace, workload
+when available); dedup + idempotent invocation; one correlation/run ID preserved
+end-to-end; never guess a cluster when routing info is insufficient; read-only
+investigation only, RCA draft for human review, no auto-remediation; test invalid
+signatures, duplicate events, missing metadata, routing failure, timeout, downstream-agent
+failure.
 
-Handle one Phase 1 blocker at a time — implementation, regression tests, and a diff review
-before merging each one. No parallel starts across blockers.
+**Confidence and RCA accuracy:** #65 (weak generic-word claim grounding) · #66 (unverified
+model-assigned `observed_fact` label) · #67 (resource identity check ignores
+namespace/pod) · #68 (time correlation/freshness don't use real timestamps) · #69 (loop
+can exit with required evidence still missing) · #70 (agent doesn't act on its own
+generated next step) · #91 (failed tool calls wrongly credited as evidence-domain
+coverage) · #95 (service-status/user-impact, listed above too). Requirements: Investigation
+Completeness stays separate from Root-Cause Confidence; both computed deterministically,
+never model-self-assigned; cluster/namespace/workload/resource identity confirmed; real
+evidence timestamps used; stale/missing/failed/contradictory evidence penalized; failed
+tools never credited as collected evidence; alternative explanations identified; observed
+facts kept distinct from inferences; "unknown"/"insufficient evidence" returned rather than
+a forced cause; loop bounded by steps/time/tokens and doesn't finish with mandatory
+evidence missing unless that unavailability is explicitly reported; every RCA claim cites
+its supporting evidence.
+
+**Evaluation and golden cases:** #80 (two evaluation datasets have drifted apart) · #81
+(naive keyword-only pass/fail, groundedness never checked against the real evidence
+chain) · #82 (no E2E path from entrypoint through scorer — **the E2E test is Phase 1, the
+human-feedback learning system within #82 splits to Phase 2**). Golden cases required:
+CrashLoopBackOff, ImagePullBackOff, OOMKilled, Pending pod, missing ConfigMap/Secret,
+failed rollout, Service selector/endpoint mismatch, a realistic multi-component incident,
+GKE-via-Remote-MCP, non-GKE-via-Custom-MCP+Connect-Gateway, missing evidence, conflicting
+evidence, stale evidence, failed tool call, unknown cluster, ambiguous cluster,
+wrong-cluster prevention, MCP unavailable, Connect Gateway unavailable, PagerDuty-triggered
+investigation. Every agent change requires: deterministic assertions, tool-trajectory
+validation, evidence-grounding checks, confidence calibration checks, replay tests,
+golden-case regression tests, and a judge model only as a secondary check — never the sole
+evaluator. All mandatory deterministic tests must pass before claiming production
+readiness.
+
+**Observability, monitoring, privacy:** #29 (Cloud Trace endpoint mismatch) · #64
+(`google_billing_budget` shown in docs but not provisioned — resolve or correct the docs)
+· #75 (duplicate completion events not scoped by `logName` can double-count metrics) · #76
+(100% prompt/response capture in tracing without explicit approval/redaction) · #94
+(Terraform telemetry/source drift, listed above too). Required telemetry: one run ID +
+trace/correlation ID across PagerDuty→Agent Engine→Agent Gateway→MCP→final RCA; PD
+incident ID; provider + model; selected cluster/namespace/workload; routing reason;
+selected MCP source; tool name/status/latency; tool failures/retries; loop count + exit
+reason; evidence count + domains; investigation completeness; root-cause confidence; token
+usage per call and per investigation; Agent/Gateway/MCP/Connect-Gateway latency; final
+status; evidence-archive success/failure. Required dashboards + **tested** alerts (not
+"Terraform created it" — each triggered in a controlled test with a proven notification):
+PagerDuty receiver failures, invalid signatures, routing failures, unknown/ambiguous
+clusters, GKE MCP failures, Custom MCP failures, Connect Gateway failures, Agent Gateway
+failures, Agent Engine invocation failures, repeated tool failures, excessive latency,
+loop/token-limit exits, evidence storage failures, high error rate, low investigation
+completeness, Terraform drift.
+
+**Security and supply-chain:** #71 (fallback audit trail records the requested tool, not
+what executed) · #72 (fallback doesn't trigger on network errors, invalid tool mapping) ·
+#77 (CI runs no tests/lint/security scanning on PRs) · #78 (CI path filters skip
+tests/scripts/eval/iac/gke-access) · #79 (unpinned Actions, no Python lock file, MCP
+container runs as root) · #84 (VPC/NAT provisioned but never attached to Agent Engine) ·
+#87 (Terraform self-heal can auto-recreate the production Reasoning Engine unexpectedly).
+For #71/#72: **fix and fully test the fallback, or disable it completely for Phase 1** —
+never ship a partially-working fallback with an inaccurate audit trail; the full automatic
+fallback can stay in Phase 2 if safely disabled now. For #84: confirm whether VPC/NAT is
+actually required by the deployed traffic path — attach + test if yes, remove the unused
+resource and correct the docs if no; never leave unused security/network infra that implies
+protection it doesn't provide. For #87: **already checked this session** — `grep -n
+"-replace=\|failed to be updated"` against the current `.github/workflows/terraform-apply.yml`
+finds **zero matches**; the specific self-heal mechanism the issue describes (auto
+`-replace=` on a magic failure string) no longer exists in the file. Strong evidence this
+is already resolved (likely by the #93 gateway-config-binding migration removing the
+failure mode that used to trigger it) — but per "close only after acceptance evidence is
+attached," this needs one more explicit confirmation pass (a clean `terraform plan`
+showing no `-replace` anywhere in the workflow, cited in the closing comment) before
+actually closing it, not closed here. Required CI: Python tests, MCP tests, `terraform
+fmt`/`validate`/`test`/`plan`, linting, type/static checks where applicable,
+dependency+secret scanning, container vulnerability scanning, IaC security scanning,
+pinned Actions, locked Python deps, non-root MCP container, path filters covering
+`agent/`, `mcp/`, `tests/`, `eval/`, `scripts/`, `iac/agent/`, `iac/gke-access/`, required
+checks before merge.
+
+**Model Armor — controlled Phase 1 trial (#30, #32):** do not simply defer without testing
+the currently-documented regional integration. One controlled dev/test validation:
+review current official Google docs first; compare against the previous failed
+implementation; use regional templates in `us-central1`
+(`modelarmor.us-central1.rep.googleapis.com`, not the global endpoint); separate
+request/response templates where appropriate; `template_metadata.enforcement_type =
+INSPECT_ONLY`; Model Armor Cloud Logging enabled; `HIGH` confidence for
+prompt-injection/jailbreak during initial tuning; keep the existing IAP `REQUEST_AUTHZ`
+policy, add Model Armor as a **separate** `CONTENT_AUTHZ` policy — never replace IAP; grant
+only the officially documented roles to Google-managed service agents, never to Agent
+Identity; separate branch + tested rollback before touching the gateway; never test in
+production first; **no `INSPECT_AND_BLOCK` in Phase 1**. `failOpen` and `INSPECT_ONLY` are
+different controls — inspect-only logs findings without blocking, it is not a preventive
+control; don't claim complete coverage without real Model Armor logs/spans as proof.
+Coverage table required before implementation (client↔agent, agent↔Gemini, GKE Remote MCP,
+Custom MCP, PagerDuty payload, final RCA, internal Agent Runtime/gRPC traffic, any
+unsupported/bypassed path) plus the test-case list and decision gate — both spelled out in
+full under "Model Armor test plan" below, kept in this doc rather than duplicated in the
+chat reply.
+
+### Issues needing an explicit scope split (Phase 1 piece + Phase 2 piece)
+| Issue | Phase 1 | Phase 2 |
+|---|---|---|
+| #71, #72 | Fix and prove the fallback, or disable it safely | More advanced automatic failover design, if still wanted |
+| #82 | E2E entrypoint→scorer evaluation | Production human-feedback learning loop, continuous dataset ingestion |
+| #84 | Attach required networking or remove unused resources + fix docs | Additional private-network expansion beyond current paths |
+| #86 | Support the existing GKE + existing on-prem cluster safely | Generalized multi-project/multi-region/large-scale onboarding |
+| #87 | Validate PR #93, close with evidence once the second confirmation pass runs | — (fully closes in Phase 1, no Phase 2 remainder) |
+| #30, #32 | Controlled regional inspect-only trial | Remainder only if the trial fails, or `INSPECT_AND_BLOCK` is requested later |
+
+### Phase 2 — post-MVP (do not start until every Phase 1 blocker is closed)
+- #33 (Agent Registry endpoint Terraform representation + drift reconciliation) — deferred
+  provided the Phase 1 deployment scripts stay idempotent, audited, and smoke-tested
+- Remaining generalized #86 work beyond the required GKE + on-prem paths
+- #82's human-feedback learning system
+- #71/#72's advanced automatic MCP fallback, if disabled (not fixed) in Phase 1
+- #30/#32's remaining Model Armor integration, if the regional trial fails
+- Model Armor `INSPECT_AND_BLOCK` enforcement, after tuning + security approval
+- Dynamic per-investigation dollar pricing
+- Cloud Billing export cost attribution by investigation/run ID
+- Additional LLM provider adapters + true one-variable `LLM_PROFILE` switching (only
+  meaningful once a second adapter exists)
+- Additional MCP sources (Prometheus, Grafana, Elastic, Cloud Logging, runbooks, knowledge
+  bases)
+- More clusters/projects/regions; automated PagerDuty updates; human-approved remediation
+  execution; automated remediation only after a separate safety review; long-term memory
+  from human-approved RCAs; capacity/load optimization; LangGraph→ADK migration only if a
+  clear benefit is proven
+
+**Do not build unused Phase 2 abstractions during Phase 1.**
+
+### Phase 1 production-readiness gate
+**Functional:** one signed PD event starts exactly one investigation · correct
+cluster/MCP selected · GKE via GKE Remote MCP works · on-prem via Custom MCP + Connect
+Gateway works · real evidence gathered · loop is bounded · RCA has cause, evidence,
+uncertainty, next checks, suggested remediation · remediation stays human-controlled.
+**Accuracy:** every material claim evidence-backed · no failed tool call counted as
+evidence · no stale/cross-investigation evidence used · unknown causes stay unknown ·
+confidence responds correctly to missing/stale/conflicting/failed evidence · all mandatory
+golden cases pass · replay tests pass after every material agent change.
+**Security:** Agent Identity is the runtime identity · least-privilege IAM/RBAC verified ·
+tools stay read-only · PD signatures validated · MCP endpoints not arbitrarily selectable ·
+no secrets in prompts/logs/traces/RCA · containers + deps scanned · Model Armor regional
+inspect-only trial completed · if Model Armor can't be used, risk + compensating controls
+formally accepted.
+**Reliability:** no process-global investigation state · no silent default cluster · no
+uncontrolled retries · no unattended Reasoning Engine replacement · timeouts/bounded
+retries/safe-stop tested · MCP/gateway failure behavior predictable · deployment + rollback
+tested · Terraform has no unexplained drift · previous working release can be restored.
+**Observability:** end-to-end run/trace correlation works · logs structured + redacted ·
+metrics/dashboards show the complete path · critical alerts triggered and tested ·
+PD/Agent-Engine/Gateway/MCP/cluster failures distinguishable · ops can determine why an
+investigation failed without reading application code.
+**Cost:** accurate token usage retained · inaccurate manual dollar estimates removed ·
+Cloud Billing provides actual spend visibility · budget/spending alerts exist or are
+confirmed centrally managed · investigation step/token/latency limits configured.
+**Operations and documentation:** see the doc list below — a new operations engineer must
+be able to understand, deploy, monitor, troubleshoot, and roll back the system from the
+documentation alone.
+
+### Documentation to create or update
+Architecture/data-flow diagram · implemented-vs-planned capability matrix (exists, needs
+refresh) · LangGraph workflow/loop docs · LLM adapter docs (new, for `agent/llm/`) ·
+Agent Identity/IAM docs · Agent Gateway docs · Model Armor coverage + known limitations ·
+GKE Remote MCP docs · Custom MCP docs (exists, needs refresh) · Connect Gateway docs
+(exists, needs refresh) · PagerDuty integration docs (new) · cluster/MCP routing docs ·
+confidence-scoring docs (exists) · evaluation/golden-case docs · logging/metrics/
+dashboards/alerts docs · deployment runbook · rollback runbook · gateway failure runbook ·
+MCP failure runbook · Connect Gateway failure runbook · routing failure runbook ·
+identity/permission failure runbook · adding/removing GKE clusters (exists) · adding/
+removing non-GKE clusters · adding an MCP server · security controls + accepted risks ·
+ownership/escalation contacts · Phase 1 limitations · Phase 2 backlog.
+
+### Working method
+Review current main, open issues, PR history, CI, and live evidence — never trust stale
+docs or old diagrams. Never mark an issue complete from a code comment or an AI summary
+alone. Identify issues already fixed by PR #52, #93, #96, #99, #100 (see the table below).
+Close issues only after acceptance evidence is attached. Split mixed Phase 1/Phase 2 issues
+(table above). Handle one small issue or tightly related group at a time. Create a rollback
+point before each infra change. Run regression tests after every change. Run a focused live
+test when the change affects deployed behavior. Never auto-merge — stop for review before
+every merge. Never start Phase 2 while Phase 1 blockers remain.
+
+### All 36 open issues — classification table
+Status column: **✅ verified this session** (real evidence cited) vs **inherited** (from
+the 2026-08-09 remediation-batch audit/labels, not independently re-checked this session —
+needs re-confirmation before being treated as current fact). Order = recommended execution
+order within Phase 1, grouped by dependency, not strict issue-number order.
+
+| Ord | # | Title | Phase | Status | Why this phase | Depends on | Acceptance evidence needed |
+|---|---|---|---|---|---|---|---|
+| 1 | 92 | Agent has no pod-log-read permission on target GKE cluster | Phase 1 | inherited | Core investigation capability gap — can't accurately investigate without logs | none | Live tool call reads real pod logs on `sre-test-cluster` |
+| 2 | 63 | Gemini cost pricing hardcoded to Flash rates while Pro deployed | Phase 1 | ✅ PR #100 merged (adapter+tokens); cost-removal not yet done | Money-accuracy bug already partially fixed; remainder is this session's next PR | none | Diff + tests + `terraform plan` for the cost-removal PR |
+| 3 | 74 | Token/cost/latency counters are process-global | Phase 1 | ✅ confirmed real (same root class the #63 2,548-token gap came from) | Cross-investigation data leakage risk on warm containers | none | Two back-to-back live investigations on the same warm instance show no cross-contamination |
+| 4 | 94 | Recurring Terraform drift (TELEMETRY env var + source_archive) | Phase 1 | ✅ confirmed real — reproduced in every `terraform plan` run this session (PR #99, #100, LLM_PROFILE wiring) | Repeatedly seen live, never yet root-caused | none | A `terraform plan` immediately after apply shows 0 changes |
+| 5 | 73 | Missing-cluster requests silently default to `sre-test-cluster` | Phase 1 | inherited (a related claim was found **stale** during the 2026-08-09 audit per the note above — re-verify exact current behavior before treating as open) | Safety-critical: never guess a cluster | none | Test: unknown cluster name stops safely, no default |
+| 6 | 35 | API-enabled/endpoint-registered checks collapse failures into false | Phase 1 | inherited | Silent failure masking | none | Test: a real disabled API is distinguishable from "not checked" |
+| 7 | 31 | SSE parser can return an empty first frame as success | Phase 1 | inherited | Silent false-positive on a real failure path | none | Test: empty first frame is treated as failure |
+| 8 | 91 | Failed tool calls credited as evidence-domain coverage | Phase 1 | inherited | Confidence-integrity bug | none | Test: a forced tool failure does not raise completeness score |
+| 9 | 65 | Claim grounding awards full credit for one shared generic word | Phase 1 | inherited | Confidence-integrity bug | none | Test: generic-word-only match scores low |
+| 10 | 66 | Confidence scorer trusts model's self-assigned `observed_fact` | Phase 1 | inherited | Confidence must be app-computed, not model-self-assigned | none | Test: model-labeled `observed_fact` without grounding is downgraded |
+| 11 | 67 | `resource_identity_match` ignores namespace and pod | Phase 1 | inherited | Wrong-resource false-positive risk | none | Test: same cluster, different namespace/pod scores lower |
+| 12 | 68 | `time_correlation`/freshness don't use real timestamps | Phase 1 | inherited | Stale evidence not penalized | none | Test: old evidence timestamp lowers the score |
+| 13 | 69 | Loop can exit while required evidence domains are missing | Phase 1 | inherited | Premature conclusion risk | 65-68 (same scoring subsystem) | Test: forced-missing-domain run does not exit early |
+| 14 | 70 | Agent doesn't act on its own generated next step | Phase 1 | ✅ observed directly in the 2026-08-09 honest-baseline E2E test (agent identified the exact next call needed, never made it) | Real, reproduced behavior, not just a theoretical gap | 69 | Test: agent takes its own suggested next step before concluding |
+| 15 | 95 | No reliable service-status/user-impact detection | Phase 1 | ✅ Option A (honest "not determined" text) shipped in PR #96; this issue is the real check | Option A was an explicit interim fix, this is the real one | none | Live run: Impact Assessment reflects a real checked status, not a fallback string |
+| 16 | 89 | No E2E routing-safety test suite | Phase 1 | inherited | Needed to prove 5/73/86 together | 5, 73, 86 | Full scenario matrix passes |
+| 17 | 86 | Multi-cluster support is single-cluster in disguise | Phase 1 (existing-cluster scope only) | ✅ partially fixed by PR #52 (multi-cluster `clusters.json` via Terraform); remaining gap is cross-project IAM | PR #52 didn't close this — different-GCP-project clusters get no IAM grant | none | Test: a cluster in a second GCP project gets a working IAM grant, or is explicitly rejected safely |
+| 18 | 85 | Custom Cloud Run MCP fallback is non-operational as deployed | Phase 1 | inherited (code exists, per earlier priority-4 write-up below — "not wired to reach clusters via Connect Gateway in production") | Needed for the on-prem path to actually work end-to-end | 3 (Connect Gateway, priority write-up below) | Live Cloud Run MCP call reaches a real non-GKE cluster |
+| 19 | 88 | No PagerDuty integration exists | Phase 1 | inherited — confirmed zero PD code in repo (per this doc's own Priority 2 write-up) | Explicit Phase 1 requirement (project objective) | 5, 73, 86, 89 (routing must be safe first) | Signed PD webhook starts one real investigation |
+| 20 | 80 | Two evaluation datasets have drifted apart | Phase 1 | inherited | Blocks trustworthy golden-case results | none | One consolidated dataset, both old references updated |
+| 21 | 81 | Eval uses naive keyword matching, no real groundedness check | Phase 1 | inherited | Eval results currently not trustworthy | 80 | Groundedness check reads the actual evidence chain |
+| 22 | 82 | No E2E entrypoint→scorer test; no human-feedback loop | Phase 1 (E2E part only) | inherited | E2E path is Phase 1; feedback loop splits to Phase 2 | 80, 81 | E2E test runs entrypoint through final score |
+| 23 | 29 | Cloud Trace endpoint hostname mismatch | Phase 1 | inherited | Observability correctness | none | Traces actually appear in Cloud Trace |
+| 24 | 64 | `google_billing_budget` in docs, not in Terraform | Phase 1 | inherited | Docs must match reality, or the resource must exist | none | Either the resource exists, or docs say budgets are managed centrally |
+| 25 | 75 | Duplicate completion events can double-count metrics | Phase 1 | inherited | Metric integrity | none | A replayed/duplicate log event doesn't double-count |
+| 26 | 76 | 100% prompt/response capture in tracing, no redaction | Phase 1 | inherited | Privacy/compliance risk | none | Sampled or redacted, with an explicit approval decision on file |
+| 27 | 71 | MCP fallback audit trail records requested tool, not actual | Phase 1 (fix-or-disable) | inherited | Audit-trail integrity | none | Either fixed + tested, or fallback disabled with evidence it's off |
+| 28 | 72 | MCP fallback doesn't trigger on network errors, bad tool mapping | Phase 1 (fix-or-disable) | inherited | Same fallback subsystem as #71 | 71 | Same as #71 |
+| 29 | 77 | CI runs no tests/lint/security scanning on PRs | Phase 1 | ✅ partially fixed — `python-tests.yml` added this session (PR #100); lint/security scanning still missing | Real, verified gap remains after the pytest addition | none | CI shows lint + a security-scan check, not just pytest |
+| 30 | 78 | CI path filters skip tests/, scripts/, eval/, iac/gke-access/ | Phase 1 | inherited (my own `python-tests.yml` this session filters on `agent/**`+`tests/**` only — same gap class, not yet fully closed) | Real gap, partially addressed, not closed | none | CI triggers on a change to each listed path |
+| 31 | 79 | Unpinned Actions, no Python lock file, MCP container runs root | Phase 1 | 🟡 partially addressed — this session's own new/edited workflow steps (`dorny/paths-filter`) are pinned to a full commit SHA; pre-existing steps (`actions/checkout@v4` etc.) and the lock-file/root-container gaps are not | Supply-chain hardening, real gap | none | All actions pinned to SHA, `requirements.txt` has a lock file, MCP container has a non-root user |
+| 32 | 84 | VPC/NAT provisioned, never attached to Agent Engine | Phase 1 (decide+resolve) | inherited | Unused security infra implying protection it doesn't provide | none | Either attached+tested, or removed + docs corrected |
+| 33 | 87 | Terraform self-heal can auto-recreate the Reasoning Engine | Phase 1 (near-closed) | ✅ checked this session — the exact `-replace=` self-heal code no longer exists in `terraform-apply.yml` | Strong evidence already resolved by #93; needs one more confirmation pass before closing | none | A `terraform plan`/grep pass confirming no `-replace=` path, cited in the closing comment |
+| 34 | 30 | Model Armor endpoint hostname mismatch | Phase 1 (controlled trial) | ✅ confirmed real earlier this session (memory: gateway-level CONTENT_AUTHZ has no working Terraform path — API-level rejection, not a config mistake) | Gated behind the regional inspect-only trial plan | none | Trial coverage table + test cases, both below |
+| 35 | 32 | Model Armor output-sanitization verdict discarded | Phase 1 (controlled trial) | ✅ fixed in code (PR #96), reopened and deferred to the Model Armor batch — live block-path still unverified | Same trial gate as #30 | 30 | Real MATCH_FOUND during the trial exercises the block path live |
+| 36 | 33 | Agent Registry endpoint registrations have no Terraform representation | **Phase 2** | inherited | Explicitly deferred by management's requirements (drift-reconciliation nice-to-have, not an MVP blocker) | none | N/A for Phase 1 |
+
+### Already resolved / partial / duplicate / stale / needs-split
+- **Resolved, should be closed with evidence once re-confirmed:** #87 (see row 33 above —
+  one more confirmation pass, then close).
+- **Partially resolved, remainder tracked under the same issue:** #63 (adapter+tokens done,
+  cost-removal remaining), #86 (multi-cluster registry done via PR #52, cross-project IAM
+  remaining), #77 (pytest CI done, lint/security scanning remaining), #79 (this session's
+  new pins done, pre-existing unpinned steps + lock file + root container remaining).
+- **Duplicate:** none found among the 36 — no two open issues describe the same underlying
+  code location and symptom.
+- **Stale claims (not stale issues) found during the 2026-08-09 audit, flagged in this
+  doc's own Priority 5 write-up below:** the claim that `context_resolver.py` defaults a
+  missing cluster to `sre-test-cluster` was already re-confirmed false twice before this
+  session. #73's title makes a similar claim — **re-verify #73's exact current code
+  location before treating it as open**, since it may describe the same already-stale
+  behavior from a different angle. Not resolved here — flagged for the Phase 1 execution
+  pass.
+- **Needs split (table above has the full breakdown):** #71, #72, #82, #84, #86, #87,
+  #30, #32.
+
+### Model Armor regional inspect-only test plan (for #30/#32, not yet executed)
+**Coverage table to fill in before implementation** — one row per path, each marked
+inspected/not-inspected once the trial runs: client→agent · agent→client · agent→Gemini ·
+Gemini→agent · GKE Remote MCP request/response · Custom MCP request/response · PagerDuty
+payload · final RCA · internal Agent Runtime/gRPC traffic · any unsupported/bypassed path.
+
+**Test cases:** normal PagerDuty-triggered investigation · normal manual investigation ·
+prompt-injection · jailbreak · sensitive-data · harmful-content · Kubernetes logs
+containing text resembling malicious instructions · Gemini request/response (if routed
+through the protected path) · MCP `tools/call` request/response · Custom MCP traffic ·
+large tool response · Model Armor service unavailable · confirm nothing is blocked in
+inspect-only mode · confirm detection logs + Model Armor spans appear · measure added
+latency · verify no TLS/certificate/gateway/MCP/agent regression.
+
+**Decision gate:**
+- **Outcome A (regional integration works):** keep Model Armor enabled `INSPECT_ONLY` for
+  Phase 1; manage the supported config reproducibly; add monitoring + runbooks; keep
+  blocking mode for a future security-approved phase; close #30/#32 only when their exact
+  acceptance criteria are proven.
+- **Outcome B (still fails):** roll back completely to the last working gateway config;
+  keep Model Armor disabled; capture the exact command/API request/response/logs/failure
+  point; update the Google support case; document what traffic remains uninspected +
+  compensating controls; record a formal accepted risk with security/management sign-off;
+  move remaining work to Phase 2; never block the whole investigation workflow while
+  experimenting.
+
+### Missing GitHub issues (not created — for your approval first)
+Scanning the requirements above against the 36 existing issues, these gaps have no
+tracking issue today:
+1. **PagerDuty webhook signature/dedup/idempotency test suite** — #88 covers building the
+   receiver; the specific negative-test-case list (invalid signature, duplicate event,
+   timeout, downstream failure) isn't separately tracked and could get dropped if #88 is
+   scoped narrowly.
+2. **Model Armor regional inspect-only trial** — #30/#32 are both bug reports on the
+   *current broken state*; the trial itself (coverage table, test cases, decision gate)
+   has no issue of its own to track as a deliverable with its own acceptance criteria.
+3. **Alert-trigger proof pass** — "an alert exists in Terraform" vs "an alert was triggered
+   and a real notification arrived" are different claims; no issue tracks running that
+   proof pass across all 16 required alerts.
+4. **Phase 1 operational documentation set** — the ~25-item doc list above has no tracking
+   issue; without one it's easy for individual PRs to each skip "update the docs."
+
+Not filing any of these until you approve the list.
 
 ---
 
