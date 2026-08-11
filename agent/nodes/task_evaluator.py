@@ -10,7 +10,7 @@ investigation, not before. See docs/confidence-framework-design.md.
 import logging
 
 from agent.confidence import POLICY, score_investigation_completeness
-from agent.gemini_client import llm_json
+from agent.llm import llm_json
 from agent.otel import log_node_tokens, trace_node
 from agent.prompts import TASK_EVALUATOR_SYSTEM, TASK_EVALUATOR_USER
 from agent.state import AgentState
@@ -101,22 +101,18 @@ def task_evaluator(state: AgentState) -> dict:
 
     log.info(
         "task_evaluator enough=%s completeness=%.2f tokens=%d",
-        enough, completeness["score"], usage["tokens_total"],
+        enough, completeness["score"], usage["total_tokens"],
     )
 
-    current_tokens = state["investigation"].get("tokens_total", 0)
-    current_cost   = state["investigation"].get("estimated_cost_usd", 0.0)
+    from agent.llm.accounting import accumulate_usage
 
     return {
         "evaluation_ids": [eval_id],
-        "investigation":  {
-            "enough_evidence":    enough,
-            "completeness":       completeness,
-            "evidence_gaps":      gaps,
-            "tokens_input":       state["investigation"].get("tokens_input", 0)  + usage["tokens_input"],
-            "tokens_output":      state["investigation"].get("tokens_output", 0) + usage["tokens_output"],
-            "tokens_total":       current_tokens + usage["tokens_total"],
-            "estimated_cost_usd": round(current_cost + usage["cost_usd"], 6),
+        "investigation": {
+            "enough_evidence": enough,
+            "completeness":    completeness,
+            "evidence_gaps":   gaps,
+            **accumulate_usage(state["investigation"], usage),
         },
         "working_theory": theory,
     }

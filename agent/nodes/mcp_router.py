@@ -5,7 +5,7 @@ Passes evidence_count to prompt so router knows when it must keep collecting.
 """
 import logging
 from agent.state import AgentState
-from agent.gemini_client import llm_json
+from agent.llm import llm_json
 from agent.mcp_client import (
     MCP_REGISTRY, _get_cluster_registry,
     GKE_REMOTE_TOOLS, CUSTOM_K8S_TOOLS,
@@ -134,14 +134,15 @@ def mcp_router(state: AgentState) -> dict:
     selected_mcp = "gke_remote_mcp" if cluster_type == "gke" else "k8s_mcp"
     if selected_mcp not in MCP_REGISTRY:
         selected_mcp = "gke_remote_mcp"
-    usage1: dict = {"tokens_input": 0, "tokens_output": 0, "tokens_total": 0, "cost_usd": 0.0}
 
     # Derive allowed tools for selected MCP only
     phase2_allowed = GKE_REMOTE_TOOLS if selected_mcp == "gke_remote_mcp" else CUSTOM_K8S_TOOLS
 
     # ── Phase 2: pick tool from selected MCP only ─────────────────────
+    # Phase 1 above is deterministic (no LLM call, no tokens) — usage below is
+    # this node's entire token/cost footprint, not a two-phase combination.
     forbidden_combos = _build_forbidden_list(state["tool_history"])
-    action, usage2 = llm_json(
+    action, usage = llm_json(
         MCP_ROUTER_PHASE2_SYSTEM.format(
             mcp_source=selected_mcp,
             allowed_tools=", ".join(sorted(phase2_allowed)),
@@ -161,14 +162,6 @@ def mcp_router(state: AgentState) -> dict:
         ),
         max_tokens=300,
     )
-
-    # Combine token usage from both phases
-    usage = {
-        "tokens_input":  usage1.get("tokens_input",  0) + usage2.get("tokens_input",  0),
-        "tokens_output": usage1.get("tokens_output", 0) + usage2.get("tokens_output", 0),
-        "tokens_total":  usage1.get("tokens_total",  0) + usage2.get("tokens_total",  0),
-        "cost_usd":      usage1.get("cost_usd", 0.0)   + usage2.get("cost_usd", 0.0),
-    }
     log_node_tokens("mcp_router", state["run_id"], step, usage)
 
     tool = action.get("tool", "") if action else ""
@@ -222,7 +215,7 @@ def mcp_router(state: AgentState) -> dict:
 
     log.info(
         "mcp_router → source=%s tool=%s args=%s tokens=%d evidence_count=%d",
-        mcp_source, tool, args, usage["tokens_total"], evidence_count,
+        mcp_source, tool, args, usage["total_tokens"], evidence_count,
     )
 
     skipped = []
@@ -231,8 +224,7 @@ def mcp_router(state: AgentState) -> dict:
             if src != mcp_source:
                 skipped.append(f"{src}: {skip_reason[:60]}")
 
-    current_tokens = state["investigation"].get("tokens_total", 0)
-    current_cost   = state["investigation"].get("estimated_cost_usd", 0.0)
+    from agent.llm.accounting import accumulate_usage
 
     return {
         "selected_mcp":   mcp_source,
@@ -243,10 +235,5 @@ def mcp_router(state: AgentState) -> dict:
             "reason":     action.get("reason", ""),
         },
         "sources_skipped": skipped,
-        "investigation": {
-            "tokens_input":       state["investigation"].get("tokens_input", 0)  + usage["tokens_input"],
-            "tokens_output":      state["investigation"].get("tokens_output", 0) + usage["tokens_output"],
-            "tokens_total":       current_tokens + usage["tokens_total"],
-            "estimated_cost_usd": round(current_cost + usage["cost_usd"], 6),
-        },
+        "investigation": accumulate_usage(state["investigation"], usage),
     }

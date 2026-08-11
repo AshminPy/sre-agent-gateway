@@ -24,7 +24,7 @@ from agent.confidence import (
 )
 from agent.confidence.claim_builder import build_claims, build_hypotheses, detect_contradictions
 from agent.confidence.scorer import confidence_band_from_scores
-from agent.gemini_client import get_session_usage, llm_json
+from agent.llm import get_session_usage, llm_json
 from agent.otel import get_trace_id_hex, log_node_tokens, trace_node
 from agent.prompts import RCA_BUILDER_SYSTEM, RCA_BUILDER_USER
 from agent.state import AgentState
@@ -32,7 +32,6 @@ from agent.state import AgentState
 log = logging.getLogger("sre-agent.rca_builder")
 
 EVIDENCE_BUCKET = os.environ.get("EVIDENCE_BUCKET", "your-gcp-project-id-evidence")
-GEMINI_MODEL    = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 
 def _evidence_digest(state: AgentState) -> str:
@@ -140,13 +139,19 @@ def _write_observability_log(state: AgentState, rca: dict, usage: dict) -> None:
         client   = cloud_logging.Client(project=os.environ.get("PROJECT_ID"))
         logger_c = client.logger("sre-agent-investigations")
 
+        from agent.llm.accounting import accumulate_usage
+
         inv = state["investigation"]
         ctx = state.get("resolved_context", {})
 
-        tokens_input  = inv.get("tokens_input", 0)  + usage.get("tokens_input", 0)
-        tokens_output = inv.get("tokens_output", 0) + usage.get("tokens_output", 0)
-        tokens_total  = tokens_input + tokens_output
-        cost_usd      = round(inv.get("estimated_cost_usd", 0.0) + usage.get("cost_usd", 0.0), 6)
+        # Folds this call's usage the same way every other node does — tokens_total
+        # here is Gemini's own reported total (never a local input+output
+        # recomputation, see accumulate_usage's docstring for why that matters).
+        tok = accumulate_usage(inv, usage)
+        tokens_input  = tok["tokens_input"]
+        tokens_output = tok["tokens_output"]
+        tokens_total  = tok["tokens_total"]
+        cost_usd      = tok["estimated_cost_usd"]
 
         # Session-level totals — cross-check: for single Agent Engine requests these
         # should equal tokens_total above. A mismatch means an LLM call happened outside
@@ -168,6 +173,8 @@ def _write_observability_log(state: AgentState, rca: dict, usage: dict) -> None:
         total_latency_s = round(time.time() - started_at, 3) if started_at else None
 
         evidence_storage = _evidence_storage_stats(state)
+
+        from agent.llm import MODEL as _deployed_model_name
 
         entry = {
             # Run identity
@@ -259,11 +266,18 @@ def _write_observability_log(state: AgentState, rca: dict, usage: dict) -> None:
                 1 for h in rca.get("hypotheses", []) if h.get("status") == "active"
             ),
 
-            # Real token tracking from Gemini metadata
-            "tokens_input":       tokens_input,
-            "tokens_output":      tokens_output,
-            "tokens_total":       tokens_total,
-            "estimated_cost_usd": cost_usd,
+            # Real token tracking from Gemini metadata — tokens_total is Gemini's own
+            # reported total (never a local input+output recomputation, see
+            # agent/llm/accounting.py). Granular breakdown (candidates vs reasoning vs
+            # cached vs tool-use) added additively — issue #63 PR 1.
+            "tokens_input":         tok["tokens_input"],
+            "tokens_cached_input":  tok["tokens_cached_input"],
+            "tokens_output":        tok["tokens_output"],
+            "tokens_candidates":    tok["tokens_candidates"],
+            "tokens_reasoning":     tok["tokens_reasoning"],
+            "tokens_tool_use":      tok["tokens_tool_use"],
+            "tokens_total":         tokens_total,
+            "estimated_cost_usd":   cost_usd,
 
             # Latency — see comment above where these are computed.
             "mcp_latency_s":      mcp_latency_s,
@@ -276,7 +290,7 @@ def _write_observability_log(state: AgentState, rca: dict, usage: dict) -> None:
             "evidence_storage_failed_ids":   evidence_storage["evidence_storage_failed_ids"],
 
             # Model info
-            "model_name":         GEMINI_MODEL,
+            "model_name":         _deployed_model_name,
             "prompt_version":     "v2.0",
             "graph_version":      "v1.0",
 
@@ -471,9 +485,17 @@ def rca_builder(state: AgentState) -> dict:
         "cluster_routing_reason": ctx.get("cluster_routing_reason", ""),
     }
 
-    # Add real token tracking to RCA output
-    total_tokens = inv.get("tokens_total", 0)    + usage.get("tokens_total", 0)
-    total_cost   = inv.get("estimated_cost_usd", 0.0) + usage.get("cost_usd", 0.0)
+    # Add real token tracking to RCA output. Regression fix (issue #63 PR 1): this used
+    # to fold this node's own llm_json() call into ONLY tokens_total/estimated_cost_usd
+    # here, never re-setting tokens_input/tokens_output to match. Because
+    # AgentState.investigation is a shallow dict merge (operator.or_, see agent/state.py),
+    # a partial return here left tokens_input/tokens_output stuck at whatever the
+    # second-to-last node had accumulated — silently missing this node's own call.
+    # accumulate_usage() always returns the complete field set, so that gap can't recur.
+    from agent.llm.accounting import accumulate_usage
+    tok = accumulate_usage(inv, usage)
+    total_tokens = tok["tokens_total"]
+    total_cost = tok["estimated_cost_usd"]
 
     log.info(
         "rca_builder outcome=%s confidence=%.2f band=%s completeness=%.2f cluster=%s "
@@ -494,7 +516,6 @@ def rca_builder(state: AgentState) -> dict:
             # during the loop (task_evaluator no longer sets these at all — see task_evaluator.py).
             "confidence":         confidence,
             "confidence_band":    confidence_band,
-            "tokens_total":       total_tokens,
-            "estimated_cost_usd": round(total_cost, 6),
+            **tok,
         },
     }

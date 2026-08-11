@@ -110,7 +110,12 @@ def _mock_llm_json(monkeypatch):
         "suggested_remediation": ["Increase memory limit"],
         "sources_skipped": [],
     }
-    usage = {"tokens_input": 100, "tokens_output": 50, "tokens_total": 150, "cost_usd": 0.0001}
+    usage = {
+        "input_tokens": 100, "cached_input_tokens": 0, "output_tokens": 50,
+        "reasoning_tokens": 0, "tool_tokens": 0, "total_tokens": 150,
+        "billable_output_tokens": 50, "cost_usd": 0.0001,
+        "provider": "gemini", "model": "gemini-2.5-pro", "duration_s": 0.1,
+    }
     monkeypatch.setattr(rca_builder_mod, "llm_json", lambda *a, **k: (dict(response), dict(usage)))
 
 
@@ -240,7 +245,12 @@ def test_mcp_router_no_log_written_on_normal_routing(monkeypatch):
         mcp_router_mod, "llm_json",
         lambda *a, **k: (
             {"tool": "done", "arguments": {}, "reason": "no gap left"},
-            {"tokens_input": 10, "tokens_output": 5, "tokens_total": 15, "cost_usd": 0.0},
+            {
+                "input_tokens": 10, "cached_input_tokens": 0, "output_tokens": 5,
+                "reasoning_tokens": 0, "tool_tokens": 0, "total_tokens": 15,
+                "billable_output_tokens": 5, "cost_usd": 0.0,
+                "provider": "gemini", "model": "gemini-2.5-pro", "duration_s": 0.1,
+            },
         ),
     )
 

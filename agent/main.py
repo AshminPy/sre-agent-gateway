@@ -363,7 +363,7 @@ def _build_rca_report(
             L.append(f"    • {str(m)[:120]}")
         L.append("")
 
-    from agent.gemini_client import MODEL as _deployed_model
+    from agent.llm import MODEL as _deployed_model
     L += [
         SEP,
         "  6.  INVESTIGATION METADATA",
@@ -517,7 +517,7 @@ def investigate(payload: dict) -> dict:
         # log-based metrics actually filter on. Confirmed missing via a real live agent
         # invocation + a direct Cloud Logging query before this fix (jsonPayload had none
         # of these keys), not assumed from code review alone.
-        from agent.gemini_client import get_session_usage
+        from agent.llm import get_session_usage
         from agent.otel import get_trace_id_hex
 
         mcp_latency_s = round(sum(h.get("duration_s", 0) or 0 for h in tool_history), 3)

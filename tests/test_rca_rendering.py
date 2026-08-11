@@ -86,26 +86,23 @@ def test_executive_summary_and_rca_report_together_do_not_render_the_same_long_p
 
 def test_rca_report_model_line_reflects_the_real_deployed_model_not_a_hardcoded_string(monkeypatch):
     """Regression for issue #62: the RCA report used to always print the literal string
-    'Gemini 2.5 Flash', regardless of which model was actually deployed (GEMINI_MODEL env
-    var / var.gemini_model in Terraform, which is Pro in production)."""
-    import importlib
+    'Gemini 2.5 Flash', regardless of which model was actually deployed. main.py's
+    _build_rca_report() does `from agent.llm import MODEL` fresh on every call (a local
+    import inside the function body), so patching the agent.llm module attribute directly
+    is sufficient -- no adapter reload/reinstantiation needed for this test."""
+    import agent.llm
 
-    import agent.gemini_client as gemini_client_mod
-    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-pro")
-    importlib.reload(gemini_client_mod)
-    try:
-        summary = _summary()
-        payload = {"cluster": "sre-test-cluster", "namespace": "test-incidents", "pod": "imagepull-pod",
-                   "severity": "high"}
-        obs_event = {"run_id": "run_test", "cluster": "sre-test-cluster", "namespace": "test-incidents",
-                     "pod": "imagepull-pod", "tools_called": 2, "evidence_count": 1, "latency_ms": 1000,
-                     "tokens_total": 100, "estimated_cost_usd": 0.001}
-        report = _build_rca_report(payload, summary, {"confidence_band": "review"}, {}, obs_event, ["ev_003"])
-        assert "gemini-2.5-pro" in report
-        assert "Gemini 2.5 Flash" not in report
-    finally:
-        monkeypatch.delenv("GEMINI_MODEL", raising=False)
-        importlib.reload(gemini_client_mod)
+    monkeypatch.setattr(agent.llm, "MODEL", "gemini-2.5-pro")
+
+    summary = _summary()
+    payload = {"cluster": "sre-test-cluster", "namespace": "test-incidents", "pod": "imagepull-pod",
+               "severity": "high"}
+    obs_event = {"run_id": "run_test", "cluster": "sre-test-cluster", "namespace": "test-incidents",
+                 "pod": "imagepull-pod", "tools_called": 2, "evidence_count": 1, "latency_ms": 1000,
+                 "tokens_total": 100, "estimated_cost_usd": 0.001}
+    report = _build_rca_report(payload, summary, {"confidence_band": "review"}, {}, obs_event, ["ev_003"])
+    assert "gemini-2.5-pro" in report
+    assert "Gemini 2.5 Flash" not in report
 
 
 def test_rca_report_loop_count_reads_the_real_state_field():
