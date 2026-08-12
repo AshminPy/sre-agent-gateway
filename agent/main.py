@@ -394,9 +394,11 @@ def investigate(payload: dict) -> dict:
     started_at = time.time()
 
     query      = payload.get("query", "")
-    namespace  = payload.get("namespace", "test-incidents")
+    # issue #73: never default cluster/namespace to test values -- a genuinely-missing
+    # value must reach context_resolver.py as empty so its safe-stop logic can fire.
+    namespace  = (payload.get("namespace") or "").strip()
     pod        = payload.get("pod", "")
-    cluster    = payload.get("cluster", "sre-test-cluster")
+    cluster    = (payload.get("cluster") or "").strip()
     deployment = payload.get("deployment", "")
     severity   = payload.get("severity", "unknown")
 
@@ -876,9 +878,12 @@ class SREAgent:
         """Return context from in-process fallback memory (used when Memory Bank is not set up)."""
         if not cls._memory:
             return ""
+        # issue #73: BOTH must match -- an OR let e.g. any two entries sharing only a
+        # common namespace (like the old "test-incidents" default) surface each other's
+        # unrelated-cluster history.
         relevant = [
             m for m in cls._memory
-            if m.get("cluster") == cluster or m.get("namespace") == namespace
+            if m.get("cluster") == cluster and m.get("namespace") == namespace
         ]
         if not relevant:
             return ""
@@ -912,8 +917,10 @@ class SREAgent:
                 payload["query"] = str(payload.pop("prompt", ""))
 
         query_text = payload.get("query", "")
-        cluster    = payload.get("cluster", "sre-test-cluster")
-        namespace  = payload.get("namespace", "test-incidents")
+        # issue #73: same rule as investigate() -- no test-value defaults here either,
+        # since these also key memory recall/save below.
+        cluster    = (payload.get("cluster") or "").strip()
+        namespace  = (payload.get("namespace") or "").strip()
         session_id = payload.pop("session_id", None)
 
         log.info(
@@ -933,8 +940,14 @@ class SREAgent:
             payload["query"] = sanitized_query
 
         # 2. Memory — inject past investigation context before LLM reasoning
-        # Try Vertex AI Memory Bank first (persistent); fall back to in-process list
-        memory_ctx = cls._mb_recall(cluster, namespace) or cls._recall_memory(cluster, namespace)
+        # Try Vertex AI Memory Bank first (persistent); fall back to in-process list.
+        # issue #73: a clusterless request has no basis for a cluster-scoped memory
+        # lookup -- skip recall entirely rather than querying with an empty cluster,
+        # which could match unrelated history.
+        memory_ctx = (
+            (cls._mb_recall(cluster, namespace) or cls._recall_memory(cluster, namespace))
+            if cluster else ""
+        )
         if memory_ctx:
             payload["memory_context"] = memory_ctx
             log.info("Memory context injected (%d chars)", len(memory_ctx))

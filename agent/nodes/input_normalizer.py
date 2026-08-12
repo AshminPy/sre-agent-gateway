@@ -45,9 +45,13 @@ def input_normalizer(state: AgentState) -> dict:
     # are passed through as-is, empty if absent — context_resolver.py's deterministic
     # priority chain (agent/mcp_client.py:resolve_cluster_routing) decides what, if anything,
     # they resolve to. This node does not guess a cluster and must not silently invent one.
+    #
+    # namespace is held to the same rule (issue #73) -- a "test-incidents" fallback here
+    # let context_resolver's tier-4 project/environment/namespace routing silently match a
+    # real cluster for a request that never specified one. Empty if genuinely absent.
     resolved = {
         "incident_type":     incident_type,
-        "namespace":         hints.get("namespace") or extracted.get("namespace", "test-incidents"),
+        "namespace":         (hints.get("namespace") or extracted.get("namespace") or "").strip(),
         "pod":               hints.get("pod")        or extracted.get("pod", ""),
         "cluster_hint":      (hints.get("cluster") or "").strip(),
         "cluster_guess":     (extracted.get("cluster_name") or "").strip(),
