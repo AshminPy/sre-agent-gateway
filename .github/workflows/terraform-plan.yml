@@ -49,6 +49,26 @@ jobs:
       - name: Init
         run: terraform init -backend-config="bucket=${{ secrets.TFSTATE_BUCKET }}" -backend-config="prefix=agent"
 
+      # issue #116: without this, enable_custom_mcp/custom_mcp_image were never
+      # passed to this plan, so it always used variables.tf's defaults
+      # (enable_custom_mcp=false) instead of the live project's real state
+      # (ENABLE_CUSTOM_MCP=true) -- every PR's plan check showed 4 custom-MCP
+      # resources as phantom destroys that the real apply (which DOES pass
+      # these two vars) never actually touches. Same read-only step as
+      # terraform-apply.yml's "Read currently-deployed MCP image".
+      - name: Read currently-deployed MCP image
+        id: current_mcp_image
+        run: |
+          CURRENT=$(gcloud run services describe sre-k8s-mcp \
+            --project="${{ secrets.GCP_PROJECT_A_ID }}" \
+            --region="${{ secrets.GCP_REGION }}" \
+            --format="value(spec.template.spec.containers[0].image)" 2>/dev/null || true)
+          if [ -z "$CURRENT" ]; then
+            CURRENT="us-docker.pkg.dev/cloudrun/container/placeholder"
+          fi
+          echo "image=$CURRENT" >> "$GITHUB_OUTPUT"
+        working-directory: .
+
       - name: Validate
         run: terraform validate
 
@@ -78,4 +98,6 @@ jobs:
             -var="github_repo=${{ github.repository }}" \
             -var="tfstate_bucket=${{ secrets.TFSTATE_BUCKET }}" \
             -var="create_wif=false" \
-            -var="gemini_model=gemini-2.5-pro"
+            -var="gemini_model=gemini-2.5-pro" \
+            -var="enable_custom_mcp=${{ vars.ENABLE_CUSTOM_MCP || 'false' }}" \
+            -var="custom_mcp_image=${{ steps.current_mcp_image.outputs.image }}"
