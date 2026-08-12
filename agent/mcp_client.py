@@ -482,43 +482,72 @@ def call_tool(
         }
 
 
+def _is_nonempty(value: Any) -> bool:
+    """True unless value is None or an empty list/dict/string."""
+    if value is None:
+        return False
+    if isinstance(value, (list, dict, str)):
+        return len(value) > 0
+    return True
+
+
+def _extract_content(result: Dict[str, Any]) -> Optional[Any]:
+    """
+    Pull real (non-empty) content out of a JSON-RPC `result` dict.
+
+    A `result` whose only content/structuredContent is `[]`, `{}`, or ""
+    does NOT count as real content — returns None so the caller can keep
+    scanning later SSE frames instead of treating it as a false-positive
+    success.
+    """
+    structured = result.get("structuredContent")
+    if _is_nonempty(structured):
+        return structured
+
+    content = result.get("content")
+    if isinstance(content, list) and content:
+        first = content[0]
+        if isinstance(first, dict) and first.get("type") == "text":
+            try:
+                return json.loads(first["text"])
+            except Exception:
+                return first["text"]
+        return content
+    if _is_nonempty(content):
+        return content
+
+    # No real content/structuredContent — fall back to any other non-empty
+    # field the result may carry (tools that don't wrap output in content/
+    # structuredContent at all).
+    other = {k: v for k, v in result.items() if k not in ("content", "structuredContent")}
+    return other or None
+
+
 def _parse_response(body: str) -> Optional[Any]:
     """Parse SSE or direct JSON response from MCP server."""
-    # Try SSE first
+    # Try SSE first — scan all data: frames, skip empty/notification ones
     for line in body.splitlines():
         if line.startswith("data:"):
             try:
-                data    = json.loads(line[5:].strip())
-                result  = data.get("result", {})
-                content = result.get("structuredContent") or result.get("content", [])
-                if isinstance(content, list) and content:
-                    first = content[0]
-                    if isinstance(first, dict) and first.get("type") == "text":
-                        try:
-                            return json.loads(first["text"])
-                        except Exception:
-                            return first["text"]
-                return content or result
+                data = json.loads(line[5:].strip())
             except Exception:
-                pass
+                continue
+            result = data.get("result", {})
+            if not isinstance(result, dict):
+                continue
+            content = _extract_content(result)
+            if content is not None:
+                return content
 
     # Try direct JSON
     try:
-        data    = json.loads(body)
-        result  = data.get("result", {})
-        content = result.get("structuredContent") or result.get("content", [])
-        if isinstance(content, list) and content:
-            first = content[0]
-            if isinstance(first, dict) and first.get("type") == "text":
-                try:
-                    return json.loads(first["text"])
-                except Exception:
-                    return first["text"]
-        return content or result or None
+        data = json.loads(body)
     except Exception:
-        pass
-
-    return None
+        return None
+    result = data.get("result", {})
+    if not isinstance(result, dict):
+        return None
+    return _extract_content(result)
 
 
 def get_source_descriptions() -> str:
