@@ -19,6 +19,44 @@ except (TypeError, ValueError):
     log.warning("MAX_TOKENS_PER_RUN is not a valid integer; defaulting to 100000")
     _MAX_TOKENS = 100000
 
+# Admission control for starting another expensive round (task_planner ->
+# mcp_router -> tool_executor -> evidence_extractor -> task_evaluator, each of
+# which makes its own Gemini call). This is NOT max_duration_seconds (state.py,
+# 540s) -- that stays an unrelated, unchanged, already-documented hard cap
+# (see iac/agent/monitoring.tf's alert comments). This is a smaller, separate
+# budget that exists to stay clear of the MANAGED Vertex AI Agent Engine
+# request/stream boundary (observed ~300-300.6s server-side, issue #103) --
+# not a local client deadline. It cannot interrupt a call already in flight;
+# it only decides whether to start the NEXT one, so it is checked here
+# between iterations, the same place _is_timed_out() already runs.
+# Default AND max are both 200s -- an env override may only LOWER the budget,
+# never raise it. The worst observed rca_builder duration under degraded
+# conditions was 67.5s: 200 + 67.5 = 267.5s already leaves only ~33s of
+# margin under the ~300s managed boundary, so 200 is the ceiling, not a
+# starting point. A misconfigured value above 200 must not silently widen
+# that margin away.
+_SAFETY_BUDGET_DEFAULT = 200
+_SAFETY_BUDGET_MAX     = 200
+try:
+    _SAFETY_BUDGET_SECONDS = int(os.environ.get("SAFETY_BUDGET_SECONDS", str(_SAFETY_BUDGET_DEFAULT)))
+    if _SAFETY_BUDGET_SECONDS <= 0:
+        log.warning(
+            "SAFETY_BUDGET_SECONDS must be positive; defaulting to %ds", _SAFETY_BUDGET_DEFAULT
+        )
+        _SAFETY_BUDGET_SECONDS = _SAFETY_BUDGET_DEFAULT
+    elif _SAFETY_BUDGET_SECONDS > _SAFETY_BUDGET_MAX:
+        log.warning(
+            "SAFETY_BUDGET_SECONDS=%d exceeds the %ds cap (would risk the managed "
+            "~300s stream boundary); capping to %ds",
+            _SAFETY_BUDGET_SECONDS, _SAFETY_BUDGET_MAX, _SAFETY_BUDGET_MAX,
+        )
+        _SAFETY_BUDGET_SECONDS = _SAFETY_BUDGET_MAX
+except (TypeError, ValueError):
+    log.warning(
+        "SAFETY_BUDGET_SECONDS is not a valid integer; defaulting to %ds", _SAFETY_BUDGET_DEFAULT
+    )
+    _SAFETY_BUDGET_SECONDS = _SAFETY_BUDGET_DEFAULT
+
 
 def _is_stuck(state: AgentState) -> bool:
     """Stuck = same tool + same args called successfully twice in a row."""
@@ -53,6 +91,21 @@ def _is_timed_out(state: AgentState) -> bool:
     started_at   = inv.get("started_at", 0)
     max_duration = inv.get("max_duration_seconds", 300)
     return started_at > 0 and (time.time() - started_at) > max_duration
+
+
+def _is_safety_budget_exceeded(state: AgentState) -> bool:
+    """True once wall-clock elapsed exceeds SAFETY_BUDGET_SECONDS.
+
+    Distinct from _is_timed_out()'s max_duration_seconds (540s, unchanged) --
+    this is a smaller, earlier check meant to stop the loop from starting
+    another expensive round (a full task_planner -> ... -> task_evaluator
+    pass) when there is not enough headroom left before the managed Vertex AI
+    Agent Engine request/stream boundary (issue #103). It does not, and
+    cannot, interrupt a single call already in progress.
+    """
+    inv        = state["investigation"]
+    started_at = inv.get("started_at", 0)
+    return started_at > 0 and (time.time() - started_at) > _SAFETY_BUDGET_SECONDS
 
 
 def _consecutive_tool_failures(state: AgentState) -> bool:
@@ -105,6 +158,7 @@ def loop_controller(state: AgentState) -> dict:
     stuck           = _is_stuck(state)
     oscillating     = _is_oscillating(state)
     timed_out       = _is_timed_out(state)
+    safety_budget_exceeded = _is_safety_budget_exceeded(state)
     zero_facts      = _zero_new_facts(state)
     consec_failures = _consecutive_tool_failures(state)
     over_budget     = _token_budget_exceeded(state)
@@ -115,6 +169,14 @@ def loop_controller(state: AgentState) -> dict:
     if enough:
         # Evaluator confirmed sufficient evidence — always exit
         exit_reason = "confidence_sufficient"
+
+    elif safety_budget_exceeded:
+        # Not enough headroom left before the managed ~300s Vertex AI Agent
+        # Engine stream boundary (issue #103) — stop before starting another
+        # expensive round rather than risk a raw stream-timeout with no
+        # output. Checked before the 540s hard cap since it is meant to fire
+        # earlier and more conservatively.
+        exit_reason = "safety_budget_exceeded"
 
     elif timed_out:
         # Wall-clock timeout — always exit regardless of other signals
@@ -168,7 +230,7 @@ def loop_controller(state: AgentState) -> dict:
         },
     }
 
-    if exit_reason in ("stuck_detected", "zero_new_facts", "oscillation_detected", "timeout", "consecutive_tool_failures", "token_budget_exceeded"):
+    if exit_reason in ("stuck_detected", "zero_new_facts", "oscillation_detected", "timeout", "consecutive_tool_failures", "token_budget_exceeded", "safety_budget_exceeded"):
         updates["errors"] = [f"loop exited early: {exit_reason} at step {step}"]
 
     if step >= max_steps and not enough:
