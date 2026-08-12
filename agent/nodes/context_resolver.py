@@ -125,7 +125,7 @@ def context_resolver(state: AgentState) -> dict:
 
             # Keep investigation fields.
             "incident_type": ctx.get("incident_type", "Unknown"),
-            "namespace": ctx.get("namespace", "test-incidents"),
+            "namespace": ctx.get("namespace", ""),
             "pod": ctx.get("pod", ""),
             "deployment": ctx.get("deployment", ""),
             "severity": ctx.get("severity", "unknown"),

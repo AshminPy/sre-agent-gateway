@@ -732,6 +732,19 @@ def resolve_cluster_routing(
                 ),
             }
 
+    # A verified, explicit cluster_hint that didn't match tiers 1-3 is an UNKNOWN cluster,
+    # not a missing one. Stop here — never fall through to tier 4's namespace-based
+    # resolution using unrelated hints, which could silently route to a different,
+    # unrelated cluster than the one actually requested.
+    if cluster_hint:
+        return {
+            "resolved": False, "cluster_name": "", "method": "unresolved",
+            "reason": (
+                f"Cluster '{cluster_hint}' was explicitly requested but is not a registered "
+                "cluster id or alias — refusing to fall back to namespace-based routing."
+            ),
+        }
+
     # Tier 4 — project / environment / namespace uniqueness.
     if namespace_hint or project_hint or environment_hint:
         candidates = []

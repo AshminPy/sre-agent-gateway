@@ -394,9 +394,11 @@ def investigate(payload: dict) -> dict:
     started_at = time.time()
 
     query      = payload.get("query", "")
-    namespace  = payload.get("namespace", "test-incidents")
+    # issue #73: never default cluster/namespace to test values -- a genuinely-missing
+    # value must reach context_resolver.py as empty so its safe-stop logic can fire.
+    namespace  = (payload.get("namespace") or "").strip()
     pod        = payload.get("pod", "")
-    cluster    = payload.get("cluster", "sre-test-cluster")
+    cluster    = (payload.get("cluster") or "").strip()
     deployment = payload.get("deployment", "")
     severity   = payload.get("severity", "unknown")
 
@@ -876,9 +878,12 @@ class SREAgent:
         """Return context from in-process fallback memory (used when Memory Bank is not set up)."""
         if not cls._memory:
             return ""
+        # issue #73: BOTH must match -- an OR let e.g. any two entries sharing only a
+        # common namespace (like the old "test-incidents" default) surface each other's
+        # unrelated-cluster history.
         relevant = [
             m for m in cls._memory
-            if m.get("cluster") == cluster or m.get("namespace") == namespace
+            if m.get("cluster") == cluster and m.get("namespace") == namespace
         ]
         if not relevant:
             return ""
@@ -912,8 +917,10 @@ class SREAgent:
                 payload["query"] = str(payload.pop("prompt", ""))
 
         query_text = payload.get("query", "")
-        cluster    = payload.get("cluster", "sre-test-cluster")
-        namespace  = payload.get("namespace", "test-incidents")
+        # issue #73: same rule as investigate() -- no test-value defaults here either,
+        # since these also key memory recall/save below.
+        cluster    = (payload.get("cluster") or "").strip()
+        namespace  = (payload.get("namespace") or "").strip()
         session_id = payload.pop("session_id", None)
 
         log.info(
@@ -933,8 +940,14 @@ class SREAgent:
             payload["query"] = sanitized_query
 
         # 2. Memory — inject past investigation context before LLM reasoning
-        # Try Vertex AI Memory Bank first (persistent); fall back to in-process list
-        memory_ctx = cls._mb_recall(cluster, namespace) or cls._recall_memory(cluster, namespace)
+        # Try Vertex AI Memory Bank first (persistent); fall back to in-process list.
+        # issue #73: a clusterless request has no basis for a cluster-scoped memory
+        # lookup -- skip recall entirely rather than querying with an empty cluster,
+        # which could match unrelated history.
+        memory_ctx = (
+            (cls._mb_recall(cluster, namespace) or cls._recall_memory(cluster, namespace))
+            if cluster else ""
+        )
         if memory_ctx:
             payload["memory_context"] = memory_ctx
             log.info("Memory context injected (%d chars)", len(memory_ctx))
@@ -960,7 +973,21 @@ class SREAgent:
         # is a real validation gate, not human sign-off — a genuine human-approval pipeline
         # (using the existing but currently-unused sre_feedback/validation_status fields) is a
         # further improvement, not built here. See docs/confidence-framework-design.md §12.
-        if result.get("status") not in ("failed", "blocked"):
+        obs = result.get("observability", {}) or {}
+        loop_exit_reason = obs.get("loop_exit_reason", "") if isinstance(obs, dict) else ""
+
+        # issue #73 correction: rca_builder.py unconditionally sets
+        # investigation.status="done" on EVERY run, including a cluster_unresolved
+        # safe-stop (it overwrites whatever context_resolver.py set) -- so `status`
+        # alone can never detect a safe-stop by the time it reaches this method.
+        # loop_exit_reason survives that overwrite (rca_builder's return dict doesn't
+        # touch it), so it's the only reliable signal here.
+        if loop_exit_reason == "cluster_unresolved":
+            log.info(
+                "Memory persistence skipped — loop_exit_reason=cluster_unresolved "
+                "(no cluster was resolved, nothing valid to remember)"
+            )
+        elif result.get("status") not in ("failed", "blocked"):
             summary    = result.get("summary", {}) or {}
             # Reuses _extract_root_cause (str()-safe) instead of a second, unguarded copy of
             # the same extraction — that duplicate copy is what raised "unhashable type:
@@ -970,7 +997,6 @@ class SREAgent:
             pod        = payload.get("pod", "")
             confidence = _safe_float(result.get("confidence", 0.0))
             confidence_band = result.get("confidence_band", "escalate")
-            obs = result.get("observability", {})
             incident_type = obs.get("incident_type", "") if isinstance(obs, dict) else ""
             # Persist to Vertex AI Memory Bank (cross-session) and in-process list (same session)
             if confidence_band == "auto":
