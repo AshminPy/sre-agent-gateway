@@ -65,9 +65,22 @@ response = agent.query_reasoning_engine(
 ```
 
 No local deadline, no wrapping `asyncio.wait_for`, no `httpx`/`requests` timeout anywhere in the
-call path. The error text itself (`"400 Reasoning Engine Execution failed... Error Details:
-stream timeout"`) reads as the platform's own wrapper error, not something our client raised —
-which is why we believe this is an Agent Engine-side limit, not a Gemini API client-side one.
+call path.
+
+**We also checked the SDK's own generated client for a built-in default deadline, to rule that
+out as a separate explanation.** In our installed `google-cloud-aiplatform` (1.148.1),
+`reasoning_engine_execution_service`'s `transports/base.py` sets `default_timeout=None` on every
+wrapped RPC method (12 occurrences checked) — the generated client itself does not carry a
+hardcoded timeout for this call either. We list this because "the SDK has its own hidden
+default" was a real alternative explanation we wanted to rule out with evidence, not assume away.
+
+Given both of the above, our current best explanation is that this is enforced somewhere between
+the client and the deployed engine — most likely Agent Engine's own request-handling layer, since
+the error text itself (`"400 Reasoning Engine Execution failed... Error Details: stream
+timeout"`) reads as a platform-generated wrapper error rather than something a client library
+would raise. **We are treating this as our working hypothesis, not a confirmed fact** — we have
+not ruled out an intermediate layer we're not aware of, and are asking Google to confirm exactly
+where and how this limit is enforced (see Questions below).
 
 **We have direct evidence the backend kept running after the client failed.** Using Cloud Trace
 (`gen_ai.chat gemini-2.5-pro` spans, `langgraph.*` node spans) and our own structured logs, we
