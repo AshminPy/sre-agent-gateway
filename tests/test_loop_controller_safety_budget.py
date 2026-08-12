@@ -71,14 +71,23 @@ def test_zero_or_negative_falls_back_to_200(monkeypatch):
     assert mod._SAFETY_BUDGET_SECONDS == 200
 
 
-def test_value_above_260_is_capped_to_260(monkeypatch):
-    """A misconfigured value above the cap must not silently defeat the guard
-    and risk the managed ~300s stream boundary."""
-    mod = _reload_with_env(monkeypatch, "290")
-    assert mod._SAFETY_BUDGET_SECONDS == 260
+def test_value_at_or_below_200_is_accepted(monkeypatch):
+    mod = _reload_with_env(monkeypatch, "180")
+    assert mod._SAFETY_BUDGET_SECONDS == 180
 
-    mod = _reload_with_env(monkeypatch, "300")
-    assert mod._SAFETY_BUDGET_SECONDS == 260
+    mod = _reload_with_env(monkeypatch, "200")
+    assert mod._SAFETY_BUDGET_SECONDS == 200
+
+
+def test_value_above_200_is_capped_to_200(monkeypatch):
+    """An env override may only LOWER the budget, never raise it above the
+    default -- a misconfigured value above 200 must not silently widen the
+    margin under the managed ~300s stream boundary away."""
+    mod = _reload_with_env(monkeypatch, "201")
+    assert mod._SAFETY_BUDGET_SECONDS == 200
+
+    mod = _reload_with_env(monkeypatch, "260")
+    assert mod._SAFETY_BUDGET_SECONDS == 200
 
 
 def test_under_budget_does_not_trigger_exit(monkeypatch):

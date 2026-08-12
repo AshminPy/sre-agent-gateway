@@ -29,11 +29,14 @@ except (TypeError, ValueError):
 # not a local client deadline. It cannot interrupt a call already in flight;
 # it only decides whether to start the NEXT one, so it is checked here
 # between iterations, the same place _is_timed_out() already runs.
-# Capped to 260s: 200 (default) + the worst observed rca_builder duration
-# under degraded conditions (67.5s) = 267.5s, leaving margin under ~300s.
-# A misconfigured value above that margin must not silently defeat the guard.
+# Default AND max are both 200s -- an env override may only LOWER the budget,
+# never raise it. The worst observed rca_builder duration under degraded
+# conditions was 67.5s: 200 + 67.5 = 267.5s already leaves only ~33s of
+# margin under the ~300s managed boundary, so 200 is the ceiling, not a
+# starting point. A misconfigured value above 200 must not silently widen
+# that margin away.
 _SAFETY_BUDGET_DEFAULT = 200
-_SAFETY_BUDGET_MAX     = 260
+_SAFETY_BUDGET_MAX     = 200
 try:
     _SAFETY_BUDGET_SECONDS = int(os.environ.get("SAFETY_BUDGET_SECONDS", str(_SAFETY_BUDGET_DEFAULT)))
     if _SAFETY_BUDGET_SECONDS <= 0:
