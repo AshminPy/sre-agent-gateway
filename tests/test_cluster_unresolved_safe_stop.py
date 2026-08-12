@@ -116,6 +116,15 @@ def test_valid_explicit_cluster_is_unaffected_by_the_unknown_cluster_guard(monke
 # ── 3. Missing cluster must not recall or save memory ───────────────────────────────
 
 def test_missing_cluster_skips_memory_recall_and_save(monkeypatch):
+    """rca_builder.py unconditionally sets investigation.status="done" on EVERY run,
+    including a cluster_unresolved safe-stop -- so the mocked result here deliberately
+    represents exactly that shape (status="done", loop_exit_reason="cluster_unresolved"
+    inside observability) to prove the fix reads loop_exit_reason, not status. A mock
+    that instead set status="failed" would pass even without the fix, since the OLD
+    status-only gate already skipped that case -- this would be a false-positive test.
+    confidence_band is deliberately "auto" too, which would have triggered _mb_store
+    under the old logic -- proving the skip comes from the new loop_exit_reason check,
+    not incidentally from the pre-existing confidence_band branch."""
     calls = {"recall_mb": 0, "recall_fallback": 0, "store_mb": 0, "save_fallback": 0}
 
     monkeypatch.setattr(main_mod, "investigate", lambda payload: {
@@ -125,6 +134,7 @@ def test_missing_cluster_skips_memory_recall_and_save(monkeypatch):
         "confidence": 0.9,
         "confidence_band": "auto",
         "requires_human_review": False,
+        "observability": {"loop_exit_reason": "cluster_unresolved"},
     })
     monkeypatch.setattr(SREAgent, "_sanitize", classmethod(lambda cls, text, is_output=False: (text, False)))
     monkeypatch.setattr(SREAgent, "_save_to_gcs", classmethod(lambda cls, *a, **k: None))
@@ -144,6 +154,8 @@ def test_missing_cluster_skips_memory_recall_and_save(monkeypatch):
 
     assert calls["recall_mb"] == 0, "Memory Bank recall must be skipped for a clusterless request"
     assert calls["recall_fallback"] == 0, "fallback recall must be skipped for a clusterless request"
+    assert calls["store_mb"] == 0, "Memory Bank store must be skipped when loop_exit_reason=cluster_unresolved"
+    assert calls["save_fallback"] == 0, "fallback-memory save must be skipped when loop_exit_reason=cluster_unresolved"
 
 
 def test_valid_cluster_still_recalls_memory_no_regression(monkeypatch):
@@ -173,6 +185,42 @@ def test_valid_cluster_still_recalls_memory_no_regression(monkeypatch):
     SREAgent.query(query="Pod x is crashing", cluster="sre-test-cluster", namespace="test-incidents")
 
     assert calls["recall_mb"] == 1
+
+
+def test_valid_resolved_cluster_still_saves_memory_no_regression(monkeypatch):
+    """Positive control for the save side specifically: a real, resolved cluster with a
+    normal (non-cluster_unresolved) loop_exit_reason and confidence_band="auto" must
+    still save to both Memory Bank and the in-process fallback -- proves the new
+    loop_exit_reason check doesn't suppress saves for legitimate investigations."""
+    calls = {"store_mb": 0, "save_fallback": 0}
+
+    monkeypatch.setattr(main_mod, "investigate", lambda payload: {
+        "run_id": "run_test_save_ok",
+        "status": "done",
+        "summary": {"likely_root_cause": "real root cause", "confidence_score": 0.9},
+        "confidence": 0.9,
+        "confidence_band": "auto",
+        "requires_human_review": False,
+        "observability": {"loop_exit_reason": "confidence_sufficient", "incident_type": "CrashLoopBackOff"},
+    })
+    monkeypatch.setattr(SREAgent, "_sanitize", classmethod(lambda cls, text, is_output=False: (text, False)))
+    monkeypatch.setattr(SREAgent, "_save_to_gcs", classmethod(lambda cls, *a, **k: None))
+    monkeypatch.setattr(SREAgent, "_mb_recall", classmethod(lambda cls, c, n: ""))
+    monkeypatch.setattr(SREAgent, "_recall_memory", classmethod(lambda cls, c, n: ""))
+
+    def _track(name):
+        def _fn(cls, *a, **k):
+            calls[name] += 1
+            return ""
+        return _fn
+
+    monkeypatch.setattr(SREAgent, "_mb_store", classmethod(_track("store_mb")))
+    monkeypatch.setattr(SREAgent, "_save_memory", classmethod(_track("save_fallback")))
+
+    SREAgent.query(query="Pod x is crashing", cluster="sre-test-cluster", namespace="test-incidents")
+
+    assert calls["store_mb"] == 1, "a resolved cluster with confidence_band=auto must still write to Memory Bank"
+    assert calls["save_fallback"] == 1, "a resolved cluster must still write to fallback memory"
 
 
 # ── Fallback in-process memory must require BOTH cluster and namespace to match ─────

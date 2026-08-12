@@ -973,7 +973,21 @@ class SREAgent:
         # is a real validation gate, not human sign-off — a genuine human-approval pipeline
         # (using the existing but currently-unused sre_feedback/validation_status fields) is a
         # further improvement, not built here. See docs/confidence-framework-design.md §12.
-        if result.get("status") not in ("failed", "blocked"):
+        obs = result.get("observability", {}) or {}
+        loop_exit_reason = obs.get("loop_exit_reason", "") if isinstance(obs, dict) else ""
+
+        # issue #73 correction: rca_builder.py unconditionally sets
+        # investigation.status="done" on EVERY run, including a cluster_unresolved
+        # safe-stop (it overwrites whatever context_resolver.py set) -- so `status`
+        # alone can never detect a safe-stop by the time it reaches this method.
+        # loop_exit_reason survives that overwrite (rca_builder's return dict doesn't
+        # touch it), so it's the only reliable signal here.
+        if loop_exit_reason == "cluster_unresolved":
+            log.info(
+                "Memory persistence skipped — loop_exit_reason=cluster_unresolved "
+                "(no cluster was resolved, nothing valid to remember)"
+            )
+        elif result.get("status") not in ("failed", "blocked"):
             summary    = result.get("summary", {}) or {}
             # Reuses _extract_root_cause (str()-safe) instead of a second, unguarded copy of
             # the same extraction — that duplicate copy is what raised "unhashable type:
@@ -983,7 +997,6 @@ class SREAgent:
             pod        = payload.get("pod", "")
             confidence = _safe_float(result.get("confidence", 0.0))
             confidence_band = result.get("confidence_band", "escalate")
-            obs = result.get("observability", {})
             incident_type = obs.get("incident_type", "") if isinstance(obs, dict) else ""
             # Persist to Vertex AI Memory Bank (cross-session) and in-process list (same session)
             if confidence_band == "auto":
