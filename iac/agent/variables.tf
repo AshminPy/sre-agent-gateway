@@ -197,6 +197,34 @@ variable "model_armor_pi_confidence" {
   }
 }
 
+# Token-budget cleanup (issue #63). MAX_TOKENS_PER_RUN already exists and is already
+# enforced -- agent/nodes/loop_controller.py has read it from the environment (hard cap,
+# default 100000) since before this change. Terraform never set it, so production has
+# always silently run on that Python-side default. This makes Terraform the single source
+# of truth for that already-live number, and adds a configurable early-warning ratio on
+# top of it -- both variables below, never a static/guessed threshold in code.
+variable "max_tokens_per_run" {
+  description = "Hard cap on tokens consumed by a single investigation (agent/nodes/loop_controller.py's MAX_TOKENS_PER_RUN). Default matches the pre-existing Python-side fallback exactly, so setting this variable alone does not change current behavior. Set to 0 to disable the hard cap (mirrors loop_controller.py's own disable convention) -- this also disables the token_usage_warning alert in monitoring.tf, since a threshold derived from 0 would be meaningless."
+  type        = number
+  default     = 100000
+
+  validation {
+    condition     = var.max_tokens_per_run >= 0 && var.max_tokens_per_run == floor(var.max_tokens_per_run)
+    error_message = "max_tokens_per_run must be a non-negative whole number (0 to disable, or a positive integer)."
+  }
+}
+
+variable "token_warning_ratio" {
+  description = "Fraction of max_tokens_per_run at which the token-usage warning alert (iac/agent/monitoring.tf) fires -- e.g. 0.8 warns at 80% of the hard cap, before loop_controller.py actually exits on token_budget_exceeded. Must be between 0 (exclusive) and 1 (inclusive) so the warning always fires at or before the hard cap itself."
+  type        = number
+  default     = 0.8
+
+  validation {
+    condition     = var.token_warning_ratio > 0 && var.token_warning_ratio <= 1
+    error_message = "token_warning_ratio must be greater than 0 and at most 1."
+  }
+}
+
 # ============================================================================
 # MONITORING
 # ============================================================================

@@ -70,6 +70,37 @@ resource "google_logging_metric" "investigation_cost" {
   depends_on = [google_project_service.apis]
 }
 
+# Provider-neutral token-usage warning (issue #63) — jsonPayload.tokens_total is real,
+# accurate telemetry agent/llm/'s adapter design produces for any provider (not a
+# Gemini-specific dollar figure). Deliberately separate from investigation_cost/cost_spike
+# above, which this change does not touch or remove.
+#
+# Filter is restricted to event_type="sre_agent_run" specifically (agent/main.py's one
+# final observability event per run) -- agent/nodes/*.py's node_token_usage events ALSO
+# carry a non-zero tokens_total (the running cumulative total after that node's call),
+# so an unrestricted `tokens_total > 0` filter would record 3+ data points per single
+# investigation instead of 1, most of them partial/intermediate values, not the true
+# final total. Confirmed with real log data from run_20260812_101219_mbwh: 1
+# sre_agent_run event (tokens_total=1624) + 2 node_token_usage events
+# (tokens_total=1366, 258) all matched the old unrestricted filter.
+resource "google_logging_metric" "token_usage" {
+  name            = "sre_agent/investigation_tokens_total"
+  project         = var.project_a_id
+  filter          = "jsonPayload.event_type=\"sre_agent_run\" AND jsonPayload.tokens_total > 0"
+  value_extractor = "EXTRACT(jsonPayload.tokens_total)"
+  metric_descriptor {
+    metric_kind  = "DELTA"
+    value_type   = "DISTRIBUTION"
+    display_name = "SRE Agent Investigation Tokens (total)"
+  }
+  bucket_options {
+    explicit_buckets {
+      bounds = [1000, 5000, 10000, 25000, 50000, 75000, 100000, 150000]
+    }
+  }
+  depends_on = [google_project_service.apis]
+}
+
 resource "google_logging_metric" "confidence_band" {
   name             = "sre_agent/confidence_band"
   project          = var.project_a_id
@@ -253,6 +284,7 @@ resource "time_sleep" "wait_for_metrics" {
     google_logging_metric.errors,
     google_logging_metric.escalations,
     google_logging_metric.investigation_cost,
+    google_logging_metric.token_usage,
     google_logging_metric.tool_failures,
     google_logging_metric.routing_failures,
     google_logging_metric.unresolved_cluster,
@@ -341,6 +373,57 @@ resource "google_monitoring_alert_policy" "cost_spike" {
   notification_channels = [google_monitoring_notification_channel.email_oncall.name]
   documentation {
     content   = "Single SRE Agent investigation exceeded $0.10. Check run_id in Cloud Logging for the token breakdown.\nQuery: `jsonPayload.estimated_cost_usd > 0.1`"
+    mime_type = "text/markdown"
+  }
+  depends_on = [time_sleep.wait_for_metrics]
+}
+
+# Provider-neutral token-usage warning (issue #63) — replaces relying on the dollar-based
+# cost_spike alert above as the only per-investigation anomaly signal. Threshold is
+# derived entirely from config: var.max_tokens_per_run (agent/nodes/loop_controller.py's
+# own hard cap, now Terraform-sourced) * var.token_warning_ratio (default 0.8) — computed
+# once at apply time, never a static or empirically-guessed token number.
+#
+# This is a NEAR-BUDGET OPERATIONAL ALERT, not a real-time in-run warning -- the metric
+# only counts agent/main.py's sre_agent_run event, which is written after the LangGraph
+# run completes (confirmed: log-based metrics can also add their own propagation delay
+# on top of that). It identifies COMPLETED investigations that landed close to the
+# configured limit, so the threshold can be raised (or the agent's behavior tuned)
+# before a FUTURE run actually hits loop_controller.py's hard cap -- it cannot warn
+# during the specific investigation that triggers it.
+#
+# resource.type is aiplatform.googleapis.com/ReasoningEngine, not "global" like this
+# file's other alerts -- confirmed with real log data (not assumed): a live
+# sre_agent_run log entry's own `resource` field carries exactly this type, with
+# reasoning_engine_id/location/resource_container labels (Cloud Logging's stdout
+# capture for this Reasoning Engine tags it that way; a log-based metric's resulting
+# time series inherits its source logs' resource type).
+#
+# enabled=false when max_tokens_per_run=0 -- a 0 * ratio threshold would be a
+# meaningless always-firing (or nonsensical) alert; 0 means "hard cap disabled"
+# (agent/nodes/loop_controller.py's own convention), so the warning must be disabled
+# too, not silently left enabled with a broken threshold.
+resource "google_monitoring_alert_policy" "token_usage_warning" {
+  project      = var.project_a_id
+  display_name = "SRE Agent — Investigation Token Usage Warning"
+  combiner     = "OR"
+  enabled      = var.max_tokens_per_run > 0
+  conditions {
+    display_name = "Single investigation tokens > ${var.token_warning_ratio * 100}% of max_tokens_per_run"
+    condition_threshold {
+      filter          = "metric.type=\"logging.googleapis.com/user/sre_agent/investigation_tokens_total\" AND resource.type=\"aiplatform.googleapis.com/ReasoningEngine\""
+      duration        = "0s"
+      comparison      = "COMPARISON_GT"
+      threshold_value = var.max_tokens_per_run * var.token_warning_ratio
+      aggregations {
+        alignment_period   = "60s"
+        per_series_aligner = "ALIGN_PERCENTILE_99"
+      }
+    }
+  }
+  notification_channels = [google_monitoring_notification_channel.email_oncall.name]
+  documentation {
+    content   = "A completed SRE Agent investigation used more than ${var.token_warning_ratio * 100}% of the configured max_tokens_per_run (${var.max_tokens_per_run} tokens) -- close to loop_controller.py's hard token_budget_exceeded cap. This is reported after the run finished, not during it; use it to catch a trend before a FUTURE run hits the hard cap. Check run_id in Cloud Logging.\nQuery: `jsonPayload.event_type=\"sre_agent_run\" AND jsonPayload.tokens_total > ${var.max_tokens_per_run * var.token_warning_ratio}`"
     mime_type = "text/markdown"
   }
   depends_on = [time_sleep.wait_for_metrics]
