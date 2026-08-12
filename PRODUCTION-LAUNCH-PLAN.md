@@ -88,6 +88,20 @@ always silently ran on that Python-side default. Implemented:
 - Regression tests: `tests/test_loop_controller_token_budget.py` (6 tests — env var
   default/override/invalid-value/disable, under/over-budget exit behavior).
 
+**Correction, 2026-08-12 review:** the first version of `token_usage_warning` had three
+real bugs, all fixed before merge: (1) its metric filter (`jsonPayload.tokens_total > 0`)
+also matched `agent/nodes/*.py`'s per-node `node_token_usage` events, which carry a
+non-zero running-total `tokens_total` too — confirmed with real data (one run produced 3
+matching log lines, not 1) — now restricted to `event_type="sre_agent_run"`; (2) the
+alert's `resource.type="global"` was wrong — a real `sre_agent_run` log entry's own
+`resource` field carries `aiplatform.googleapis.com/ReasoningEngine`, confirmed via a
+live `gcloud logging read`, not assumed — alert filter corrected to match; (3)
+`max_tokens_per_run=0` (which disables the hard cap in `loop_controller.py`) left the
+alert enabled with a meaningless threshold of 0 — now `enabled = var.max_tokens_per_run
+> 0`. Also corrected the documentation wording: this is a near-budget operational alert
+on COMPLETED investigations, not a real-time warning during the run that triggers it —
+`sre_agent_run` is only written after the graph finishes.
+
 **Status:** the monitoring/token-budget slice above is implemented — [PR #102](https://github.com/AshminPy/sre-agent-gateway/pull/102), CI green, not yet merged or deployed. **Only the dollar-cost removal (removing `estimated_cost_usd` and the manually-maintained Terraform pricing variables) remains** — that is a separate, later #63 PR with its own tests and Terraform plan, not started.
 
 ### Phase 1 — must fix and validate

@@ -46,9 +46,9 @@ locals {
       # the Gemini adapter's own model-name resolution and existing tooling. Both must
       # always name the same model, so both are set from this one variable rather than
       # two separate ones that could drift apart.
-      LLM_PROFILE           = var.gemini_model
-      GEMINI_PRICE_INPUT    = tostring(var.gemini_price_input_per_1m)
-      GEMINI_PRICE_OUTPUT   = tostring(var.gemini_price_output_per_1m)
+      LLM_PROFILE         = var.gemini_model
+      GEMINI_PRICE_INPUT  = tostring(var.gemini_price_input_per_1m)
+      GEMINI_PRICE_OUTPUT = tostring(var.gemini_price_output_per_1m)
       # agent/nodes/loop_controller.py has read this env var since before this change
       # (hard token cap, Python-side default 100000) -- Terraform never set it, so
       # production always silently ran on that default. var.max_tokens_per_run's own
