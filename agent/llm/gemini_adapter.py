@@ -63,6 +63,16 @@ class GeminiAdapter(LLMClient):
         self.price_output_per_1m = float(os.environ.get("GEMINI_PRICE_OUTPUT", "0.0"))
 
         self._client = None
+        self.reset_session()
+
+    def reset_session(self) -> None:
+        # issue #74: this instance is cached process-wide (agent.llm.registry) and
+        # reused across every investigation a warm process handles -- these counters
+        # used to accumulate forever (module-level globals before the LLM-adapter
+        # refactor, now instance attributes on the same shared cached instance --
+        # same underlying bug, different mechanism). agent/main.py's investigate()
+        # calls this once at the start of every investigation so get_session_usage()
+        # means "this investigation," not "everything since process start."
         self._session_input = 0
         self._session_cached_input = 0
         self._session_output = 0
@@ -254,7 +264,12 @@ class GeminiAdapter(LLMClient):
 
         start = text.find("{")
         if start == -1:
-            log.warning("llm_json: no JSON object found: %s", text[:200])
+            # issue #76: was logging up to 200 chars of the model's raw response text
+            # (built from real k8s evidence) into Cloud Logging on this failure path --
+            # same content-capture concern as the Trace flag above, different system.
+            # Length-only is still useful for diagnosing "empty response" vs "malformed
+            # response" without capturing the actual content.
+            log.warning("llm_json: no JSON object found (response length=%d)", len(text))
             return {}, usage
 
         depth, end = 0, start
@@ -273,8 +288,13 @@ class GeminiAdapter(LLMClient):
 
         try:
             return json.loads(candidate), usage
-        except json.JSONDecodeError:
-            log.warning("llm_json: repair failed: %s", candidate[:300])
+        except json.JSONDecodeError as exc:
+            # issue #76: same fix as above -- length + parser error position, not the
+            # actual candidate text.
+            log.warning(
+                "llm_json: repair failed (candidate length=%d, error at pos %d): %s",
+                len(candidate), getattr(exc, "pos", -1), exc.msg,
+            )
             return {}, usage
 
     def get_session_usage(self) -> dict:

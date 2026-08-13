@@ -79,9 +79,21 @@ class LLMClient(abc.ABC):
 
     @abc.abstractmethod
     def get_session_usage(self) -> dict:
-        """Cumulative usage for this process — see agent.gemini_client's original
-        docstring for the single-request-per-process assumption this carries
-        forward unchanged (still tracked separately by issue #74)."""
+        """Cumulative usage since the last reset_session() call.
+
+        The adapter instance is cached process-wide (agent.llm.registry.get_client()),
+        reused across every investigation a warm process handles — this was ungated
+        cumulative-forever state until issue #74's fix. Callers MUST call
+        reset_session() at the start of each investigation (agent/main.py's
+        investigate() does this) for this to mean "this investigation's usage"
+        rather than "everything since process start."
+        """
+
+    @abc.abstractmethod
+    def reset_session(self) -> None:
+        """Zero all session counters. Call once at the start of each investigation
+        (issue #74) -- without this, get_session_usage() accumulates across every
+        investigation a warm/reused process handles, not just the current one."""
 
 
 def validate_capabilities(client: LLMClient, required: frozenset[str]) -> None:
