@@ -334,18 +334,32 @@ def _map_to_custom_tool(gke_tool: str) -> Optional[str]:
     return mapping.get(gke_tool)
 
 
+def _is_not_found_result(content: Any) -> bool:
+    """issue #70: GKE Remote MCP returns HTTP 200 with the underlying kubectl-style
+    error TEXT embedded in the result body for a not-found resource -- not a structured
+    error field, not a non-200 status. Confirmed via a real E2E failure (docs/testing/
+    e2e-honest-baseline-2026-08-09-notification-relay.md):
+    {"output": "Error from server (NotFound): Pod \"notification-relay\" not found"}.
+    """
+    text = content if isinstance(content, str) else json.dumps(content)
+    return "notfound" in text.lower()
+
+
 def call_tool(
     mcp_source: str,
     tool_name: str,
     arguments: Dict[str, Any],
     run_id: str = "",
     cluster_name: str = "",
+    _broadened_retry: bool = False,
 ) -> Dict[str, Any]:
     """
     Call one tool on one MCP source.
     Validates allowlist before any network call.
     Builds correct args for GKE Remote MCP (parent field required).
     Auto-falls-back to custom K8s MCP if GKE Remote fails.
+    _broadened_retry (issue #70, internal use only): set on the recursive call made
+    when a name-scoped list_k8s_events returns NotFound, to prevent retrying twice.
     """
     validation_error = _validate_tool(tool_name, arguments)
     if validation_error:
@@ -464,6 +478,34 @@ def call_tool(
         # Parse SSE or direct JSON response
         content = _parse_response(resp.text)
         if content is not None:
+            # issue #70: a name-scoped lookup returning NotFound is not proof the
+            # resource doesn't exist -- the caller-supplied name hint itself can be
+            # wrong (real E2E failure: a Deployment-name hint that didn't match the
+            # actual generated pod name, both Pod and ReplicaSet lookups 404'd, and
+            # the agent wrongly concluded "workload doesn't exist"). list_k8s_events
+            # is the one GKE Remote MCP tool whose name/namespace filters are BOTH
+            # optional (describe_k8s_resource/get_k8s_resource REQUIRE name per the
+            # MCP schema -- can't be broadened the same way, see _build_gke_args).
+            # Retry once, unscoped within the same namespace, before accepting
+            # NotFound as the final answer.
+            if (
+                is_gke_remote and not _broadened_retry
+                and tool_name == "list_k8s_events" and pod_name
+                and _is_not_found_result(content)
+            ):
+                log.info(
+                    "call_tool: list_k8s_events name=%s returned NotFound -- retrying "
+                    "unscoped (namespace-wide) before concluding non-existence",
+                    pod_name,
+                )
+                broadened = call_tool(
+                    mcp_source, tool_name,
+                    {k: v for k, v in arguments.items() if k not in ("name", "pod_name", "pod")},
+                    run_id, cluster_name, _broadened_retry=True,
+                )
+                broadened["broadened_after_not_found"] = pod_name
+                return broadened
+
             return {
                 "ok": True, "result": content,
                 "tool": tool_name, "mcp_source": mcp_source, "duration_s": duration,
