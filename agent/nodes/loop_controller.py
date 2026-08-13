@@ -1,6 +1,9 @@
 """
 Decides continue or exit using multi-signal production rules.
-enough_evidence=True ALWAYS exits immediately.
+enough_evidence=True exits immediately UNLESS the deterministic completeness check
+(computed from real AgentState, not the LLM's self-report) finds a required evidence
+domain still missing and iteration budget remains (issue #69) -- in that case, one
+more iteration is forced before enough_evidence can end the loop.
 """
 import logging
 import os
@@ -169,9 +172,24 @@ def loop_controller(state: AgentState) -> dict:
 
     # ── Exit decision — order matters ─────────────────────────────
     exit_reason = None
+    missing_domains = state["investigation"].get("completeness", {}).get("missing_required_domains", [])
 
-    if enough:
-        # Evaluator confirmed sufficient evidence — always exit
+    if enough and missing_domains and step < max_steps:
+        # issue #69: enough_evidence is the LLM's own self-report -- it was previously
+        # honored unconditionally, even when task_evaluator's deterministic completeness
+        # check (computed in the SAME call, from real AgentState) found required evidence
+        # domains still missing. Real E2E proof: the agent's own evidence_gaps named a
+        # specific unresolved gap, yet the loop still exited with confidence_sufficient.
+        # Force one more iteration instead, as long as iteration budget remains.
+        log.info(
+            "loop_controller: evaluator said enough_evidence but completeness reports "
+            "missing required domain(s) %s -- forcing one more iteration (%d/%d steps)",
+            missing_domains, step, max_steps,
+        )
+
+    elif enough:
+        # Evaluator confirmed sufficient evidence, and either no required domains are
+        # missing or no iteration budget remains to chase them further — exit.
         exit_reason = "confidence_sufficient"
 
     elif safety_budget_exceeded:
