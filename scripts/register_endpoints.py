@@ -40,9 +40,30 @@
 import argparse
 import json
 import os
-import re
 import subprocess
 import sys
+
+# issue #130 (protocol follow-up): every endpoint used to be registered as
+# protocolBinding=JSONRPC unconditionally. That's correct for the REST-based clients
+# this agent actually uses for most hosts (Gemini/Vertex AI, GKE Remote MCP -- both
+# confirmed live as plain "HTTP Request: POST ..." calls). But the Cloud Trace and
+# Cloud Logging Python clients are gRPC-only -- confirmed directly against the
+# installed packages: google.cloud.trace_v2's TraceServiceClient and
+# google.cloud.logging_v2's LoggingServiceV2Client both only offer 'grpc'/'grpc_asyncio'
+# transports, no REST option exists to fall back to. Google's own Agent Registry docs
+# (docs.cloud.google.com/agent-registry/manage-endpoints) confirm protocolBinding has
+# three real, distinct values -- JSONRPC, HTTP_JSON, GRPC -- not just JSONRPC. A host
+# whose real client is gRPC-only needs the GRPC binding, not JSONRPC.
+_GRPC_ONLY_HOSTNAMES = {
+    "cloudtrace.googleapis.com",
+    "cloudtrace.mtls.googleapis.com",
+    "logging.googleapis.com",
+    "logging.mtls.googleapis.com",
+}
+
+
+def protocol_binding_for(hostname: str) -> str:
+    return "GRPC" if hostname in _GRPC_ONLY_HOSTNAMES else "JSONRPC"
 
 def get_gcloud_config(prop):
     try:
@@ -366,8 +387,9 @@ def main():
 
         display_name = hostname
         url = f"https://{hostname}"
+        binding = protocol_binding_for(hostname)
 
-        print(f"\nRegistering {hostname} as {resource_name} in registry location {registry_location}...")
+        print(f"\nRegistering {hostname} as {resource_name} in registry location {registry_location} (protocolBinding={binding})...")
         cmd = [
             "gcloud",
             "alpha",
@@ -379,7 +401,7 @@ def main():
             f"--location={registry_location}",
             f"--display-name={display_name}",
             "--endpoint-spec-type=no-spec",
-            f"--interfaces=url={url},protocolBinding=JSONRPC",
+            f"--interfaces=url={url},protocolBinding={binding}",
         ]
 
         print(f"{'[DRY RUN] ' if args.dry_run else ''}Running: {' '.join(cmd)}")
