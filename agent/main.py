@@ -670,6 +670,22 @@ class SREAgent:
         log.info("SREAgent.set_up() — initializing graph and enterprise clients...")
         _get_graph()
 
+        # issue #130: agent.otel.get_tracer() was previously only ever called lazily,
+        # on the FIRST real investigation request -- well after container start. OTel's
+        # own trace.set_tracer_provider() can only succeed ONCE per process (a one-time
+        # guard in the OTel SDK itself); live logs show Agent Engine's own managed
+        # runtime already claims that slot during its own startup bootstrap (multiple
+        # "telemetry enabled but proceeding without X instrumentation" messages at
+        # container start, well before our own tracer initialized), so our later,
+        # lazy set_tracer_provider() call was silently losing that race every time
+        # ("Overriding of current TracerProvider is not allowed" -- confirmed live).
+        # Google's own custom-agent tracing docs document tracer setup as a set_up()-time
+        # concern, not a lazy/per-request one -- calling it here, at the same one-time
+        # container-start point as the graph/client init above, gives it a real,
+        # deterministic chance to win that race instead of losing it ~90s late by default.
+        from agent.otel import get_tracer
+        get_tracer()
+
         # ── Model Armor client ────────────────────────────────────────
         if MODEL_ARMOR_TEMPLATE:
             try:
