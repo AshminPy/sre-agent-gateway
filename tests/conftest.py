@@ -12,7 +12,8 @@ CLUSTER = "sre-test-cluster"
 
 
 def make_evidence(ev_id: str, tool: str, cluster: str = CLUSTER, summary: str = "",
-                   key_facts=None, ok: bool = True, resource_id: str = "") -> dict:
+                   key_facts=None, ok: bool = True, resource_id: str = "",
+                   collected_at: float | None = None) -> dict:
     return {
         "tool": tool,
         "cluster": cluster,
@@ -22,6 +23,7 @@ def make_evidence(ev_id: str, tool: str, cluster: str = CLUSTER, summary: str = 
         "raw_ref": f"gs://bucket/{ev_id}.json",
         "ok": ok,
         "resource_id": resource_id,
+        "collected_at": collected_at,
     }
 
 

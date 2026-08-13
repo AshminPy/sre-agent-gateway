@@ -76,20 +76,28 @@ def score_investigation_completeness(
         coverage = 1.0
     components["required_evidence_coverage"] = coverage
 
-    # freshness: evidence collected within policy.evidence_max_age_seconds of "now" (proxy: of
-    # investigation start, since this scorer runs mid/end of a single bounded investigation).
+    # freshness: how long ago was each piece of evidence actually collected (issue #68 --
+    # evidence_extractor.py now stamps a real collected_at per item; this used to be a single
+    # investigation-start proxy applied uniformly to all evidence, which couldn't tell fresh
+    # evidence from stale evidence within the same run). Evidence written before this fix has
+    # no collected_at -- falls back to started_at for those specific items only, not the
+    # whole store, so old and new evidence in the same run are judged correctly and
+    # independently.
     started_at = inv.get("started_at")
-    if started_at and evidence_store:
+    if evidence_store:
         now = time.time()
-        ages = [now - started_at]  # single-run proxy; per-item timestamps aren't captured in
-        # evidence_store today (see final report "known limitations") — this stays a
-        # investigation-level freshness signal, not per-evidence-item, until that's added.
+        ages = [
+            now - (ev.get("collected_at") or started_at or now)
+            for ev in evidence_store.values()
+        ]
         stale = [a for a in ages if a > policy.evidence_max_age_seconds]
         freshness = 0.0 if stale else 1.0
         if stale:
-            gaps.append("Evidence collected outside the configured freshness window")
+            gaps.append(
+                f"{len(stale)} evidence item(s) collected outside the configured freshness window"
+            )
     else:
-        freshness = 1.0 if evidence_store else 0.0
+        freshness = 0.0
     components["freshness"] = freshness
 
     # tool_success: fraction of tool calls that succeeded. Zero calls attempted = 0 (can't
@@ -251,12 +259,36 @@ def score_root_cause_confidence(
             )
     components["resource_identity_match"] = resource_identity_match
 
-    # time_correlation: no per-evidence timestamp is captured in evidence_store today (see
-    # scorer's completeness freshness note and the final report's known limitations) — until
-    # that lands, this stays a fixed neutral 1.0 for claims that DO have supporting evidence
-    # (can't fabricate a precise number, but can't credit zero evidence either), and 0.0 when
-    # there's no evidence to correlate against at all.
-    components["time_correlation"] = 1.0 if supporting_ids else 0.0
+    # time_correlation: how closely in time was this claim's supporting evidence actually
+    # collected (issue #68 -- evidence_extractor.py now stamps a real collected_at per item).
+    # Evidence gathered close together is more likely to reflect the SAME incident state;
+    # evidence spread far apart risks mixing stale and fresh signals within one claim. No
+    # per-evidence timestamp existed before this fix at all -- this was previously a flat
+    # 1.0/0.0 with no real time signal behind it.
+    if not supporting_ids:
+        time_correlation = 0.0
+    else:
+        support_timestamps = [
+            ts for eid in supporting_ids
+            if (ts := evidence_store.get(eid, {}).get("collected_at")) is not None
+        ]
+        if len(support_timestamps) < 2:
+            # 0 or 1 real timestamp (older evidence predating this fix, or a single-item
+            # claim) — nothing to compare, neutral rather than fabricated.
+            time_correlation = 1.0
+        else:
+            spread = max(support_timestamps) - min(support_timestamps)
+            if spread <= policy.evidence_max_age_seconds:
+                time_correlation = 1.0
+            else:
+                time_correlation = max(
+                    0.0, 1.0 - (spread - policy.evidence_max_age_seconds) / policy.evidence_max_age_seconds
+                )
+                reasons.append(
+                    f"Supporting evidence for this claim was collected {spread:.0f}s apart, "
+                    "wider than the freshness window"
+                )
+    components["time_correlation"] = time_correlation
 
     # claim_grounding: mean support_strength across root claims (set by claim-building step,
     # itself derived from the existing _validate_citations-style phantom/overlap checks).

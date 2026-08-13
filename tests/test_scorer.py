@@ -51,6 +51,38 @@ def test_completeness_four_duplicate_log_lines_not_treated_as_four_domains():
     assert "Missing required evidence domain" in result["gaps"][0]
 
 
+def test_completeness_stale_evidence_item_reduces_freshness():
+    # issue #68: freshness used to be a single investigation-start proxy applied to the whole
+    # store; now each item's real collected_at is checked independently.
+    import time
+    now = time.time()
+    evidence_store = {
+        "ev_001": make_evidence("ev_001", "describe_pod_detail", key_facts=["x"], collected_at=now),
+        "ev_002": make_evidence("ev_002", "list_events", key_facts=["y"],
+                                  collected_at=now - POLICY.evidence_max_age_seconds - 100),
+    }
+    tool_history = [make_tool_history_entry(0, "describe_pod_detail"),
+                     make_tool_history_entry(1, "list_events")]
+    state = make_state("OOMKilled", evidence_store, tool_history, started_at=now)
+    result = score_investigation_completeness(state, POLICY)
+    assert result["components"]["freshness"] == 0.0
+    assert any("outside the configured freshness window" in g for g in result["gaps"])
+
+
+def test_completeness_all_fresh_evidence_keeps_full_freshness():
+    import time
+    now = time.time()
+    evidence_store = {
+        "ev_001": make_evidence("ev_001", "describe_pod_detail", key_facts=["x"], collected_at=now),
+        "ev_002": make_evidence("ev_002", "list_events", key_facts=["y"], collected_at=now - 5),
+    }
+    tool_history = [make_tool_history_entry(0, "describe_pod_detail"),
+                     make_tool_history_entry(1, "list_events")]
+    state = make_state("OOMKilled", evidence_store, tool_history, started_at=now)
+    result = score_investigation_completeness(state, POLICY)
+    assert result["components"]["freshness"] == 1.0
+
+
 def test_completeness_zero_tool_calls_scores_zero_tool_success():
     state = make_state("OOMKilled", {}, [])
     result = score_investigation_completeness(state, POLICY)
@@ -285,6 +317,38 @@ def test_root_cause_confidence_matching_pod_same_cluster_keeps_full_resource_ide
         "cluster_name": CLUSTER, "namespace": "namespace-a", "pod": "pod-x",
     })
     assert result["components"]["resource_identity_match"] == 1.0
+
+
+def test_root_cause_confidence_widely_spread_evidence_timestamps_reduces_time_correlation():
+    # issue #68: time_correlation used to be a flat 1.0/0.0 with no real timestamp signal at
+    # all. Two supporting evidence items collected far apart (beyond the freshness window)
+    # must now reduce the score, not silently pass as perfectly correlated.
+    import time
+    now = time.time()
+    evidence_store = {
+        "ev_001": make_evidence("ev_001", "describe_pod_detail", key_facts=["x"], collected_at=now),
+        "ev_002": make_evidence("ev_002", "list_events", key_facts=["x"],
+                                  collected_at=now - POLICY.evidence_max_age_seconds - 500),
+    }
+    claims = build_claims({"claims": [{"text": "x", "claim_type": "observed_fact",
+                                         "supporting_evidence_ids": ["ev_001", "ev_002"]}]},
+                            ["ev_001", "ev_002"], evidence_store)
+    result = _rcc(claims, evidence_store=evidence_store)
+    assert result["components"]["time_correlation"] < 1.0
+
+
+def test_root_cause_confidence_closely_spaced_evidence_timestamps_keeps_full_time_correlation():
+    import time
+    now = time.time()
+    evidence_store = {
+        "ev_001": make_evidence("ev_001", "describe_pod_detail", key_facts=["x"], collected_at=now),
+        "ev_002": make_evidence("ev_002", "list_events", key_facts=["x"], collected_at=now - 5),
+    }
+    claims = build_claims({"claims": [{"text": "x", "claim_type": "observed_fact",
+                                         "supporting_evidence_ids": ["ev_001", "ev_002"]}]},
+                            ["ev_001", "ev_002"], evidence_store)
+    result = _rcc(claims, evidence_store=evidence_store)
+    assert result["components"]["time_correlation"] == 1.0
 
 
 # ── Outcome derivation ────────────────────────────────────────────────────
