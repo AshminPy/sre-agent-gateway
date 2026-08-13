@@ -14,11 +14,25 @@ resource "google_logging_project_bucket_config" "default_analytics" {
 }
 
 # ── Log-based metrics (from jsonPayload the agent emits per run) ────────────
+#
+# issue #75: two separate completion-event emitters exist for one investigation --
+# agent/main.py's obs_event (event_type="sre_agent_run", stdout, the canonical
+# metrics-source event per its own PRODUCTION-LAUNCH-PLAN.md Priority 10 comment)
+# and agent/nodes/rca_builder.py's separate, richer "sre-agent-investigations"
+# Cloud Logging entry (SRE-review audit record -- validation_status/sre_feedback/etc,
+# not meant to double as the metrics source). Both share overlapping field names
+# (run_id, status, confidence_band, estimated_cost_usd, cluster_routing_method,
+# loop_exit_reason, total_latency_s) -- confirmed by reading both entries directly,
+# not assumed -- but only main.py's event carries event_type="sre_agent_run";
+# rca_builder.py's entry has no such field at all. Every filter below that reads
+# one of those overlapping fields is restricted to event_type="sre_agent_run" so
+# it counts each investigation exactly once, matching the same fix already applied
+# to token_usage below (issue #63 PR 1).
 
 resource "google_logging_metric" "invocations" {
   name    = "sre_agent/invocations"
   project = var.project_a_id
-  filter  = "jsonPayload.run_id:*"
+  filter  = "jsonPayload.event_type=\"sre_agent_run\" AND jsonPayload.run_id:*"
   metric_descriptor {
     metric_kind  = "DELTA"
     value_type   = "INT64"
@@ -30,7 +44,7 @@ resource "google_logging_metric" "invocations" {
 resource "google_logging_metric" "errors" {
   name    = "sre_agent/errors"
   project = var.project_a_id
-  filter  = "jsonPayload.status=\"error\""
+  filter  = "jsonPayload.event_type=\"sre_agent_run\" AND jsonPayload.status=\"error\""
   metric_descriptor {
     metric_kind  = "DELTA"
     value_type   = "INT64"
@@ -42,7 +56,7 @@ resource "google_logging_metric" "errors" {
 resource "google_logging_metric" "escalations" {
   name    = "sre_agent/escalations"
   project = var.project_a_id
-  filter  = "jsonPayload.confidence_band=\"escalate\""
+  filter  = "jsonPayload.event_type=\"sre_agent_run\" AND jsonPayload.confidence_band=\"escalate\""
   metric_descriptor {
     metric_kind  = "DELTA"
     value_type   = "INT64"
@@ -54,7 +68,7 @@ resource "google_logging_metric" "escalations" {
 resource "google_logging_metric" "investigation_cost" {
   name            = "sre_agent/investigation_cost_usd"
   project         = var.project_a_id
-  filter          = "jsonPayload.estimated_cost_usd > 0"
+  filter          = "jsonPayload.event_type=\"sre_agent_run\" AND jsonPayload.estimated_cost_usd > 0"
   value_extractor = "EXTRACT(jsonPayload.estimated_cost_usd)"
   metric_descriptor {
     metric_kind  = "DELTA"
@@ -104,7 +118,7 @@ resource "google_logging_metric" "token_usage" {
 resource "google_logging_metric" "confidence_band" {
   name             = "sre_agent/confidence_band"
   project          = var.project_a_id
-  filter           = "jsonPayload.confidence_band != \"\""
+  filter           = "jsonPayload.event_type=\"sre_agent_run\" AND jsonPayload.confidence_band != \"\""
   label_extractors = { "band" = "EXTRACT(jsonPayload.confidence_band)" }
   metric_descriptor {
     metric_kind  = "DELTA"
@@ -122,7 +136,7 @@ resource "google_logging_metric" "confidence_band" {
 resource "google_logging_metric" "loop_exit_reason" {
   name             = "sre_agent/loop_exit_reason"
   project          = var.project_a_id
-  filter           = "jsonPayload.loop_exit_reason != \"\""
+  filter           = "jsonPayload.event_type=\"sre_agent_run\" AND jsonPayload.loop_exit_reason != \"\""
   label_extractors = { "reason" = "EXTRACT(jsonPayload.loop_exit_reason)" }
   metric_descriptor {
     metric_kind  = "DELTA"
@@ -217,7 +231,7 @@ resource "google_logging_metric" "routing_failures" {
 resource "google_logging_metric" "unresolved_cluster" {
   name    = "sre_agent/unresolved_cluster"
   project = var.project_a_id
-  filter  = "jsonPayload.cluster_routing_method=\"unresolved\""
+  filter  = "jsonPayload.event_type=\"sre_agent_run\" AND jsonPayload.cluster_routing_method=\"unresolved\""
 
   metric_descriptor {
     metric_kind  = "DELTA"
@@ -252,7 +266,7 @@ resource "google_logging_metric" "evidence_storage_failures" {
 resource "google_logging_metric" "investigation_latency" {
   name            = "sre_agent/investigation_latency_seconds"
   project         = var.project_a_id
-  filter          = "jsonPayload.total_latency_s > 0"
+  filter          = "jsonPayload.event_type=\"sre_agent_run\" AND jsonPayload.total_latency_s > 0"
   value_extractor = "EXTRACT(jsonPayload.total_latency_s)"
   metric_descriptor {
     metric_kind  = "DELTA"
