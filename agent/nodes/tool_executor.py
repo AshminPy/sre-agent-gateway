@@ -42,11 +42,20 @@ def tool_executor(state: AgentState) -> dict:
         cluster_name=cluster_name,
     )
 
+    # issue #71: call_tool() can auto-fall back to a different tool/mcp_source than
+    # requested (GKE Remote MCP failure -> custom MCP, or issue #70's broadened retry).
+    # Its return value's own "tool"/"mcp_source" reflect what ACTUALLY executed --
+    # everything below (tool_history, latest_tool_result, the failure-logging block)
+    # must record THAT, not the pre-call request, or evidence/observability silently
+    # claim the wrong source ran.
+    executed_tool   = result.get("tool", tool_name)
+    executed_source = result.get("mcp_source", mcp_source)
+
     # Tool history — COMPACT only, NO raw output stored in state
     # Raw result lives ONLY in latest_tool_result until evidence_extractor clears it
     record = {
-        "tool":       tool_name,
-        "mcp_source": mcp_source,
+        "tool":       executed_tool,
+        "mcp_source": executed_source,
         "args":       args,
         "ok":         result["ok"],
         "duration_s": result.get("duration_s", 0),
@@ -60,7 +69,7 @@ def tool_executor(state: AgentState) -> dict:
     if not result["ok"]:
         log.warning(
             "tool_executor FAILED tool=%s blocked=%s error=%s",
-            tool_name, result.get("blocked", False), result.get("error"),
+            executed_tool, result.get("blocked", False), result.get("error"),
         )
         try:
             import os
@@ -70,8 +79,8 @@ def tool_executor(state: AgentState) -> dict:
                 {
                     "event":      "tool_failure",
                     "run_id":     state["run_id"],
-                    "tool":       tool_name,
-                    "mcp_source": mcp_source,
+                    "tool":       executed_tool,
+                    "mcp_source": executed_source,
                     "error":      result.get("error", ""),
                     "blocked":    result.get("blocked", False),
                     "step":       step,
@@ -83,11 +92,11 @@ def tool_executor(state: AgentState) -> dict:
             pass
         return {
             "tool_history": [record],
-            "errors":       [f"tool={tool_name} error={result.get('error')}"],
+            "errors":       [f"tool={executed_tool} error={result.get('error')}"],
             "latest_tool_result": {
                 "ok":         False,
-                "tool":       tool_name,
-                "mcp_source": mcp_source,
+                "tool":       executed_tool,
+                "mcp_source": executed_source,
                 "error":      result.get("error"),
                 "blocked":    result.get("blocked", False),
                 # ← No raw result stored
@@ -96,7 +105,7 @@ def tool_executor(state: AgentState) -> dict:
 
     log.info(
         "tool_executor ok tool=%s duration=%.1fs",
-        tool_name, result.get("duration_s", 0),
+        executed_tool, result.get("duration_s", 0),
     )
 
     return {
@@ -105,8 +114,8 @@ def tool_executor(state: AgentState) -> dict:
         # evidence_extractor writes it to GCS then sets latest_tool_result=None
         "latest_tool_result": {
             "ok":         True,
-            "tool":       tool_name,
-            "mcp_source": mcp_source,
+            "tool":       executed_tool,
+            "mcp_source": executed_source,
             "result":     result.get("result", {}),  # cleared after evidence_extractor
         },
     }
