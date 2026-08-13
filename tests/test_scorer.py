@@ -257,6 +257,36 @@ def test_root_cause_confidence_wrong_cluster_evidence_reduces_resource_identity_
     assert result["components"]["resource_identity_match"] < 1.0
 
 
+def test_root_cause_confidence_wrong_pod_same_cluster_reduces_resource_identity_match():
+    # issue #67: the function's own comment claimed cluster/namespace/pod were all checked,
+    # but only cluster ever was -- same cluster, wrong namespace/pod must now also penalize.
+    evidence_store = {
+        "ev_001": make_evidence("ev_001", "describe_pod_detail", cluster=CLUSTER,
+                                  key_facts=["x"], resource_id="namespace-a/pod-x"),
+    }
+    claims = build_claims({"claims": [{"text": "x", "claim_type": "observed_fact",
+                                         "supporting_evidence_ids": ["ev_001"]}]},
+                            ["ev_001"], evidence_store)
+    result = _rcc(claims, evidence_store=evidence_store, resolved_context={
+        "cluster_name": CLUSTER, "namespace": "namespace-b", "pod": "pod-y",
+    })
+    assert result["components"]["resource_identity_match"] < 1.0
+
+
+def test_root_cause_confidence_matching_pod_same_cluster_keeps_full_resource_identity_match():
+    evidence_store = {
+        "ev_001": make_evidence("ev_001", "describe_pod_detail", cluster=CLUSTER,
+                                  key_facts=["x"], resource_id="namespace-a/pod-x"),
+    }
+    claims = build_claims({"claims": [{"text": "x", "claim_type": "observed_fact",
+                                         "supporting_evidence_ids": ["ev_001"]}]},
+                            ["ev_001"], evidence_store)
+    result = _rcc(claims, evidence_store=evidence_store, resolved_context={
+        "cluster_name": CLUSTER, "namespace": "namespace-a", "pod": "pod-x",
+    })
+    assert result["components"]["resource_identity_match"] == 1.0
+
+
 # ── Outcome derivation ────────────────────────────────────────────────────
 
 def test_outcome_confirmed_requires_high_confidence_high_completeness_no_issues():
