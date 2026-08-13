@@ -15,7 +15,16 @@ from agent.confidence.policy import ConfidencePolicy
 
 
 def _evidence_domains_present(evidence_store: dict, tool_history: list) -> dict:
-    """Map evidence_id -> EvidenceDomain, via the tool that produced it."""
+    """Map evidence_id -> EvidenceDomain, via the tool that produced it.
+
+    issue #91: excludes failed tool calls. A failed call's evidence entry (empty
+    summary/key_facts -- see evidence_extractor.py's error-path construction) was
+    still being classified into a domain and could count toward
+    required_evidence_coverage/independent_corroboration even though zero real
+    evidence was ever retrieved. A failed call already correctly counts against
+    tool_success (score_investigation_completeness) -- it must not ALSO count as
+    domain coverage.
+    """
     tool_by_step: dict = {}
     for h in tool_history:
         step = h.get("step")
@@ -24,6 +33,8 @@ def _evidence_domains_present(evidence_store: dict, tool_history: list) -> dict:
 
     domains: dict = {}
     for ev_id, ev in evidence_store.items():
+        if not ev.get("ok", True):
+            continue
         tool = ev.get("tool") or tool_by_step.get(ev.get("step"))
         domains[ev_id] = classify_tool(tool or "")
     return domains

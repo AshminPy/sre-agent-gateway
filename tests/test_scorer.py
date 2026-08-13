@@ -83,6 +83,48 @@ def test_completeness_all_fresh_evidence_keeps_full_freshness():
     assert result["components"]["freshness"] == 1.0
 
 
+def test_completeness_failed_tool_call_evidence_does_not_count_toward_domain_coverage():
+    # issue #91: a failed get_k8s_logs call still produced an evidence entry
+    # (evidence_extractor.py's error path) that _evidence_domains_present used to
+    # classify into "previous_logs" regardless of ok=False -- crediting coverage
+    # for evidence that was never actually retrieved. Real production case:
+    # run_20260810_062832_bvoi, a genuine container.pods.getLogs permission denial.
+    evidence_store = {
+        "ev_001": make_evidence("ev_001", "describe_pod_detail",
+                                  summary="pod status", key_facts=["exit code 137"]),
+        "ev_002": make_evidence("ev_002", "list_events",
+                                  summary="events", key_facts=["OOMKilling"]),
+        "ev_003": make_evidence("ev_003", "get_previous_logs", ok=False,
+                                  summary="Tool failed: permission denied"),
+    }
+    tool_history = [
+        make_tool_history_entry(0, "describe_pod_detail"),
+        make_tool_history_entry(1, "list_events"),
+        make_tool_history_entry(2, "get_previous_logs", ok=False),
+    ]
+    state = make_state("OOMKilled", evidence_store, tool_history)
+    result = score_investigation_completeness(state, POLICY)
+    # OOMKilled requires kubernetes_status/kubernetes_events/previous_logs -- the
+    # failed get_previous_logs call must NOT satisfy the previous_logs requirement.
+    assert result["components"]["required_evidence_coverage"] < 1.0
+    assert "previous_logs" in result["gaps"][0] or any("previous_logs" in g for g in result["gaps"])
+
+
+def test_root_cause_confidence_claim_citing_only_failed_evidence_gets_no_corroboration():
+    # Same root cause, the other consumer of _evidence_domains_present: a claim's
+    # ONLY supporting evidence came from a failed tool call -- must not count as
+    # independent corroboration either.
+    evidence_store = {
+        "ev_001": make_evidence("ev_001", "get_previous_logs", ok=False,
+                                  summary="Tool failed: permission denied"),
+    }
+    claims = build_claims({"claims": [{"text": "x", "claim_type": "observed_fact",
+                                         "supporting_evidence_ids": ["ev_001"]}]},
+                            ["ev_001"], evidence_store)
+    result = _rcc(claims, evidence_store=evidence_store)
+    assert result["components"]["independent_corroboration"] == 0.0
+
+
 def test_completeness_zero_tool_calls_scores_zero_tool_success():
     state = make_state("OOMKilled", {}, [])
     result = score_investigation_completeness(state, POLICY)
