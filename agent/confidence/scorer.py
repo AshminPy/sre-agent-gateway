@@ -162,13 +162,32 @@ def score_root_cause_confidence(
         }
 
     # direct_support: fraction of root claims that are OBSERVED_FACT rather than inference/hyp.
-    fact_claims = [c for c in root_claims if c.claim_type == ClaimType.OBSERVED_FACT]
+    # issue #66: claim_type is the LLM's own self-assigned label (only enum-validated in
+    # claim_builder.py, never checked against evidence content) -- a claim self-labeled
+    # OBSERVED_FACT must ALSO be independently grounded (grounding_status == "grounded",
+    # set deterministically by _ground_claim) to count here. Otherwise the model could call
+    # anything an "observed fact" and get full direct_support credit for it regardless of
+    # whether the evidence actually supports it.
+    fact_claims = [
+        c for c in root_claims
+        if c.claim_type == ClaimType.OBSERVED_FACT and c.grounding_status == "grounded"
+    ]
+    mislabeled_facts = [
+        c for c in root_claims
+        if c.claim_type == ClaimType.OBSERVED_FACT and c.grounding_status != "grounded"
+    ]
     direct_support = len(fact_claims) / len(root_claims)
     components["direct_support"] = direct_support
     if direct_support < 1.0:
+        not_direct = len(root_claims) - len(fact_claims)
         reasons.append(
-            f"{len(root_claims) - len(fact_claims)}/{len(root_claims)} claim(s) are inference "
-            "or hypothesis, not directly observed"
+            f"{not_direct}/{len(root_claims)} claim(s) are inference or hypothesis, "
+            "or a self-labeled observed fact not independently grounded in evidence"
+        )
+    if mislabeled_facts:
+        reasons.append(
+            f"{len(mislabeled_facts)} claim(s) labeled 'observed_fact' by the model were not "
+            "independently grounded -- treated as unverified, not direct support"
         )
 
     # independent_corroboration: distinct evidence DOMAINS behind the claims, domain-weighted
