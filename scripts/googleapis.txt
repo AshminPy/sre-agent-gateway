@@ -16,7 +16,14 @@ cloudresourcemanager.googleapis.com
 logging.googleapis.com
 monitoring.googleapis.com
 oauth2.googleapis.com
-trace.googleapis.com
+# issue #130: was "trace.googleapis.com" -- confirmed live that host returns HTTP 404
+# (not a real API), and Google's own Cloud Trace API v2 reference docs confirm the
+# actual, documented service endpoint is cloudtrace.googleapis.com. The OTel
+# CloudTraceSpanExporter's real client (google.cloud.trace_v2 TraceServiceClient)
+# connects to cloudtrace.googleapis.com, confirmed via its own DEFAULT_ENDPOINT --
+# the wrong hostname being registered here meant Cloud Trace egress was blocked by
+# the gateway's default-deny policy exactly as if nothing had been registered at all.
+cloudtrace.googleapis.com
 telemetry.googleapis.com
 iap.googleapis.com
 storage.googleapis.com

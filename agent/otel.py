@@ -68,14 +68,50 @@ def get_tracer():
         )
 
         provider = TracerProvider(resource=resource)
-        provider.add_span_processor(
-            BatchSpanProcessor(CloudTraceSpanExporter(project_id=project_id))
-        )
+        processor = BatchSpanProcessor(CloudTraceSpanExporter(project_id=project_id))
+        provider.add_span_processor(processor)
         trace.set_tracer_provider(provider)
 
-        _provider = provider
-        _tracer = trace.get_tracer("sre-agent-gcp")
-        log.info("OpenTelemetry Cloud Trace exporter initialized project=%s", project_id)
+        # issue #130 (2nd follow-up): set_tracer_provider() can only succeed ONCE per
+        # process and silently no-ops (logs its own warning, doesn't raise) on every
+        # later call -- confirmed live that Agent Engine's own managed runtime also
+        # calls it, during its own startup bootstrap, shortly after ours. Storing our
+        # local `provider` in `_provider` and just assuming it's the one actually
+        # backing spans would mean flush_traces() could be flushing an orphaned
+        # provider while real spans go through whichever provider actually won the
+        # race -- verify which one actually won instead of assuming.
+        active_provider = trace.get_tracer_provider()
+        provider_installed = active_provider is provider
+        log.info(
+            "otel provider check: provider_installed=%s active_provider_type=%s configured_provider_type=%s",
+            provider_installed, type(active_provider).__name__, type(provider).__name__,
+        )
+
+        if provider_installed:
+            _provider = provider
+            _tracer = trace.get_tracer("sre-agent-gcp")
+            log.info("OpenTelemetry Cloud Trace exporter initialized project=%s", project_id)
+        elif hasattr(active_provider, "add_span_processor"):
+            # Another provider won the race, but it's a real SDK TracerProvider (not a
+            # no-op stub) -- attach our exporter to the one actually in effect instead
+            # of flushing an orphan no one reads spans from.
+            active_provider.add_span_processor(processor)
+            _provider = active_provider
+            _tracer = trace.get_tracer("sre-agent-gcp")
+            log.info(
+                "OpenTelemetry Cloud Trace exporter attached to existing active provider "
+                "project=%s active_provider_type=%s",
+                project_id, type(active_provider).__name__,
+            )
+        else:
+            log.warning(
+                "OpenTelemetry disabled: our TracerProvider was rejected and the "
+                "active provider (%s) does not support add_span_processor -- refusing "
+                "to flush an orphan provider no spans actually go through",
+                type(active_provider).__name__,
+            )
+            return None
+
         return _tracer
 
     except Exception as exc:
@@ -107,7 +143,12 @@ def flush_traces(timeout_millis: int = 5000) -> None:
     """Flush spans before Agent Engine response returns."""
     try:
         if _provider is not None:
-            _provider.force_flush(timeout_millis=timeout_millis)
+            # issue #130 diagnostic: force_flush()'s return value used to be discarded
+            # entirely. It returns False (not an exception) on a timeout, which would
+            # explain zero traces landing in Cloud Trace with zero errors anywhere in
+            # the logs -- log the real result so that is confirmed or ruled out.
+            flushed = _provider.force_flush(timeout_millis=timeout_millis)
+            log.info("flush_traces result=%s timeout_millis=%d", flushed, timeout_millis)
     except Exception as exc:
         log.warning("OpenTelemetry force_flush failed: %s", exc)
 

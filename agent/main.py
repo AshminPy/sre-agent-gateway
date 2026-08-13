@@ -446,6 +446,16 @@ def investigate(payload: dict) -> dict:
             with tracer.start_as_current_span(
                 "sre_agent.investigation", record_exception=False, set_status_on_exception=False,
             ) as span:
+                # issue #130 (protocol follow-up): log the outer span's own recording/
+                # sampling state directly, on the real production span -- proves (or
+                # disproves) end-to-end export health without creating an extra
+                # synthetic span that would otherwise show up in Cloud Trace on every
+                # container start for no reason. Metadata only, no content.
+                span_ctx = span.get_span_context()
+                log.info(
+                    "otel outer span check: recording=%s trace_id_valid=%s sampled=%s",
+                    span.is_recording(), span_ctx.is_valid, span_ctx.trace_flags.sampled,
+                )
                 set_span_attributes(span, {
                     # issue #76 (compliance follow-up): sre.query used to include up to
                     # 250 chars of the raw user query -- investigation content, not
