@@ -77,7 +77,14 @@ locals {
       # *without* this OTEL config is what produced the OTLP "Context has already
       # been used to create a Connection" error).
       GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY         = "true"
-      OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = "true"
+      # issue #76: this flag (standard OTel GenAI semantic-convention instrumentation)
+      # included the actual prompt/response TEXT in trace spans -- built from real k8s
+      # evidence (pod logs, events), at 100% sampling, live and undocumented. Disabled
+      # deliberately after review: Cloud Trace stays as token-count/latency/span-structure
+      # tracing only (OTEL_TRACES_SAMPLER/_ARG below are UNCHANGED -- that's sampling
+      # rate, a separate concern from content capture, and normal performance tracing is
+      # still wanted at full rate). See docs/trace-content-capture.md.
+      OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = "false"
       OTEL_TRACES_SAMPLER                                = "parentbased_traceidratio"
       OTEL_TRACES_SAMPLER_ARG                            = "1.0"
       # Make gateway-denied (403) MCP tool calls fail fast instead of hanging the

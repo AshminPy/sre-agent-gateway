@@ -179,3 +179,46 @@ def test_investigate_resets_the_shared_adapter_session_before_each_run(monkeypat
     usage = llm_facade.get_session_usage()
     assert usage["session_calls"] == 0
     assert usage["session_tokens_total"] == 0
+
+
+def test_llm_json_no_json_found_logs_length_not_content(monkeypatch, caplog):
+    # issue #76: this failure path used to log up to 200 chars of the model's raw
+    # response text (built from real k8s evidence) -- must log only metadata now.
+    import logging
+    adapter = GeminiAdapter(model="gemini-2.5-flash")
+    secret_text = "SENSITIVE pod log content: password=hunter2, db_host=10.1.2.3"
+    monkeypatch.setattr(adapter, "llm", lambda *a, **k: (secret_text, {
+        "input_tokens": 1, "cached_input_tokens": 0, "output_tokens": 1,
+        "reasoning_tokens": 0, "tool_tokens": 0, "total_tokens": 2,
+        "billable_output_tokens": 1, "cost_usd": 0.0, "provider": "gemini",
+        "model": "gemini-2.5-flash", "duration_s": 0.01,
+    }))
+    with caplog.at_level(logging.WARNING):
+        result, _ = adapter.llm_json("sys", "user")
+
+    assert result == {}
+    assert "SENSITIVE" not in caplog.text
+    assert "hunter2" not in caplog.text
+    assert "10.1.2.3" not in caplog.text
+    assert "length=" in caplog.text
+
+
+def test_llm_json_repair_failure_logs_length_not_content(monkeypatch, caplog):
+    import logging
+    adapter = GeminiAdapter(model="gemini-2.5-flash")
+    # Starts with "{" so it reaches the repair path, but is unparseable JSON even
+    # after repair -- and contains content that must never reach the log.
+    secret_text = '{"note": "SENSITIVE db_host=10.1.2.3 unterminated'
+    monkeypatch.setattr(adapter, "llm", lambda *a, **k: (secret_text, {
+        "input_tokens": 1, "cached_input_tokens": 0, "output_tokens": 1,
+        "reasoning_tokens": 0, "tool_tokens": 0, "total_tokens": 2,
+        "billable_output_tokens": 1, "cost_usd": 0.0, "provider": "gemini",
+        "model": "gemini-2.5-flash", "duration_s": 0.01,
+    }))
+    with caplog.at_level(logging.WARNING):
+        result, _ = adapter.llm_json("sys", "user")
+
+    assert result == {}
+    assert "SENSITIVE" not in caplog.text
+    assert "10.1.2.3" not in caplog.text
+    assert "length=" in caplog.text
