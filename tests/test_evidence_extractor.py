@@ -58,6 +58,9 @@ def test_successful_evidence_is_classified_by_the_real_scorer_not_unknown(monkey
     assert ev_entry["tool"] == "describe_pod_detail"
     assert "source" not in ev_entry, "no code reads 'source' from evidence entries -- must not resurface"
 
+    # issue #68: a real per-evidence collection timestamp must be captured.
+    assert isinstance(ev_entry.get("collected_at"), float)
+
     domains = _evidence_domains_present(evidence_store, tool_history=[])
     assert domains["ev_001"] == EvidenceDomain.KUBERNETES_STATUS
     assert classify_tool(ev_entry["tool"]) != EvidenceDomain.UNKNOWN
@@ -75,6 +78,7 @@ def test_failed_tool_call_evidence_is_also_classified_correctly(monkeypatch):
     assert ev_entry["tool"] == "list_events"
     assert "source" not in ev_entry
     assert classify_tool(ev_entry["tool"]) == EvidenceDomain.KUBERNETES_EVENTS
+    assert isinstance(ev_entry.get("collected_at"), float)  # issue #68: error path too
 
 
 def test_full_investigation_completeness_score_reflects_real_evidence_domains(monkeypatch):

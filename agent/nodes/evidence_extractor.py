@@ -42,6 +42,15 @@ def evidence_extractor(state: AgentState) -> dict:
     existing_count = len(state.get("evidence_ids", []))
     ev_id = f"ev_{existing_count + 1:03d}"
 
+    # issue #68: real wall-clock time this evidence was collected -- scorer.py's freshness
+    # and time_correlation components previously had no per-evidence timestamp to work with
+    # at all (freshness fell back to a whole-investigation proxy; time_correlation was a
+    # flat binary). This is collection time, not the age of the underlying k8s log/event
+    # data itself (that would need parsing timestamps out of each tool's raw output, a
+    # separate, larger change) -- still a real, usable signal that didn't exist before.
+    import time
+    collected_at = time.time()
+
     if not latest.get("ok"):
         error_data = {
             "evidence_id": ev_id,
@@ -64,6 +73,7 @@ def evidence_extractor(state: AgentState) -> dict:
             "mcp_source": mcp_source,
             "cluster": ctx.get("cluster_name", ""),
             "region": ctx.get("cluster_region", ""),
+            "collected_at": collected_at,
             "summary": _safe_text(f"Tool failed: {latest.get('error', 'unknown')}", 500),
             "key_facts": [],
             "raw_ref": raw_ref,
@@ -134,6 +144,7 @@ def evidence_extractor(state: AgentState) -> dict:
         "mcp_source": mcp_source,
         "cluster": ctx.get("cluster_name", ""),
         "region": ctx.get("cluster_region", ""),
+        "collected_at": collected_at,
         "resource_type": extracted.get("resource_type", "pod"),
         "resource_id": extracted.get("resource_id", ""),
         "summary": _safe_text(extracted.get("summary", ""), 500),

@@ -88,6 +88,14 @@ CUSTOM_K8S_TOOLS = frozenset({
 
 ALLOWED_TOOLS = GKE_REMOTE_TOOLS | CUSTOM_K8S_TOOLS
 
+# issue #72: which custom MCP tools (mcp/server.py) actually accept a pod_name param --
+# confirmed against each tool's real @guarded(name_fields=...) signature, not assumed.
+# The GKE-Remote-failure fallback path used to force-include pod_name in fallback_args
+# for EVERY target, even ones like list_pods/list_nodes that don't take it at all.
+_CUSTOM_TOOLS_ACCEPTING_POD_NAME = frozenset({
+    "describe_pod_detail", "get_current_logs", "get_previous_logs", "list_events",
+})
+
 # Write-style actions — always blocked
 BLOCKED_ACTIONS = frozenset({
     "delete", "create", "patch", "update", "apply",
@@ -322,16 +330,69 @@ def _build_gke_args(
 
 
 def _map_to_custom_tool(gke_tool: str) -> Optional[str]:
-    """Map GKE Remote MCP tool → equivalent custom K8s MCP tool."""
+    """Map GKE Remote MCP tool → equivalent custom K8s MCP tool.
+
+    issue #72: list_k8s_api_resources (lists available K8s API resource TYPES, e.g.
+    `kubectl api-resources`) and get_k8s_cluster_info (cluster metadata, no
+    namespace/pod involved) used to both map to list_pods -- semantically invalid,
+    and list_pods doesn't even accept the pod_name arg the fallback path force-sent.
+    No real equivalent exists in CUSTOM_K8S_TOOLS for either -- omitted entirely so
+    the fallback attempt is correctly skipped (see the `fallback_tool` check at each
+    call site) and the real error surfaces, instead of silently returning pod data
+    for an unrelated query.
+    """
     mapping = {
         "list_k8s_events":       "list_events",
         "describe_k8s_resource": "describe_pod_detail",
         "get_k8s_resource":      "describe_pod_detail",
         "get_k8s_logs":          "get_current_logs",
-        "list_k8s_api_resources": "list_pods",
-        "get_k8s_cluster_info":  "list_pods",
     }
     return mapping.get(gke_tool)
+
+
+def _is_not_found_result(content: Any) -> bool:
+    """issue #70: GKE Remote MCP returns HTTP 200 with the underlying kubectl-style
+    error TEXT embedded in the result body for a not-found resource -- not a structured
+    error field, not a non-200 status. Confirmed via a real E2E failure (docs/testing/
+    e2e-honest-baseline-2026-08-09-notification-relay.md):
+    {"output": "Error from server (NotFound): Pod \"notification-relay\" not found"}.
+    """
+    text = content if isinstance(content, str) else json.dumps(content)
+    return "notfound" in text.lower()
+
+
+def _try_custom_mcp_fallback(
+    is_gke_remote: bool,
+    cluster_info: dict,
+    tool_name: str,
+    namespace: str,
+    pod_name: str,
+    run_id: str,
+    cluster_name: str,
+) -> Optional[Dict[str, Any]]:
+    """issue #72: centralizes the GKE-Remote-failure fallback so it fires from EVERY
+    real failure mode (non-200 status, empty/unparseable response, network exception)
+    -- previously only the non-200 status branch attempted it, contradicting the
+    module's own documented "Auto-falls-back to custom K8s MCP if GKE Remote fails."
+    Also only includes pod_name in the fallback call's args when the target tool
+    actually accepts it (_CUSTOM_TOOLS_ACCEPTING_POD_NAME) -- it used to be
+    force-included for every target, even ones like list_pods that don't take it.
+
+    Returns the fallback call's result dict, or None if no fallback applies (not a
+    GKE Remote call, no valid mapped equivalent tool, or no fallback source
+    configured) -- callers fall through to their own error result in that case.
+    """
+    if not is_gke_remote:
+        return None
+    fallback      = cluster_info.get("mcp_fallback", "k8s_mcp")
+    fallback_tool = _map_to_custom_tool(tool_name)
+    if not (fallback and fallback_tool and fallback_tool in CUSTOM_K8S_TOOLS):
+        return None
+    log.info("call_tool: GKE Remote failed → fallback %s.%s", fallback, fallback_tool)
+    fallback_args: Dict[str, Any] = {"namespace": namespace}
+    if pod_name and fallback_tool in _CUSTOM_TOOLS_ACCEPTING_POD_NAME:
+        fallback_args["pod_name"] = pod_name
+    return call_tool(fallback, fallback_tool, fallback_args, run_id, cluster_name)
 
 
 def call_tool(
@@ -340,12 +401,15 @@ def call_tool(
     arguments: Dict[str, Any],
     run_id: str = "",
     cluster_name: str = "",
+    _broadened_retry: bool = False,
 ) -> Dict[str, Any]:
     """
     Call one tool on one MCP source.
     Validates allowlist before any network call.
     Builds correct args for GKE Remote MCP (parent field required).
     Auto-falls-back to custom K8s MCP if GKE Remote fails.
+    _broadened_retry (issue #70, internal use only): set on the recursive call made
+    when a name-scoped list_k8s_events returns NotFound, to prevent retrying twice.
     """
     validation_error = _validate_tool(tool_name, arguments)
     if validation_error:
@@ -359,6 +423,11 @@ def call_tool(
     cluster_info  = _get_cluster_registry().get(cluster_name, {})
     source_config = MCP_REGISTRY.get(mcp_source, {})
     is_gke_remote = (mcp_source == "gke_remote_mcp")
+    # Always defined (not just on the GKE-remote branch below) -- _try_custom_mcp_fallback
+    # is called from every failure path regardless of which branch ran, and short-circuits
+    # via is_gke_remote before ever reading these on the custom-MCP path.
+    namespace = ""
+    pod_name  = ""
 
     if is_gke_remote:
         url     = source_config.get("url", "https://container.googleapis.com/mcp/read-only")
@@ -440,21 +509,11 @@ def call_tool(
                 mcp_source, tool_name, error_msg[:200],
             )
 
-            # Auto-fallback to custom MCP on GKE Remote errors
-            if is_gke_remote:
-                fallback      = cluster_info.get("mcp_fallback", "k8s_mcp")
-                fallback_tool = _map_to_custom_tool(tool_name)
-                if fallback and fallback_tool and fallback_tool in CUSTOM_K8S_TOOLS:
-                    log.info(
-                        "call_tool: GKE Remote failed → fallback %s.%s",
-                        fallback, fallback_tool,
-                    )
-                    # Pass original namespace/pod as custom MCP args
-                    fallback_args = {
-                        "namespace": namespace,
-                        "pod_name":  pod_name,
-                    }
-                    return call_tool(fallback, fallback_tool, fallback_args, run_id, cluster_name)
+            fallback_result = _try_custom_mcp_fallback(
+                is_gke_remote, cluster_info, tool_name, namespace, pod_name, run_id, cluster_name,
+            )
+            if fallback_result is not None:
+                return fallback_result
 
             return {
                 "ok": False, "error": error_msg,
@@ -464,10 +523,47 @@ def call_tool(
         # Parse SSE or direct JSON response
         content = _parse_response(resp.text)
         if content is not None:
+            # issue #70: a name-scoped lookup returning NotFound is not proof the
+            # resource doesn't exist -- the caller-supplied name hint itself can be
+            # wrong (real E2E failure: a Deployment-name hint that didn't match the
+            # actual generated pod name, both Pod and ReplicaSet lookups 404'd, and
+            # the agent wrongly concluded "workload doesn't exist"). list_k8s_events
+            # is the one GKE Remote MCP tool whose name/namespace filters are BOTH
+            # optional (describe_k8s_resource/get_k8s_resource REQUIRE name per the
+            # MCP schema -- can't be broadened the same way, see _build_gke_args).
+            # Retry once, unscoped within the same namespace, before accepting
+            # NotFound as the final answer.
+            if (
+                is_gke_remote and not _broadened_retry
+                and tool_name == "list_k8s_events" and pod_name
+                and _is_not_found_result(content)
+            ):
+                log.info(
+                    "call_tool: list_k8s_events name=%s returned NotFound -- retrying "
+                    "unscoped (namespace-wide) before concluding non-existence",
+                    pod_name,
+                )
+                broadened = call_tool(
+                    mcp_source, tool_name,
+                    {k: v for k, v in arguments.items() if k not in ("name", "pod_name", "pod")},
+                    run_id, cluster_name, _broadened_retry=True,
+                )
+                broadened["broadened_after_not_found"] = pod_name
+                return broadened
+
             return {
                 "ok": True, "result": content,
                 "tool": tool_name, "mcp_source": mcp_source, "duration_s": duration,
             }
+
+        # issue #72: empty/unparseable responses used to return this error directly with
+        # no fallback attempt, contradicting the documented fallback behavior -- only a
+        # non-200 HTTP status ever triggered it before.
+        fallback_result = _try_custom_mcp_fallback(
+            is_gke_remote, cluster_info, tool_name, namespace, pod_name, run_id, cluster_name,
+        )
+        if fallback_result is not None:
+            return fallback_result
 
         return {
             "ok": False, "error": "Empty response",
@@ -475,6 +571,14 @@ def call_tool(
         }
 
     except Exception as e:
+        # issue #72: network-level exceptions (timeout, connection refused, DNS failure,
+        # etc.) used to return the error directly with no fallback attempt either.
+        fallback_result = _try_custom_mcp_fallback(
+            is_gke_remote, cluster_info, tool_name, namespace, pod_name, run_id, cluster_name,
+        )
+        if fallback_result is not None:
+            return fallback_result
+
         return {
             "ok": False, "error": str(e),
             "tool": tool_name, "mcp_source": mcp_source,
