@@ -153,18 +153,21 @@ def _write_observability_log(state: AgentState, rca: dict, usage: dict) -> None:
         tokens_total  = tok["tokens_total"]
         cost_usd      = tok["estimated_cost_usd"]
 
-        # Session-level totals — cross-check: for single Agent Engine requests these
-        # should equal tokens_total above. A mismatch means an LLM call happened outside
-        # the normal node flow. Fetched here (not after log_struct) so model_latency_s
-        # can be included in the entry below.
+        # Session-level totals — cross-check: should equal tokens_total above. A
+        # mismatch means an LLM call happened outside the normal node flow. Fetched
+        # here (not after log_struct) so model_latency_s can be included in the entry
+        # below. issue #74 (fixed): the adapter instance is cached process-wide and
+        # reused across investigations -- agent/main.py's investigate() now calls
+        # reset_session() at the start of every investigation, so this is genuinely
+        # this investigation's own total, not a cross-investigation accumulation.
         session = get_session_usage()
 
         # Latency — PRODUCTION-LAUNCH-PLAN.md Priority 10 ("MCP/model/total latency —
         # per-tool duration_s is captured then discarded"). mcp_latency_s aggregates the
         # per-tool durations tool_executor.py already records in tool_history;
-        # model_latency_s is the cumulative Gemini call time for this process (see
-        # gemini_client.get_session_usage — same single-request-per-process assumption as
-        # the token cross-check above); total_latency_s is measured wall-clock since
+        # model_latency_s is the cumulative Gemini call time for THIS investigation
+        # (gemini_client.get_session_usage, reset per-investigation as of issue #74 --
+        # see the comment above); total_latency_s is measured wall-clock since
         # get_initial_state() set investigation["started_at"].
         mcp_latency_s = round(
             sum(h.get("duration_s", 0) or 0 for h in state.get("tool_history", [])), 3

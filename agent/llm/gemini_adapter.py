@@ -63,6 +63,16 @@ class GeminiAdapter(LLMClient):
         self.price_output_per_1m = float(os.environ.get("GEMINI_PRICE_OUTPUT", "0.0"))
 
         self._client = None
+        self.reset_session()
+
+    def reset_session(self) -> None:
+        # issue #74: this instance is cached process-wide (agent.llm.registry) and
+        # reused across every investigation a warm process handles -- these counters
+        # used to accumulate forever (module-level globals before the LLM-adapter
+        # refactor, now instance attributes on the same shared cached instance --
+        # same underlying bug, different mechanism). agent/main.py's investigate()
+        # calls this once at the start of every investigation so get_session_usage()
+        # means "this investigation," not "everything since process start."
         self._session_input = 0
         self._session_cached_input = 0
         self._session_output = 0

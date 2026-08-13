@@ -127,3 +127,55 @@ def test_capabilities_declare_tool_calling_and_structured_output():
     adapter = GeminiAdapter(model="gemini-2.5-pro")
     assert CAPABILITY_TOOL_CALLING in adapter.capabilities
     assert CAPABILITY_STRUCTURED_OUTPUT in adapter.capabilities
+
+
+def test_reset_session_zeros_all_counters():
+    # issue #74: the adapter instance is cached process-wide and reused across
+    # investigations -- reset_session() must fully zero every session counter,
+    # not just some, or a stale field would leak into the next investigation.
+    adapter = GeminiAdapter(model="gemini-2.5-flash")
+    adapter._session_input = 100
+    adapter._session_cached_input = 20
+    adapter._session_output = 50
+    adapter._session_reasoning = 10
+    adapter._session_tool = 5
+    adapter._session_total = 185
+    adapter._session_calls = 3
+    adapter._session_duration_s = 4.2
+
+    adapter.reset_session()
+
+    usage = adapter.get_session_usage()
+    assert usage["session_tokens_input"] == 0
+    assert usage["session_tokens_cached_input"] == 0
+    assert usage["session_tokens_output"] == 0
+    assert usage["session_tokens_reasoning"] == 0
+    assert usage["session_tokens_tool"] == 0
+    assert usage["session_tokens_total"] == 0
+    assert usage["session_calls"] == 0
+    assert usage["session_model_latency_s"] == 0.0
+
+
+def test_a_fresh_adapter_instance_starts_at_zero_session_usage():
+    # reset_session() is also called from __init__ -- a brand new instance must
+    # never report stale/uninitialized values.
+    usage = GeminiAdapter(model="gemini-2.5-flash").get_session_usage()
+    assert usage["session_calls"] == 0
+    assert usage["session_tokens_total"] == 0
+
+
+def test_investigate_resets_the_shared_adapter_session_before_each_run(monkeypatch):
+    # End-to-end proof of the actual bug: without agent.main.investigate() calling
+    # reset_session(), a second investigation on the same warm process would report
+    # the FIRST investigation's leftover session totals mixed into its own.
+    import agent.llm as llm_facade
+
+    llm_facade._client._session_calls = 7  # simulate leftover state from a prior run
+    llm_facade._client._session_total = 12345
+
+    from agent.llm import reset_session
+    reset_session()
+
+    usage = llm_facade.get_session_usage()
+    assert usage["session_calls"] == 0
+    assert usage["session_tokens_total"] == 0

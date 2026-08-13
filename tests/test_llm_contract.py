@@ -41,6 +41,9 @@ class FakeLLMClient(LLMClient):
     def get_session_usage(self) -> dict:
         return {"session_calls": self.calls}
 
+    def reset_session(self) -> None:
+        self.calls = 0
+
 
 @pytest.fixture
 def fake_registry(monkeypatch):

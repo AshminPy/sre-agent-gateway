@@ -43,6 +43,14 @@ def get_session_usage() -> dict:
     return _client.get_session_usage()
 
 
+def reset_session() -> None:
+    """issue #74: call once at the start of every investigation (agent/main.py's
+    investigate() does this) -- the adapter instance is cached process-wide, so
+    without this reset, get_session_usage() accumulates across every investigation
+    a warm/reused process handles, not just the current one."""
+    _client.reset_session()
+
+
 __all__ = [
     "ALL_CAPABILITIES",
     "CAPABILITY_STRUCTURED_OUTPUT",
@@ -53,5 +61,6 @@ __all__ = [
     "get_session_usage",
     "llm",
     "llm_json",
+    "reset_session",
     "validate_capabilities",
 ]

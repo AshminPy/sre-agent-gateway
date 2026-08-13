@@ -391,6 +391,14 @@ def investigate(payload: dict) -> dict:
     Core investigation function.
     Called by Agent Runtime query() and by run.py locally.
     """
+    # issue #74: the LLM adapter instance is cached process-wide (agent.llm.registry) --
+    # without this reset, its session token/cost/call/latency counters accumulate across
+    # EVERY investigation a warm/reused process handles, not just this one. This is the
+    # one real entry point for every investigation (this function's own docstring), so
+    # resetting here scopes those counters correctly for the rest of the run.
+    from agent.llm import reset_session
+    reset_session()
+
     started_at = time.time()
 
     query      = payload.get("query", "")
