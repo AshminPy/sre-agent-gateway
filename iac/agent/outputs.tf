@@ -76,6 +76,11 @@ output "custom_mcp_url" {
   value       = var.enable_custom_mcp ? google_cloud_run_v2_service.mcp[0].uri : null
 }
 
+output "custom_mcp_runtime_sa_email" {
+  description = "Email of the custom Cloud Run MCP's runtime SA (empty when enable_custom_mcp = false) -- feeds iac/gke-access's custom_mcp_runtime_sa_email var so the fallback MCP gets cross-project GKE read access, including pod-log read (issue #92)."
+  value       = var.enable_custom_mcp ? google_service_account.mcp_runtime[0].email : ""
+}
+
 output "gke_remote_mcp_url" {
   description = "Google-managed GKE Remote MCP endpoint (the agent's primary MCP source)."
   value       = local.gke_remote_mcp_url

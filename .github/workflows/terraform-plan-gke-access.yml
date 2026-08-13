@@ -1,0 +1,86 @@
+name: terraform-plan-gke-access
+
+# Plan the iac/gke-access stack on pull requests. Same WIF identity as
+# terraform-plan.yml (agent stack) -- one deployer SA, scoped per-project via
+# each stack's own role list. Configure these repo secrets first:
+#   GCP_WIF_PROVIDER / GCP_DEPLOYER_SA  (same as the agent stack)
+#   GCP_PROJECT_A_ID / GCP_PROJECT_B_ID / GCP_REGION
+#   TFSTATE_BUCKET
+#
+# One-time prerequisite before the FIRST apply of this stack from CI:
+#   bash scripts/bootstrap_gke_access_deployer.sh
+# (grants the deployer SA its Project B roles -- see that script's header for
+# why this can't be self-granted from CI on the very first run.)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "iac/gke-access/**"
+      - ".github/workflows/terraform-*-gke-access.yml"
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: iac/gke-access
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOYER_SA }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.0"
+
+      - name: Init
+        run: terraform init -backend-config="bucket=${{ secrets.TFSTATE_BUCKET }}" -backend-config="prefix=gke-access"
+
+      - name: Validate
+        run: terraform validate
+
+      # Terraform-native tests (iac/gke-access/tests/*.tftest.hcl) -- real
+      # root module, command=plan only, same pattern as iac/agent's tests.
+      - name: Terraform test
+        run: terraform test
+
+      # Reads the agent stack's own state (separate backend prefix) to get the
+      # custom MCP fallback's runtime SA email. Without this, custom_mcp_pod_logs
+      # / custom_mcp_crossproject in crossproject_iam.tf silently stay count=0
+      # even when ENABLE_CUSTOM_MCP=true -- found in review while wiring up this
+      # CI workflow (the var was never passed anywhere before, local or CI).
+      # Empty/failed output (feature off, or agent stack not yet applied) is a
+      # safe no-op -- the two grants it feeds are already count=0-safe for "".
+      - name: Read custom MCP runtime SA email
+        id: mcp_sa
+        run: |
+          terraform -chdir=../agent init -input=false \
+            -backend-config="bucket=${{ secrets.TFSTATE_BUCKET }}" -backend-config="prefix=agent" >/dev/null
+          EMAIL=$(terraform -chdir=../agent output -raw custom_mcp_runtime_sa_email 2>/dev/null || true)
+          echo "email=$EMAIL" >> "$GITHUB_OUTPUT"
+
+      # create_gke_cluster's default in variables.tf is TRUE -- omitting this
+      # var would make CI try to create a second demo cluster on top of the
+      # real one that already exists (same class of bug as issue #116's
+      # missing -var flags in the agent stack's plan workflow). Pinned here
+      # explicitly, matching the gitignored local terraform.tfvars value.
+      - name: Plan
+        run: |
+          terraform plan -no-color \
+            -var="project_a_id=${{ secrets.GCP_PROJECT_A_ID }}" \
+            -var="project_b_id=${{ secrets.GCP_PROJECT_B_ID }}" \
+            -var="region=${{ secrets.GCP_REGION }}" \
+            -var="create_gke_cluster=false" \
+            -var="gke_cluster_name=sre-test-cluster" \
+            -var="deployer_sa_email=${{ secrets.GCP_DEPLOYER_SA }}" \
+            -var="custom_mcp_runtime_sa_email=${{ steps.mcp_sa.outputs.email }}"

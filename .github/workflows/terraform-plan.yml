@@ -16,7 +16,8 @@ on:
     paths:
       - "agent/**"
       - "iac/agent/**"
-      - ".github/workflows/terraform-*.yml"
+      - ".github/workflows/terraform-plan.yml"
+      - ".github/workflows/terraform-apply.yml"
 
 permissions:
   contents: read

@@ -1,0 +1,74 @@
+name: terraform-apply-gke-access
+
+# Apply the iac/gke-access stack on push to main. Requires the same secrets
+# as terraform-plan-gke-access.yml. The `production` environment gives you a
+# manual approval gate (configure it in repo settings), same as
+# terraform-apply.yml for the agent stack.
+#
+# One-time prerequisite before the FIRST run of this workflow:
+#   bash scripts/bootstrap_gke_access_deployer.sh
+# Without it, this apply fails on its own deployer_b_roles /
+# pod_log_reader custom-role grants -- the deployer SA needs
+# resourcemanager.projectIamAdmin + iam.roleAdmin in Project B before it can
+# grant/manage anything there. See that script's header for why this can't
+# be self-granted from CI on the very first run.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "iac/gke-access/**"
+      - ".github/workflows/terraform-*-gke-access.yml"
+  workflow_dispatch: {}
+
+# Never run two applies at once against the same state.
+concurrency:
+  group: terraform-apply-gke-access
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: iac/gke-access
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOYER_SA }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.0"
+
+      - name: Init
+        run: terraform init -backend-config="bucket=${{ secrets.TFSTATE_BUCKET }}" -backend-config="prefix=gke-access"
+
+      # See terraform-plan-gke-access.yml's matching step for why this exists.
+      - name: Read custom MCP runtime SA email
+        id: mcp_sa
+        run: |
+          terraform -chdir=../agent init -input=false \
+            -backend-config="bucket=${{ secrets.TFSTATE_BUCKET }}" -backend-config="prefix=agent" >/dev/null
+          EMAIL=$(terraform -chdir=../agent output -raw custom_mcp_runtime_sa_email 2>/dev/null || true)
+          echo "email=$EMAIL" >> "$GITHUB_OUTPUT"
+
+      - name: Apply
+        run: |
+          terraform apply -auto-approve \
+            -var="project_a_id=${{ secrets.GCP_PROJECT_A_ID }}" \
+            -var="project_b_id=${{ secrets.GCP_PROJECT_B_ID }}" \
+            -var="region=${{ secrets.GCP_REGION }}" \
+            -var="create_gke_cluster=false" \
+            -var="gke_cluster_name=sre-test-cluster" \
+            -var="deployer_sa_email=${{ secrets.GCP_DEPLOYER_SA }}" \
+            -var="custom_mcp_runtime_sa_email=${{ steps.mcp_sa.outputs.email }}"

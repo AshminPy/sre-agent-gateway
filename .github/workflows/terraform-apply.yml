@@ -11,7 +11,8 @@ on:
       - "agent/**"
       - "mcp/**"
       - "iac/agent/**"
-      - ".github/workflows/terraform-*.yml"
+      - ".github/workflows/terraform-plan.yml"
+      - ".github/workflows/terraform-apply.yml"
 
 # Never run two applies at once against the same state.
 concurrency:
