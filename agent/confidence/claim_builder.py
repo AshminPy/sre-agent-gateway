@@ -18,6 +18,19 @@ _CITATION_STOP = {
     "what", "when", "which", "also", "more", "than", "some", "into",
 }
 
+# issue #65: these SRE/K8s terms are so common across unrelated incidents that sharing
+# ONE of them between a claim and its cited evidence is not meaningful support -- e.g.
+# "the pod is CrashLooping" and "the pod is Pending" both contain "pod" while describing
+# completely different situations. Excluded from the strong-overlap check below; a claim
+# whose ONLY shared words are in this set gets partial credit, not full grounding.
+_DOMAIN_GENERIC = {
+    "pod", "pods", "node", "nodes", "container", "containers", "cluster",
+    "error", "errors", "failed", "failure", "status", "state", "event",
+    "events", "namespace", "deployment", "deployments", "service",
+    "services", "resource", "resources", "log", "logs", "issue", "problem",
+    "running", "pending", "restart", "restarts", "restarting",
+}
+
 _VALID_CLAIM_TYPES = {t.value for t in ClaimType}
 
 
@@ -48,13 +61,29 @@ def _ground_claim(claim: Claim, known_evidence_ids: set, evidence_store: dict) -
         facts_text = " ".join(ev.get("key_facts", []) + [ev.get("summary", "")])
         facts_words |= _keywords(facts_text)
 
-    if claim_words and facts_words and not (claim_words & facts_words):
+    overlap = claim_words & facts_words
+
+    if claim_words and facts_words and not overlap:
         claim.grounding_status = "no_overlap"
         claim.support_strength = 0.1
         return
 
-    claim.grounding_status = "grounded"
-    claim.support_strength = 1.0
+    # issue #65: overlap that's ENTIRELY generic SRE/K8s vocabulary (both mention "pod",
+    # nothing more specific) is materially weaker support than overlap that includes a
+    # specific identifier/detail (an error code, a named resource, a distinguishing term)
+    # -- full credit used to be granted for either case identically.
+    if overlap and (overlap - _DOMAIN_GENERIC):
+        claim.grounding_status = "grounded"
+        claim.support_strength = 1.0
+    elif overlap:
+        claim.grounding_status = "weak_overlap"
+        claim.support_strength = 0.4
+    else:
+        # Both keyword sets empty (e.g. very short claim/evidence text) -- no basis to
+        # penalize, but no basis to fully credit either; matches the prior behavior for
+        # this specific empty/empty edge case.
+        claim.grounding_status = "grounded"
+        claim.support_strength = 1.0
 
 
 def build_claims(

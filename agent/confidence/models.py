@@ -34,7 +34,7 @@ class Claim:
     supporting_evidence_ids: list = field(default_factory=list)
     contradicting_evidence_ids: list = field(default_factory=list)
     support_strength: float = 0.0
-    grounding_status: str = "ungrounded"  # grounded | phantom_evidence | no_overlap | ungrounded
+    grounding_status: str = "ungrounded"  # grounded | weak_overlap | phantom_evidence | no_overlap | ungrounded
 
     def to_dict(self) -> dict:
         return {
