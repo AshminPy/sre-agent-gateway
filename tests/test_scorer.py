@@ -227,6 +227,25 @@ def test_root_cause_confidence_inference_claim_scores_lower_direct_support_than_
     assert fact_result["components"]["direct_support"] > inference_result["components"]["direct_support"]
 
 
+def test_root_cause_confidence_mislabeled_observed_fact_does_not_get_direct_support_credit():
+    # issue #66: claim_type is the LLM's own self-assigned label, only enum-validated in
+    # claim_builder.py -- never checked against evidence content. A claim labeled
+    # "observed_fact" whose cited evidence shares no real overlap with its text must NOT
+    # count toward direct_support just because the model called it a fact.
+    evidence_store = {
+        "ev_001": make_evidence("ev_001", "get_current_logs",
+                                  summary="disk pressure eviction",
+                                  key_facts=["node disk pressure", "pod evicted"]),
+    }
+    mislabeled_claim = build_claims({
+        "claims": [{"text": "Authentication token expired during registry pull",
+                     "claim_type": "observed_fact", "supporting_evidence_ids": ["ev_001"]}],
+    }, ["ev_001"], evidence_store)
+    assert mislabeled_claim[0].grounding_status == "no_overlap"  # sanity check on the fixture
+    result = _rcc(mislabeled_claim, evidence_store=evidence_store)
+    assert result["components"]["direct_support"] == 0.0
+
+
 def test_root_cause_confidence_wrong_cluster_evidence_reduces_resource_identity_match():
     evidence_store = {
         "ev_001": make_evidence("ev_001", "describe_pod_detail", cluster="other-cluster", key_facts=["x"]),
