@@ -51,6 +51,49 @@ def test_claim_with_no_supporting_evidence_is_ungrounded_and_worth_zero():
     assert claims[0].support_strength == 0.0
 
 
+def test_claim_sharing_only_generic_domain_word_does_not_get_full_credit():
+    # issue #65: claim and evidence both mention "container" but describe unrelated
+    # situations (image pull failure vs liveness-probe restarts) -- sharing one
+    # generic K8s word must not be treated the same as a real, specific match. Note
+    # _keywords() only matches words of 4+ letters, so "pod" (3 letters) never
+    # overlaps on its own -- "container" is used here instead.
+    evidence_store = {
+        "ev_001": make_evidence("ev_001", "get_current_logs",
+                                  summary="container repeatedly restarts due to failed liveness probe checks",
+                                  key_facts=["liveness probe failed", "container restarted"]),
+    }
+    rca_result = {
+        "claims": [{
+            "text": "The container cannot pull its image from the registry",
+            "claim_type": "observed_fact",
+            "supporting_evidence_ids": ["ev_001"],
+        }],
+    }
+    claims = build_claims(rca_result, ["ev_001"], evidence_store)
+    assert claims[0].grounding_status == "weak_overlap"
+    assert claims[0].support_strength == 0.4
+
+
+def test_claim_sharing_a_specific_term_beyond_generic_words_is_fully_grounded():
+    # Same generic word ("node") shared, but ALSO a specific, matching detail
+    # (disk pressure) -- this should still get full credit.
+    evidence_store = {
+        "ev_001": make_evidence("ev_001", "get_current_logs",
+                                  summary="node disk pressure caused pods to be evicted",
+                                  key_facts=["node disk pressure", "pods evicted"]),
+    }
+    rca_result = {
+        "claims": [{
+            "text": "Node disk pressure is causing pods on this node to be evicted",
+            "claim_type": "observed_fact",
+            "supporting_evidence_ids": ["ev_001"],
+        }],
+    }
+    claims = build_claims(rca_result, ["ev_001"], evidence_store)
+    assert claims[0].grounding_status == "grounded"
+    assert claims[0].support_strength == 1.0
+
+
 def test_claim_citing_real_evidence_with_no_keyword_overlap_is_flagged():
     evidence_store = {
         "ev_001": make_evidence("ev_001", "get_current_logs",
