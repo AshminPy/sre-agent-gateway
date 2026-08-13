@@ -214,7 +214,14 @@ def trace_node(span_name: str) -> Callable[[Callable[..., Any]], Callable[..., A
             if tracer is None:
                 return func(state, *args, **kwargs)
 
-            with tracer.start_as_current_span(span_name) as span:
+            # issue #76 (compliance follow-up): record_exception=False/
+            # set_status_on_exception=False -- otherwise OTel's own context-manager
+            # __exit__ independently auto-records the exception's message when the
+            # `raise` below re-propagates it, even with the explicit except block
+            # already handling it safely.
+            with tracer.start_as_current_span(
+                span_name, record_exception=False, set_status_on_exception=False,
+            ) as span:
                 set_span_attributes(span, _state_attrs(state, span_name))
                 try:
                     result = func(state, *args, **kwargs)
@@ -222,15 +229,20 @@ def trace_node(span_name: str) -> Callable[[Callable[..., Any]], Callable[..., A
                     span.set_attribute("sre.node.success", True)
                     return result
                 except Exception as exc:
+                    # issue #76 (compliance follow-up): record_exception()/Status(...,
+                    # str(exc))/sre.node.error used to send the exception's own message
+                    # text into the span -- an exception can quote response content,
+                    # operational data, or a Kubernetes error string, not just a bare
+                    # error name. Only the exception's TYPE (a class name, e.g.
+                    # "ValueError") is safe metadata; the message itself is not.
                     try:
                         from opentelemetry.trace import Status, StatusCode
 
-                        span.record_exception(exc)
-                        span.set_status(Status(StatusCode.ERROR, str(exc)))
+                        span.set_status(Status(StatusCode.ERROR))
                     except Exception:
                         pass
                     span.set_attribute("sre.node.success", False)
-                    span.set_attribute("sre.node.error", _safe_str(exc))
+                    span.set_attribute("sre.node.error_type", type(exc).__name__)
                     raise
 
         return wrapper

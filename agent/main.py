@@ -437,9 +437,22 @@ def investigate(payload: dict) -> dict:
 
         tracer = get_tracer()
         if tracer is not None:
-            with tracer.start_as_current_span("sre_agent.investigation") as span:
+            # issue #76 (compliance follow-up): start_as_current_span() defaults to
+            # record_exception=True/set_status_on_exception=True -- OTel's OWN framework
+            # would auto-capture an unhandled exception's message onto this span (e.g.
+            # from graph.invoke() below) even with sre.query and otel.py's trace_node
+            # fixes in place. This is the same leak class on the one span this file
+            # creates directly, not through trace_node.
+            with tracer.start_as_current_span(
+                "sre_agent.investigation", record_exception=False, set_status_on_exception=False,
+            ) as span:
                 set_span_attributes(span, {
-                    "sre.query": query[:250],
+                    # issue #76 (compliance follow-up): sre.query used to include up to
+                    # 250 chars of the raw user query -- investigation content, not
+                    # metadata (a query can embed operational/log detail from the
+                    # alert that triggered it). Removed; run_id below is the correlation
+                    # key back to the full query in Cloud Logging/GCS evidence, which
+                    # have their own separate, understood access controls.
                     "sre.cluster.requested": cluster,
                     "sre.namespace.requested": namespace,
                     "sre.pod.requested": pod,
