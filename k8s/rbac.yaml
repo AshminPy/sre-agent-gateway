@@ -1,0 +1,43 @@
+# Kubernetes-native RBAC granting the SRE agent read access to pods, pod logs,
+# and events in the test-incidents namespace. This is the primary permission
+# path GKE checks (Cloud IAM's container.viewer is used only to authenticate
+# to the cluster at all -- it does NOT include pods/log; GKE's authorizer
+# accepts EITHER a Cloud IAM permission OR a K8s RBAC grant for the specific
+# resource/verb, see the 403 error text in issue #92).
+#
+# This Role/RoleBinding already existed live on the cluster (applied
+# out-of-band 2026-07-28, never checked into this repo) -- checking it in now
+# so it's tracked, reviewable, and reproducible instead of only living in
+# cluster state.
+#
+# subjects[].name MUST be updated whenever the reasoning engine is recreated
+# (a new engine gets a new numeric ID, and this binding is scoped to one
+# specific engine instance, not the whole project). This exact drift is what
+# caused issue #92's real 403 failure: the binding was left pointing at a
+# reasoning engine ID from an earlier deploy after the engine was recreated.
+# Current live ID confirmed via `terraform -chdir=iac/agent output -raw
+# reasoning_engine_id` -- keep this in sync with that output.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sre-agent-pod-reader
+  namespace: test-incidents
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sre-agent-pod-reader-binding
+  namespace: test-incidents
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: sre-agent-pod-reader
+subjects:
+  - kind: User
+    apiGroup: rbac.authorization.k8s.io
+    # projects/sreagent-t2-demo/locations/us-central1/reasoningEngines/7801582006105538560
+    name: principal://agents.global.org-1076201471152.system.id.goog/resources/aiplatform/projects/327234009108/locations/us-central1/reasoningEngines/7801582006105538560

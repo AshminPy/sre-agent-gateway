@@ -38,9 +38,8 @@ Note the storage and Cloud Run grants are **resource-level**, not project-wide;
 
 ## 2. Runtime Agent Identity — cross-project (Project B)
 
-Four read-only predefined roles plus one narrow custom role, so the agent can
-investigate GKE incidents in Project B. Defined in
-`iac/gke-access/crossproject_iam.tf`.
+Exactly four read-only roles so the agent can investigate GKE incidents in
+Project B. Defined in `iac/gke-access/crossproject_iam.tf`.
 
 | Role | Scope | Why |
 |---|---|---|
@@ -48,9 +47,14 @@ investigate GKE incidents in Project B. Defined in
 | `roles/mcp.toolUser` | Project B | Invoke GKE Remote MCP `tools/call` |
 | `roles/logging.viewer` | Project B | Read GKE workload logs |
 | `roles/monitoring.viewer` | Project B | Read GKE metrics |
-| `podLogReader` (custom) | Project B | `container.pods.getLogs` only -- `container.viewer` does not include it, and `roles/container.developer` (the narrowest predefined role that does) also grants broad write access. See issue #92. |
 
 No write access, no broad project roles.
+
+Pod-log read (`container.pods.getLogs` / K8s `pods/log`) is granted separately
+via native Kubernetes RBAC, not Cloud IAM -- see `k8s/rbac.yaml`. GKE's
+authorizer accepts either mechanism for this specific permission; this cluster
+already used K8s RBAC for it (issue #92), so that's the one source of truth
+kept in sync, rather than a duplicate Cloud IAM custom role.
 
 ## 3. CI/CD deployer service account
 
@@ -80,9 +84,7 @@ radius is fenced by Workload Identity Federation to a single named GitHub repo
 
 **Project B** (`iac/gke-access/crossproject_iam.tf`, only when `deployer_sa_email`
 is set): `container.admin` ⚑, `compute.networkAdmin`, `serviceusage.serviceUsageAdmin`,
-`resourcemanager.projectIamAdmin` ⚑, `iam.roleAdmin` ⚑ (needed to manage the
-`podLogReader` custom role above -- `projectIamAdmin` does not include
-`iam.roles.create`). Nothing else — no storage roles in B.
+`resourcemanager.projectIamAdmin` ⚑. Nothing else — no storage roles in B.
 
 The ⚑ roles are the narrowest predefined roles that create/manage the relevant
 resources. Tighten with custom roles if your org requires it.
