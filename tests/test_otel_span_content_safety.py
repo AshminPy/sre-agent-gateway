@@ -133,3 +133,30 @@ def test_investigate_never_puts_the_raw_query_on_the_outer_span(monkeypatch, in_
     assert outer.attributes.get("sre.cluster.requested") == "sre-test-cluster"
     assert outer.attributes.get("sre.namespace.requested") == "test-incidents"
     assert outer.attributes.get("sre.severity") == "unknown"
+
+
+def test_set_up_initializes_the_tracer_at_container_start_not_lazily(monkeypatch):
+    """issue #130: get_tracer() used to only ever run lazily, on the first real
+    investigation request -- well after Agent Engine's own managed runtime had
+    already claimed OTel's one-time set_tracer_provider() slot during its own
+    startup bootstrap (confirmed live: "Overriding of current TracerProvider is
+    not allowed"). set_up() -- Agent Engine's documented one-time,
+    container-start lifecycle hook -- must now call get_tracer() itself, giving
+    our setup a real chance to run before/alongside that race instead of losing
+    it by default ~90s late every time."""
+    import agent.main as main_mod
+
+    monkeypatch.setattr(main_mod, "_get_graph", lambda: object())
+    monkeypatch.setattr(main_mod, "MODEL_ARMOR_TEMPLATE", "")
+    monkeypatch.setattr(main_mod, "MEMORY_BANK_RESOURCE", "")
+
+    # set_up() does `from agent.otel import get_tracer` as a LOCAL import inside
+    # the method body -- re-executed every call, so patching agent.otel.get_tracer
+    # itself (not agent.main's namespace, which never holds this name) is what
+    # the local import picks up.
+    calls = []
+    monkeypatch.setattr(otel_mod, "get_tracer", lambda: calls.append(1) or None)
+
+    main_mod.SREAgent.set_up()
+
+    assert calls, "SREAgent.set_up() must call agent.otel.get_tracer()"
