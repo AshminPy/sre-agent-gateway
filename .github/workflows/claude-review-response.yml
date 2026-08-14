@@ -59,11 +59,11 @@ jobs:
         # job does not have.
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 1
-
+      # Resolves the PR number/SHA via `gh --repo`, which needs no prior checkout --
+      # this MUST run before checkout so the checkout below can pin to the exact
+      # verified SHA. (Bug found in a live diagnostic run: checking out first with
+      # no `ref:` silently resolves to the tip of `main` on issue_comment events,
+      # not the PR branch -- Claude would have reviewed/tested the wrong code.)
       - name: Resolve current PR head SHA
         id: pr_state
         env:
@@ -74,6 +74,12 @@ jobs:
           CURRENT_SHA=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json headRefOid -q .headRefOid)
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
           echo "sha=$CURRENT_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout PR head SHA
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.pr_state.outputs.sha }}
+          fetch-depth: 1
 
       - name: Run Claude Code
         uses: anthropics/claude-code-action@v1
@@ -119,4 +125,13 @@ jobs:
               never touch live infrastructure.
             - Only push commits to this PR's own branch. Never push to `main`.
           claude_args: |
-            --disallowedTools "Bash(terraform apply:*),Bash(terraform destroy:*)"
+            --allowedTools "Bash(gh:*),Bash(git:*),Bash(python3:*),Bash(pip:*),Bash(pytest:*),WebFetch"
+            --disallowedTools "Bash(terraform apply:*),Bash(terraform destroy:*),Bash(gcloud:*),Bash(kubectl:*)"
+          # Root cause of the Phase 1 diagnostic run's 17 permission_denials_count and
+          # zero PR reply: Claude Code's default tool-permission mode asks for approval
+          # on network-capable tools, and there is no human present in CI to grant it --
+          # gh, curl, python3, WebFetch, and network git ops were all silently rejected.
+          # This explicitly allows exactly what the prompt above needs (read the PR,
+          # run the real pytest suite, fetch external context) and keeps everything
+          # else -- including terraform/gcloud/kubectl, on top of this job having no
+          # cloud credentials at all -- denied.
