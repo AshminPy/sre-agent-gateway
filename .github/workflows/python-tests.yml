@@ -43,7 +43,15 @@ jobs:
           grep -v "google-cloud-aiplatform" agent/requirements.txt > /tmp/agent-requirements.txt
           pip install --quiet -r /tmp/agent-requirements.txt
           pip install --quiet "google-cloud-aiplatform[agent_engines]>=1.148.1"
-          pip install --quiet pytest ruff "black>=24.0.0" pip-audit
+          # ruff pinned exactly -- 0.16 silently changed ruff's own DEFAULT rule set
+          # (added I001/import-sort) vs 0.15, which would make this blocking gate's
+          # result depend on whichever version happened to be latest on a given day.
+          # pyproject.toml's [tool.ruff.lint] select= is the other half of this fix
+          # (an explicit, version-independent rule set); this pin is what makes ruff
+          # itself deterministic. Not general dependency locking (that's #79) -- this
+          # one pin exists specifically so the new blocking gate can't silently change
+          # behavior on its own.
+          pip install --quiet pytest "ruff==0.16.3" "black>=24.0.0" pip-audit
 
       - name: Run pytest
         run: python3 -m pytest tests/ -v
