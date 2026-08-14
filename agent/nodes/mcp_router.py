@@ -103,9 +103,7 @@ def mcp_router(state: AgentState) -> dict:
     pod             = ctx.get("pod", "")
     task_plan       = state["investigation"].get("task_plan", "")
     primary_gap     = state["investigation"].get("primary_gap", "")
-    sources_skipped = state.get("sources_skipped", [])
     evidence_count  = len(state.get("evidence_ids", []))
-    min_steps       = state["investigation"].get("min_steps", 2)
 
     # ── Phase 1: deterministic MCP source selection (no LLM tokens) ─
     # GKE clusters → gke_remote_mcp first. On-prem → k8s_mcp first.

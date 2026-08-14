@@ -20,7 +20,6 @@ Scoring (simple keyword matching):
 import argparse
 import json
 import os
-import sys
 import time
 
 PROJECT   = os.environ.get("PROJECT_ID", "your-gcp-project-id")

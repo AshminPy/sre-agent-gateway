@@ -44,7 +44,7 @@ if _missing:
         print(f"  export {v}=<value>")
     sys.exit(1)
 
-from agent.graph import compile_graph, get_initial_state
+from agent.graph import compile_graph, get_initial_state  # noqa: E402 -- intentionally after the env-var check above
 
 # ── Logging ───────────────────────────────────────────────────────
 logging.basicConfig(
@@ -77,7 +77,7 @@ def _print_report(result: dict, duration: float) -> None:
     print(f"  Tokens    : {tokens_total:,} total  |  Est. cost: ${cost_usd:.6f}")
     print("=" * 72)
 
-    print(f"\n⚪  INCIDENT")
+    print("\n⚪  INCIDENT")
     print(f"   {summary.get('incident_summary', 'unknown')}")
 
     icon = "✅" if conf >= 0.85 else "🟡" if conf >= 0.65 else "🔴"
@@ -105,31 +105,31 @@ def _print_report(result: dict, duration: float) -> None:
 
     reasoning = summary.get("reasoning_trace", [])
     if reasoning:
-        print(f"\n🧠  REASONING TRACE")
+        print("\n🧠  REASONING TRACE")
         for i, step in enumerate(reasoning, 1):
             print(f"   {i}. {step}")
 
     remediation = summary.get("suggested_remediation", [])
     if remediation:
-        print(f"\n🩹  SUGGESTED REMEDIATION (human action required)")
+        print("\n🩹  SUGGESTED REMEDIATION (human action required)")
         for i, r in enumerate(remediation, 1):
             print(f"   {i}. {r}")
 
     gaps = summary.get("evidence_gaps", [])
     if gaps:
-        print(f"\n⚠️   EVIDENCE GAPS")
+        print("\n⚠️   EVIDENCE GAPS")
         for g in gaps:
             print(f"   • {g}")
 
     sources_skipped = summary.get("sources_skipped", [])
     if sources_skipped:
-        print(f"\n⏭️   SOURCES SKIPPED")
+        print("\n⏭️   SOURCES SKIPPED")
         for s in sources_skipped:
             print(f"   • {s}")
 
     errors = result.get("errors", [])
     if errors:
-        print(f"\n🚨  ERRORS")
+        print("\n🚨  ERRORS")
         for e in errors:
             print(f"   • {e}")
 

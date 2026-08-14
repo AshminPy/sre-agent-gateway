@@ -16,6 +16,8 @@ on:
     paths:
       - "agent/**"
       - "iac/agent/**"
+      - "scripts/package_agent.sh"
+      - "scripts/package_agent.py"
       - ".github/workflows/terraform-*.yml"
 
 permissions:

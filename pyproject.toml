@@ -26,6 +26,16 @@ eval = [
 line-length = 100
 target-version = "py311"
 
+# issue #77: ruff's own DEFAULT rule set is not stable across versions -- 0.16
+# silently added I001 (import-sort) to it, which 0.15 did not have, producing
+# 183 new findings in CI with zero code changes. An explicit select= makes the
+# blocking CI gate's behavior a deliberate choice, not an accident of whichever
+# ruff version happens to be installed. This is ruff's own pre-0.16 default
+# rule set (E4/E7/E9 pycodestyle subset + F pyflakes) -- deliberately NOT
+# adopting I001 (import-sort) here; that's a separate, unreviewed scope change.
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
 [tool.black]
 line-length = 100
 target-version = ["py311"]
