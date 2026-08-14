@@ -7,7 +7,7 @@ delete once the test PR is closed.
 
 
 def add_one(x):
-    return x  # bug: should return x + 1
+    return x + 1
 
 
 def test_add_one():
