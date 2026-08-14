@@ -46,7 +46,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      actions: read
+      checks: read # required for the Checks API (commits/{sha}/check-runs) -- confirmed by a
+        # live test run getting "Resource not accessible by integration (HTTP 403)" without it;
+        # actions:read (the Actions API -- workflow runs/artifacts) does NOT cover this, a
+        # distinct permission scope from what this workflow actually calls.
       pull-requests: write # only used to post a stop-gate comment on failure
       id-token: write # only consumed by the WIF auth step, and only when a fresh plan is actually needed
     outputs:
