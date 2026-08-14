@@ -1,0 +1,285 @@
+name: Claude Merge Gate
+
+# Phase 2: automatic merge gating after ChatGPT's deterministic autoship
+# approval marker. All the real decision logic lives in
+# scripts/merge_gate_checks.py -- this file is orchestration only (fetch
+# real state via gh/git/terraform, hand it to the evaluator, act on the
+# verdict). No LLM reasoning runs after the approval marker exists; Claude
+# and ChatGPT's reasoning already happened before the marker was posted.
+#
+# Trigger, and why it is NOT `pull_request_review: state == APPROVED`:
+# GitHub does not allow a PR's author to approve their own PR. Claude-created
+# PRs and ChatGPT's reviews are BOTH authored as the AshminPy account, so a
+# review-approval trigger can never fire here. The real signal is a specific
+# top-level PR comment, authored by AshminPy, containing the exact
+# CHATGPT_AUTOSHIP_APPROVED marker plus a SHA that matches the PR's current
+# head -- see extract_approval_sha() in the script. No fuzzy "contains
+# approved" matching.
+#
+# Trust boundary: `validate` always evaluates using scripts/merge_gate_checks.py
+# as it exists on `main` (the first checkout below), never the PR's own copy
+# of that file -- a PR cannot weaken its own gate by editing the gate's code.
+# The PR's actual content (for the Terraform plan) is checked out separately,
+# into ./pr-checkout, kept apart from the trusted top-level checkout.
+
+on:
+  issue_comment:
+    types: [created]
+
+concurrency:
+  # Same group terraform-apply.yml uses -- the fresh safety plan run here
+  # must never race a real apply against the same Terraform state. Applies
+  # to both jobs (GHA concurrency is evaluated at job start, before a job's
+  # own steps can decide whether Terraform is actually needed this run) --
+  # a docs-only autoship queues behind an in-progress apply too, a minor
+  # efficiency cost accepted deliberately in exchange for not needing a more
+  # complex job split just to spare the no-Terraform-needed case a wait.
+  group: terraform-apply
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: |
+      github.event.issue.pull_request != null &&
+      github.event.comment.user.login == 'AshminPy' &&
+      contains(github.event.comment.body, 'CHATGPT_AUTOSHIP_APPROVED')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write # only used to post a stop-gate comment on failure
+      id-token: write # only consumed by the WIF auth step, and only when a fresh plan is actually needed
+    outputs:
+      go: ${{ steps.decide.outputs.go }}
+      pr_number: ${{ steps.decide.outputs.pr_number }}
+      approved_sha: ${{ steps.decide.outputs.approved_sha }}
+    steps:
+      - name: Checkout main (trusted evaluator code)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Extract approval marker SHA
+        id: marker
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          SHA=$(python3 scripts/merge_gate_checks.py extract-marker <<<"$COMMENT_BODY") || true
+          if [ -z "$SHA" ]; then
+            echo "No valid CHATGPT_AUTOSHIP_APPROVED marker in this comment -- not an approval, ignoring silently."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fetch PR state
+        id: pr
+        if: steps.marker.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --json number,headRefOid,state,isDraft,baseRefName,headRefName \
+            > pr_state.json
+          cat pr_state.json
+
+      - name: Fetch changed files
+        id: files
+        if: steps.marker.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --name-only > changed_files.txt
+          cat changed_files.txt
+
+      - name: Determine whether a fresh Terraform plan is needed
+        id: plan_needed
+        if: steps.marker.outputs.found == 'true'
+        run: |
+          set -euo pipefail
+          ARGS=()
+          while IFS= read -r f; do
+            [ -n "$f" ] && ARGS+=(--file "$f")
+          done < changed_files.txt
+          python3 scripts/merge_gate_checks.py required-checks . "${ARGS[@]}" > required_checks.json
+          cat required_checks.json
+          TRIGGERS=$(python3 -c "import json; print(json.dumps(json.load(open('required_checks.json'))['terraform_apply_triggers']))")
+          echo "triggers=$TRIGGERS" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch check-runs for the approved SHA
+        id: checks
+        if: steps.marker.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MARKER_SHA: ${{ steps.marker.outputs.sha }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/commits/$MARKER_SHA/check-runs" -q '.check_runs' \
+            > check_runs.json || echo '[]' > check_runs.json
+          cat check_runs.json
+
+      - name: Fetch unresolved review thread count
+        id: threads
+        if: steps.marker.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          REPO_OWNER="${GITHUB_REPOSITORY%/*}"
+          REPO_NAME="${GITHUB_REPOSITORY#*/}"
+          COUNT=$(gh api graphql -f query='
+            query($owner:String!,$name:String!,$number:Int!) {
+              repository(owner:$owner, name:$name) {
+                pullRequest(number:$number) {
+                  reviewThreads(first: 100) { nodes { isResolved } }
+                }
+              }
+            }' -f owner="$REPO_OWNER" -f name="$REPO_NAME" -F number="$PR_NUMBER" \
+            -q '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length')
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+
+      # Only runs when the changed paths would trigger terraform-apply.yml
+      # after merge (e.g. mcp/** -- which terraform-plan.yml does NOT cover
+      # today, the exact asymmetry this step exists to close). Checks out
+      # the PR's own content into a separate directory, never touching the
+      # trusted top-level checkout scripts/merge_gate_checks.py itself reads
+      # from.
+      - name: Checkout PR content for Terraform plan
+        if: steps.marker.outputs.found == 'true' && steps.plan_needed.outputs.triggers == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.marker.outputs.sha }}
+          path: pr-checkout
+          fetch-depth: 1
+
+      - name: Package agent (PR content)
+        if: steps.marker.outputs.found == 'true' && steps.plan_needed.outputs.triggers == 'true'
+        working-directory: pr-checkout
+        run: bash scripts/package_agent.sh
+
+      - uses: google-github-actions/auth@v2
+        if: steps.marker.outputs.found == 'true' && steps.plan_needed.outputs.triggers == 'true'
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOYER_SA }}
+
+      - uses: hashicorp/setup-terraform@v3
+        if: steps.marker.outputs.found == 'true' && steps.plan_needed.outputs.triggers == 'true'
+        with:
+          terraform_version: "1.9.0"
+
+      - name: Terraform init (PR content)
+        if: steps.marker.outputs.found == 'true' && steps.plan_needed.outputs.triggers == 'true'
+        working-directory: pr-checkout/iac/agent
+        run: terraform init -backend-config="bucket=${{ secrets.TFSTATE_BUCKET }}" -backend-config="prefix=agent"
+
+      # Same read-only step terraform-plan.yml/terraform-apply.yml use --
+      # without it, every plan here would show a phantom MCP-image diff
+      # (this repo's own documented history: issue #116).
+      - name: Read currently-deployed MCP image
+        id: current_mcp_image
+        if: steps.marker.outputs.found == 'true' && steps.plan_needed.outputs.triggers == 'true'
+        working-directory: pr-checkout
+        run: |
+          CURRENT=$(gcloud run services describe sre-k8s-mcp \
+            --project="${{ secrets.GCP_PROJECT_A_ID }}" \
+            --region="${{ secrets.GCP_REGION }}" \
+            --format="value(spec.template.spec.containers[0].image)" 2>/dev/null || true)
+          if [ -z "$CURRENT" ]; then
+            CURRENT="us-docker.pkg.dev/cloudrun/container/placeholder"
+          fi
+          echo "image=$CURRENT" >> "$GITHUB_OUTPUT"
+
+      - name: Terraform validate (PR content)
+        if: steps.marker.outputs.found == 'true' && steps.plan_needed.outputs.triggers == 'true'
+        working-directory: pr-checkout/iac/agent
+        run: terraform validate
+
+      - name: Terraform plan + show -json (PR content)
+        if: steps.marker.outputs.found == 'true' && steps.plan_needed.outputs.triggers == 'true'
+        working-directory: pr-checkout/iac/agent
+        run: |
+          terraform plan -no-color -out=tfplan \
+            -var="project_a_id=${{ secrets.GCP_PROJECT_A_ID }}" \
+            -var="project_b_id=${{ secrets.GCP_PROJECT_B_ID }}" \
+            -var="region=${{ secrets.GCP_REGION }}" \
+            -var="notification_email=${{ secrets.NOTIFICATION_EMAIL }}" \
+            -var="github_repo=${{ github.repository }}" \
+            -var="tfstate_bucket=${{ secrets.TFSTATE_BUCKET }}" \
+            -var="create_wif=false" \
+            -var="gemini_model=gemini-2.5-pro" \
+            -var="enable_custom_mcp=${{ vars.ENABLE_CUSTOM_MCP || 'false' }}" \
+            -var="custom_mcp_image=${{ steps.current_mcp_image.outputs.image }}"
+          # working-directory here is pr-checkout/iac/agent (3 levels below
+          # $GITHUB_WORKSPACE) -- ../../../tfplan.json lands at the workspace
+          # root, where the trusted top-level checkout lives and where the
+          # "Evaluate merge gate" step (default working-directory) reads it
+          # back via the plain relative path "tfplan.json".
+          terraform show -json tfplan > ../../../tfplan.json
+
+      - name: Evaluate merge gate
+        id: decide
+        if: steps.marker.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          echo "$COMMENT_BODY" > comment_body.txt
+
+          PLAN_ARG=()
+          if [ -f tfplan.json ]; then
+            PLAN_ARG=(--terraform-plan-json-file tfplan.json)
+          fi
+
+          python3 scripts/merge_gate_checks.py evaluate \
+            --comment-body-file comment_body.txt \
+            --pr-json-file pr_state.json \
+            --repo-root . \
+            --changed-files-file changed_files.txt \
+            --check-runs-json-file check_runs.json \
+            --unresolved-thread-count "${{ steps.threads.outputs.count }}" \
+            "${PLAN_ARG[@]}" \
+            > verdict.json
+          cat verdict.json
+
+          VERDICT=$(python3 -c "import json; print(json.load(open('verdict.json'))['verdict'])")
+          REASON=$(python3 -c "import json; print(json.load(open('verdict.json'))['reason'])")
+
+          if [ "$VERDICT" = "go" ]; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+            echo "pr_number=$(python3 -c "import json; print(json.load(open('verdict.json'))['pr_number'])")" >> "$GITHUB_OUTPUT"
+            echo "approved_sha=$(python3 -c "import json; print(json.load(open('verdict.json'))['approved_sha'])")" >> "$GITHUB_OUTPUT"
+          elif [ "$VERDICT" = "stop" ]; then
+            echo "go=false" >> "$GITHUB_OUTPUT"
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+              --body "Merge gate: not merging. $REASON"
+          else
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  merge:
+    needs: validate
+    if: needs.validate.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Atomic merge at the exact approved SHA
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh pr merge "${{ needs.validate.outputs.pr_number }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --squash \
+            --match-head-commit "${{ needs.validate.outputs.approved_sha }}"
