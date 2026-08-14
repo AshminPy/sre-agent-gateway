@@ -148,8 +148,6 @@ def _write_observability_log(state: AgentState, rca: dict, usage: dict) -> None:
         # here is Gemini's own reported total (never a local input+output
         # recomputation, see accumulate_usage's docstring for why that matters).
         tok = accumulate_usage(inv, usage)
-        tokens_input  = tok["tokens_input"]
-        tokens_output = tok["tokens_output"]
         tokens_total  = tok["tokens_total"]
         cost_usd      = tok["estimated_cost_usd"]
 

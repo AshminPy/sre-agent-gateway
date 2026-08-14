@@ -11,6 +11,12 @@ on:
       - "agent/**"
       - "mcp/**"
       - "iac/agent/**"
+      - "scripts/package_agent.sh"
+      - "scripts/package_agent.py"
+      - "scripts/register_endpoints.py"
+      - "scripts/googleapis.txt"
+      - "scripts/register_custom_mcp.py"
+      - "scripts/smoke_test.sh"
       - ".github/workflows/terraform-*.yml"
 
 # Never run two applies at once against the same state.

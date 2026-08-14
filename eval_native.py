@@ -27,6 +27,10 @@ import json
 import os
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 PROJECT      = os.environ.get("PROJECT_ID", "your-gcp-project-id")
 REGION       = os.environ.get("REGION", "us-central1")
@@ -91,7 +95,6 @@ def run_inference_manually(resource_name: str, region: str, dataset: list) -> "p
 
 
 def run_native_eval(project: str, region: str, engine_id: str, limit: int = 0) -> None:
-    import pandas as pd
     from vertexai import Client
     from vertexai._genai.types.common import EvaluationDataset, EvaluationRunMetric
     import vertexai
@@ -117,7 +120,7 @@ def run_native_eval(project: str, region: str, engine_id: str, limit: int = 0) -
 
     client = Client(project=project, location=region)
 
-    print(f"\nCreating Agent Platform evaluation run ...")
+    print("\nCreating Agent Platform evaluation run ...")
     eval_run = client.evals.create_evaluation_run(
         dataset=EvaluationDataset(eval_dataset_df=df),
         dest=dest,
