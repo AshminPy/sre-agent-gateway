@@ -150,12 +150,17 @@ jobs:
               deterministic step pushes to this PR's own branch afterward, with its own
               stale-SHA check. Do not attempt to work around this.
           claude_args: |
-            --allowedTools "Bash(gh:*),Bash(git:*),Bash(python3:*),Bash(pip:*),Bash(pytest:*),WebFetch"
+            --allowedTools "Edit,Write,Bash(gh:*),Bash(git:*),Bash(python3:*),Bash(pip:*),Bash(pytest:*),WebFetch"
             --disallowedTools "Bash(terraform apply:*),Bash(terraform destroy:*),Bash(gcloud:*),Bash(kubectl:*),Bash(git push:*),Bash(gh pr merge:*),Bash(gh api:*)"
           # Root cause of the Phase 1 diagnostic run's 17 permission_denials_count and
           # zero PR reply: Claude Code's default tool-permission mode asks for approval
           # on network-capable tools, and there is no human present in CI to grant it --
           # gh, curl, python3, WebFetch, and network git ops were all silently rejected.
+          # A later run (PR #148 hardening test) found a second instance of the same
+          # class of problem: once an explicit --allowedTools list exists, Edit/Write
+          # are no longer implicitly allowed either (they'd been covered by Claude
+          # Code's normal default before an explicit allow-list was introduced here) --
+          # Claude correctly identified a real fix but could not write it. Added here.
           # This explicitly allows exactly what the prompt above needs (read the PR,
           # run the real pytest suite, fetch external context) and keeps everything
           # else -- including terraform/gcloud/kubectl, on top of this job having no
