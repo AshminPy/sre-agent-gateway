@@ -12,3 +12,11 @@ def add_one(x):
 
 def test_add_one():
     assert add_one(4) == 5
+
+
+def double(x):
+    return x  # bug: should return x * 2
+
+
+def test_double():
+    assert double(3) == 6
