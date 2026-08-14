@@ -70,13 +70,14 @@ jobs:
         continue-on-error: true
         run: black --check .
 
-      # issue #77: report-only, NOT blocking. Baseline as of this change: 14 known
-      # vulnerabilities across 5 packages (langchain-core, langgraph,
-      # langgraph-checkpoint, langgraph-sdk, pip). Remediating them is issue #79's scope
-      # (dependency pinning/locking), not this issue's.
+      # issue #77: report-only, NOT blocking. CI baseline (this workflow's own run, the
+      # authoritative source -- local venvs can differ slightly by preinstalled tooling
+      # version): 10 known vulnerabilities across 5 packages (langchain-core, langgraph,
+      # langgraph-checkpoint, langgraph-sdk, setuptools). Remediating them is issue #79's
+      # scope (dependency pinning/locking), not this issue's.
       - name: Run pip-audit (report-only)
         continue-on-error: true
-        run: pip-audit
+        run: python3 -m pip_audit --desc
 
   mcp-pytest:
     # issue #77: mcp/ is a separate deployable unit with its own requirements.txt
@@ -93,7 +94,7 @@ jobs:
       - name: Install MCP dependencies
         run: |
           pip install --quiet -r mcp/requirements.txt
-          pip install --quiet pytest
+          pip install --quiet pytest pip-audit
 
       # test_live_connect_gateway.py auto-skips when its kubeconfig context isn't
       # present (pytest.mark.skipif checking `kubectl config get-contexts`) -- a clean
@@ -103,3 +104,10 @@ jobs:
         run: |
           cd mcp
           python3 -m pytest tests/ -v
+
+      # issue #77: mcp/ is a separate deployable unit with its own dependency set --
+      # needs its own audit, not just agent/'s. Report-only, same as the agent job's
+      # pip-audit step; remediating any findings is issue #79's scope, not this one's.
+      - name: Run MCP pip-audit (report-only)
+        continue-on-error: true
+        run: python3 -m pip_audit --desc
