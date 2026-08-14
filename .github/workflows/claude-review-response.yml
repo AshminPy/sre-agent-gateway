@@ -3,11 +3,23 @@ name: Claude PR Review Response
 # Phase 1 of the ChatGPT <-> Claude review loop (see PR that introduced this file
 # for design notes). Wakes Claude Code on an explicit @claude mention in a PR
 # comment or review, has it independently re-verify the finding against the
-# CURRENT code before changing anything, and push a fix if one is warranted.
+# CURRENT code before changing anything, and commits a fix if one is warranted.
 #
 # Deliberately out of scope for this phase: auto-merge, post-merge deploy
 # monitoring, tracker updates. Those are separate, later workflows requiring
 # their own review.
+#
+# Push boundary (hardening, added after live review): Claude itself cannot run
+# `git push` at all -- Bash(git push:*) is in claude_args' --disallowedTools,
+# enforced by the Claude Code SDK's own tool-permission layer before any shell
+# command runs, so it is not bypassable with `git push --no-verify`. The actual
+# push is a separate, deterministic (non-LLM) step below that: (a) can only
+# target the PR's own head branch, resolved from the GitHub API at job start,
+# never from anything Claude decides; (b) re-verifies the PR head SHA hasn't
+# moved immediately before pushing, and refuses (with a PR comment, no
+# force-push) if it has. `gh pr merge` and raw `gh api` calls are also
+# disallowed for the same reason -- both can achieve a main-affecting change
+# through a different door than `git push`.
 #
 # Safety notes:
 # - No GCP/Terraform credentials are configured in this job (no
@@ -41,6 +53,12 @@ jobs:
     # (we do not allow-list any bot here). AshminPy has admin access, so
     # AshminPy-authored @claude comments -- including ChatGPT's, which posts
     # under that same account -- already pass this check with no extra config.
+    #
+    # Note on event dedup: types:[created]/[submitted] and the concurrency
+    # group below reduce duplicate/overlapping runs, but this is not a claim
+    # of absolute GitHub event-delivery deduplication (no explicit event/
+    # comment-ID dedup exists). Revisit only if live testing shows a real
+    # duplicate execution.
     if: |
       (github.event_name == 'issue_comment' && github.event.issue.pull_request != null && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
@@ -59,21 +77,25 @@ jobs:
         # job does not have.
 
     steps:
-      # Resolves the PR number/SHA via `gh --repo`, which needs no prior checkout --
-      # this MUST run before checkout so the checkout below can pin to the exact
-      # verified SHA. (Bug found in a live diagnostic run: checking out first with
-      # no `ref:` silently resolves to the tip of `main` on issue_comment events,
-      # not the PR branch -- Claude would have reviewed/tested the wrong code.)
-      - name: Resolve current PR head SHA
+      # Resolves the PR number/SHA/head-branch-name via `gh --repo`, which needs no
+      # prior checkout -- this MUST run before checkout so the checkout below can
+      # pin to the exact verified SHA. (Bug found in a live diagnostic run: checking
+      # out first with no `ref:` silently resolves to the tip of `main` on
+      # issue_comment events, not the PR branch -- Claude would have reviewed/tested
+      # the wrong code.)
+      - name: Resolve current PR state
         id: pr_state
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          CURRENT_SHA=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json headRefOid -q .headRefOid)
+          JSON=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json headRefOid,headRefName)
+          CURRENT_SHA=$(echo "$JSON" | jq -r .headRefOid)
+          HEAD_BRANCH=$(echo "$JSON" | jq -r .headRefName)
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
           echo "sha=$CURRENT_SHA" >> "$GITHUB_OUTPUT"
+          echo "head_branch=$HEAD_BRANCH" >> "$GITHUB_OUTPUT"
 
       - name: Checkout PR head SHA
         uses: actions/checkout@v6
@@ -85,8 +107,6 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          show_full_output: true # temporary: diagnosing a 17-tool-call permission_denials_count
-            # with zero PR reply on the Phase 1 test run (run 31828166126) -- remove once explained.
           prompt: |
             A comment or review mentioning @claude was left on PR #${{ steps.pr_state.outputs.pr_number }}
             in ${{ github.repository }}. The likely author is ChatGPT, posting its independent
@@ -110,11 +130,13 @@ jobs:
                specific file/line evidence that contradicts it.
             4. For any finding that is correct: implement the smallest safe fix, run the relevant
                tests (check the Makefile and this repo's CI workflow files for the real test
-               commands -- never invent one), and only push once they pass.
-            5. If you push a fix, leave one concise evidence comment on the PR: what was actually
-               wrong, exactly what changed, and which tests were run and passed. Do not
-               re-mention @claude or the reviewer in your own comment -- the hourly reviewer
-               will pick up the new commit on its own next pass.
+               commands -- never invent one), and commit locally once they pass. You cannot push
+               yourself (see boundary note below) -- a separate step pushes your commit safely
+               after you finish.
+            5. If you committed a fix, leave one concise evidence comment on the PR: what was
+               actually wrong, exactly what changed, and which tests were run and passed. Do not
+               re-mention @claude or the reviewer in your own comment -- the hourly reviewer will
+               pick up the new commit on its own next pass.
             6. If a finding cannot be confirmed or refuted from available evidence, say so
                explicitly in your reply instead of guessing either way.
 
@@ -123,10 +145,13 @@ jobs:
             - Do not run `terraform apply`, `terraform destroy`, `gcloud`, or `kubectl` -- this
               job has no cloud credentials configured, and this phase of the automation must
               never touch live infrastructure.
-            - Only push commits to this PR's own branch. Never push to `main`.
+            - You cannot push commits yourself in this run -- `git push` is disallowed at the
+              tool-permission level, not just by this instruction. Commit locally; a separate
+              deterministic step pushes to this PR's own branch afterward, with its own
+              stale-SHA check. Do not attempt to work around this.
           claude_args: |
             --allowedTools "Bash(gh:*),Bash(git:*),Bash(python3:*),Bash(pip:*),Bash(pytest:*),WebFetch"
-            --disallowedTools "Bash(terraform apply:*),Bash(terraform destroy:*),Bash(gcloud:*),Bash(kubectl:*)"
+            --disallowedTools "Bash(terraform apply:*),Bash(terraform destroy:*),Bash(gcloud:*),Bash(kubectl:*),Bash(git push:*),Bash(gh pr merge:*),Bash(gh api:*)"
           # Root cause of the Phase 1 diagnostic run's 17 permission_denials_count and
           # zero PR reply: Claude Code's default tool-permission mode asks for approval
           # on network-capable tools, and there is no human present in CI to grant it --
@@ -134,4 +159,37 @@ jobs:
           # This explicitly allows exactly what the prompt above needs (read the PR,
           # run the real pytest suite, fetch external context) and keeps everything
           # else -- including terraform/gcloud/kubectl, on top of this job having no
-          # cloud credentials at all -- denied.
+          # cloud credentials at all -- denied. git push / gh pr merge / gh api are
+          # denied here too: the real push boundary (see next step), not prompt text.
+
+      # The only place a push can happen. Target branch is hardcoded from
+      # steps.pr_state (resolved before Claude ran, from the GitHub API, never
+      # from Claude's own output), so this can never target main or any other
+      # branch. Re-checks the PR's real current head SHA immediately before
+      # pushing -- if it moved since this run started, stop without pushing or
+      # force-pushing, and say why on the PR instead.
+      - name: Push fix commit to PR head branch (stale-SHA guarded)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.pr_state.outputs.pr_number }}
+          EXPECTED_SHA: ${{ steps.pr_state.outputs.sha }}
+          HEAD_BRANCH: ${{ steps.pr_state.outputs.head_branch }}
+        run: |
+          set -euo pipefail
+
+          LOCAL_HEAD=$(git rev-parse HEAD)
+          if [ "$LOCAL_HEAD" = "$EXPECTED_SHA" ]; then
+            echo "No new local commit -- nothing to push."
+            exit 0
+          fi
+
+          CURRENT_REMOTE_SHA=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json headRefOid -q .headRefOid)
+          if [ "$CURRENT_REMOTE_SHA" != "$EXPECTED_SHA" ]; then
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "Stale-SHA guard: the PR head moved from \`$EXPECTED_SHA\` to \`$CURRENT_REMOTE_SHA\` while this run was in progress. Not pushing this run's commit -- re-trigger @claude to re-run against the current head."
+            echo "PR head changed since this run started ($EXPECTED_SHA -> $CURRENT_REMOTE_SHA). Refusing to push."
+            exit 0
+          fi
+
+          # No --force / --force-with-lease: a genuine non-fast-forward is refused
+          # by git itself, not overridden.
+          git push origin "HEAD:refs/heads/${HEAD_BRANCH}"
