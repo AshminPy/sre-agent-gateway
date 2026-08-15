@@ -156,7 +156,7 @@ corrected with a direct link if one exists.
    incident root-cause investigation, bounded by LangGraph loop iterations and LLM call latency,
    not by design)? Is `run_query_job()` the intended pattern for this duration range specifically,
    or is there a different recommended approach?
-7. Separately: is `300.5`–`300.7s` (consistently just over an exact 300s mark, across four
+7. Separately: is `300.5`–`300.7s` (consistently just over an exact 300s mark, across five
    independent runs on two different days) expected/known client-observed jitter, or could it
    indicate the real server-side cutoff is slightly different from exactly 300s?
 
@@ -176,16 +176,19 @@ corrected with a direct link if one exists.
 
 We've added an application-level safety budget (`agent/nodes/loop_controller.py`,
 `SAFETY_BUDGET_SECONDS=200`) that stops our LangGraph agent from *starting* another expensive
-step once elapsed time leaves too little headroom before this boundary — so instead of a bare
-client failure with zero output, the caller gets a truthful partial result
+step once elapsed time leaves too little headroom before this boundary — so instead of running
+until the platform kills it with zero output, the backend can produce a truthful partial result
 (`loop_exit_reason=safety_budget_exceeded`). This is a workaround, not a fix: it cannot interrupt
 a single model/tool call already in progress, so a call that starts just under our internal budget
-and itself runs long can still hit the real platform boundary with no output delivered. Confirmed
-live twice more on 2026-08-14 (`run_20260814_100527_jkhe`, 343.7s total; `run_20260814_152352_azgu`,
-758.3s total) — the check fires correctly but the caller still only sees the raw `stream timeout`
-error, not the truthful partial result the backend eventually produces. This is why we're asking
-Google directly rather than only mitigating client-side, and why we're now evaluating
-`run_query_job()` as a transport-level fix (Questions 4–6 above).
+and itself runs long can still hit the real platform boundary before that partial result is ever
+returned. Confirmed live twice more on 2026-08-14 (`run_20260814_100527_jkhe`, 343.7s total;
+`run_20260814_152352_azgu`, 758.3s total) — the check fired correctly and the backend reached
+`safety_budget_exceeded` in both cases, but the synchronous caller still only received the raw
+`stream timeout` error, not the truthful partial result the backend produced. In other words, the
+safety budget does not currently protect or deliver that result to the synchronous caller once
+execution crosses the managed stream boundary. This is why we're asking Google directly rather
+than only mitigating client-side, and why we're now evaluating `run_query_job()` as a
+transport-level fix (Questions 4–6 above).
 
 ## Attachments to prepare before filing
 
