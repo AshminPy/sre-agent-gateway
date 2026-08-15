@@ -475,6 +475,69 @@ def run_scenario_async(agent_engines_client, name: str, verbose: bool = False,
     raise QueryJobTimeout(job_name=job_name, output_gcs_uri=job.output_gcs_uri, timeout_s=timeout_s)
 
 
+def run_scenario_stream(agent, name: str, verbose: bool = False) -> dict:
+    """issue #103: native streaming transport via stream_query_reasoning_engine().
+
+    Uses the SAME low-level GAPIC client as run_scenario() (get_agent()) --
+    just a different method. No GCS involved (unlike run_scenario_async()),
+    so today's Agent Gateway routing-miss failure (see #103 issue history)
+    structurally cannot recur here. Each streamed chunk is expected to be
+    either a safe progress event ({"status": "investigating", ...}) or the
+    final {"status": "complete", "result": {...}} -- printed as received,
+    not accumulated/interpreted beyond that.
+    """
+
+    scenario = dict(SCENARIOS[name])
+    print(f"\n{'='*65}")
+    print(f"  SCENARIO (stream) : {name.upper()}")
+    print(f"  What              : {DESCRIPTIONS.get(name, '')}")
+    print(f"{'='*65}")
+
+    start = time.time()
+    final_result = None
+    progress_count = 0
+    try:
+        response_stream = agent.stream_query_reasoning_engine(
+            request={
+                "name": _resource_name(),
+                "input": scenario,
+                "class_method": "stream_query",
+            }
+        )
+        for chunk in response_stream:
+            elapsed = time.time() - start
+            try:
+                event = json.loads(chunk.data.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError) as parse_exc:
+                print(f"  [{elapsed:6.1f}s] (unparseable chunk, {len(chunk.data)} bytes): {parse_exc}")
+                continue
+
+            status = event.get("status")
+            if status == "investigating":
+                progress_count += 1
+                print(f"  [{elapsed:6.1f}s] investigating (stage={event.get('stage', '?')}) — chunk #{progress_count}")
+            elif status == "complete":
+                final_result = event.get("result", {})
+                print(f"\n  Stream complete [{elapsed:.1f}s] — {progress_count} progress events received")
+                if verbose:
+                    print(json.dumps(final_result, indent=2))
+            else:
+                print(f"  [{elapsed:6.1f}s] unexpected event shape (status={status!r}) — ignored")
+
+        elapsed = time.time() - start
+        if final_result is None:
+            return {"scenario": name, "status": "error", "elapsed": elapsed,
+                     "error": "stream ended without a final {status: complete} event",
+                     "progress_events": progress_count}
+        return {"scenario": name, "status": "ok", "elapsed": elapsed,
+                 "result": final_result, "progress_events": progress_count}
+
+    except Exception as e:
+        elapsed = time.time() - start
+        print(f"\n  ERROR [{elapsed:.1f}s]: {e}")
+        return {"scenario": name, "status": "error", "elapsed": elapsed, "error": str(e)}
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Invoke SRE Agent against live k8s incident scenarios"
@@ -484,14 +547,26 @@ def main():
     parser.add_argument("--list",     action="store_true", help="List all scenarios and exit")
     parser.add_argument("--session",  action="store_true", help="Create an Agent Engine session per scenario (multi-turn)")
     parser.add_argument("--async-query", action="store_true",
-                         help="issue #103 Slice 1: use run_query_job() instead of the "
-                              "synchronous query_reasoning_engine() call. Requires "
-                              "--scenario (single scenario only in Slice 1) and the "
-                              "'invoke' extra (pip install -e '.[invoke]').")
+                         help="issue #103: EXPERIMENTAL, currently Google-blocked -- use "
+                              "run_query_job() instead of the synchronous "
+                              "query_reasoning_engine() call. Requires --scenario (single "
+                              "scenario only) and the 'invoke' extra "
+                              "(pip install -e '.[invoke]'). Do not use for demos -- see "
+                              "issue #103 for the known Agent Gateway routing failure.")
+    parser.add_argument("--stream-query", action="store_true",
+                         help="issue #103: use native stream_query_reasoning_engine() "
+                              "instead of the synchronous query_reasoning_engine() call. "
+                              "Requires --scenario (single scenario only). Requires the "
+                              "Agent Engine to have been redeployed with stream_query() "
+                              "support -- not yet deployed as of this flag's introduction.")
     args = parser.parse_args()
 
     if args.async_query and not args.scenario:
         sys.exit("--async-query requires --scenario (single scenario only in Slice 1)")
+    if args.stream_query and not args.scenario:
+        sys.exit("--stream-query requires --scenario (single scenario only)")
+    if args.async_query and args.stream_query:
+        sys.exit("--async-query and --stream-query are mutually exclusive")
 
     if args.list:
         print("\nAvailable scenarios:\n")
@@ -524,6 +599,14 @@ def main():
                 "backend execution or billing."
             )
             sys.exit(1)
+        print(f"\n  Result: {r['status']}")
+        return
+
+    if args.stream_query:
+        print(f"Connecting to Agent Engine {ENGINE_ID} in {PROJECT}/{REGION} (stream)...")
+        agent = get_agent()
+        print("Connected.")
+        r = run_scenario_stream(agent, args.scenario, verbose=args.verbose)
         print(f"\n  Result: {r['status']}")
         return
 
