@@ -21,6 +21,15 @@ eval = [
   "google-cloud-aiplatform[agent_engines,evaluation]>=1.60.0",
   "pandas>=2.0.0",
 ]
+# issue #103 Slice 1: invoke_agent.py's async run_query_job()/check_query_job() path
+# needs the vertexai._genai.agent_engines.AgentEngines SDK class, added in
+# google-cloud-aiplatform 1.145.0 (2026-04-01) and backed by the AsyncQueryReasoningEngine
+# v1 API GA'd in 1.149.0 (2026-04-27) -- confirmed via the SDK's own CHANGELOG.md.
+# Floor is 1.150.0 (just past that GA) rather than 1.145.0 exactly, for margin. Upper bound
+# excludes an unreviewed future major-version upgrade.
+invoke = [
+  "google-cloud-aiplatform[agent_engines]>=1.150.0,<2.0.0",
+]
 
 [tool.ruff]
 line-length = 100

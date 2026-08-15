@@ -70,3 +70,25 @@ resource "google_storage_bucket_object" "eval_dataset" {
   bucket = google_storage_bucket.eval.name
   source = "${path.module}/../../eval/dataset.jsonl"
 }
+
+# issue #103 Slice 1: transient scratch I/O for Agent Engine long-running query jobs
+# (run_query_job/check_query_job). Deliberately NOT the `evidence` bucket -- that bucket
+# is durable/versioned/prevent_destroy=true for the real RCA record; mixing disposable
+# async-transport input/output files into it would blur that distinction. The real RCA
+# still lands in `evidence` unchanged, via the same _save_to_gcs() call inside query()
+# that the synchronous path already uses. 7-day lifecycle is a PROPOSED operational
+# value, not an established requirement -- revisit if real usage needs longer.
+resource "google_storage_bucket" "query_jobs" {
+  project                     = var.project_a_id
+  name                        = "${var.project_a_id}-query-jobs"
+  location                    = var.region
+  uniform_bucket_level_access = true
+  force_destroy               = true # disposable scratch data, unlike `evidence`
+
+  lifecycle_rule {
+    condition { age = 7 }
+    action { type = "Delete" }
+  }
+
+  depends_on = [google_project_service.apis]
+}
