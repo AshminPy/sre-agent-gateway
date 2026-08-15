@@ -127,20 +127,38 @@ corrected with a direct link if one exists.
 ## Questions for Google
 
 1. What is the exact, documented request timeout for a synchronous `query`/`streamQuery` call to
-   a deployed Reasoning Engine? Is it exactly 300 seconds, or does our observed `300.5`–`300.6s`
-   reflect e.g. a 300s server-side limit plus client-side overhead?
+   a deployed Reasoning Engine? Is it exactly 300 seconds, or does our observed `300.5`–`300.7s`
+   reflect e.g. a 300s server-side limit plus client-side overhead? (New evidence since this draft
+   was first written: two further live runs on 2026-08-14 hit the identical boundary at 300.6s and
+   300.7s — see issue #103 for full detail. This is a repeatable, not one-off, boundary.)
 2. Is this timeout configurable or raisable — per-project, per-engine, or per-request? If so, how?
 3. Is this limit a property of Agent Engine's request-handling layer (i.e., would it apply
    identically regardless of which LLM the agent calls), or can it vary by model/backend? We
    believe it's model-agnostic based on our own client-code inspection (no timeout set by us,
    error text is the platform's own), but would like this confirmed.
-4. Is there a supported pattern for long-running agent investigations that might legitimately
-   exceed this boundary — e.g. an async/polling completion API, a webhook/callback on completion,
-   or a way to keep the stream alive past 300s — so a slow-but-eventually-successful run doesn't
-   result in total data loss for the caller?
-5. Separately: is `300.5`–`300.6s` (consistently ~0.5s over an exact 300s mark) expected/known
-   client-observed jitter, or could it indicate the real server-side cutoff is slightly different
-   from exactly 300s?
+4. We found `run_query_job()`/`check_query_job()`/`cancel_query_job()` in the installed
+   `vertexai._genai.agent_engines.AgentEngines` SDK class (present since `google-cloud-aiplatform`
+   1.145.0, 2026-04-01 per the SDK's own CHANGELOG.md) backed by the `AsyncQueryReasoningEngine`
+   v1 API (added 1.149.0, 2026-04-27). For a custom, source-deployed agent like ours (LangGraph,
+   only a `query()` method registered — no `stream_query`/`async_query`/`register_operations`
+   defined on our agent class): does `run_query_job()` invoke our existing, already-deployed
+   `query()` operation as-is, or does our agent class need to implement something additional
+   (e.g. an `async_query()` method, or a `register_operations()` override) for
+   `AsyncQueryReasoningEngine` requests to be accepted at all?
+5. Cancellation: does `cancel_query_job()` (which we've traced to a POST against
+   `{operation_name}:cancelAsyncQuery`) actually stop the underlying Agent Engine execution —
+   in-flight Gemini calls, in-flight LangGraph node work — or does it only mark the operation
+   record as cancelled while backend execution (and billing) continues? This matters directly for
+   our cost control on a personal/non-production GCP account; we do not want to rely on
+   cancellation as a hard cost control until this is confirmed.
+6. What is Google's recommended production pattern for an agent workload whose real investigations
+   can legitimately take anywhere from under a minute up to 5–30+ minutes (ours: Kubernetes
+   incident root-cause investigation, bounded by LangGraph loop iterations and LLM call latency,
+   not by design)? Is `run_query_job()` the intended pattern for this duration range specifically,
+   or is there a different recommended approach?
+7. Separately: is `300.5`–`300.7s` (consistently just over an exact 300s mark, across four
+   independent runs on two different days) expected/known client-observed jitter, or could it
+   indicate the real server-side cutoff is slightly different from exactly 300s?
 
 ---
 
@@ -156,13 +174,18 @@ corrected with a direct link if one exists.
 
 ## Current mitigation on our side
 
-We've added an application-level safety budget (`agent/nodes/loop_controller.py`) that stops our
-LangGraph agent from *starting* another expensive step once elapsed time leaves too little
-headroom before this boundary — so instead of a bare client failure with zero output, the caller
-gets a truthful partial result. This is a workaround, not a fix: it cannot interrupt a single
-model/tool call already in progress, so a call that starts just under our internal budget and
-itself runs long can still hit the real platform boundary with no output delivered. This is why
-we're asking Google directly rather than only mitigating client-side.
+We've added an application-level safety budget (`agent/nodes/loop_controller.py`,
+`SAFETY_BUDGET_SECONDS=200`) that stops our LangGraph agent from *starting* another expensive
+step once elapsed time leaves too little headroom before this boundary — so instead of a bare
+client failure with zero output, the caller gets a truthful partial result
+(`loop_exit_reason=safety_budget_exceeded`). This is a workaround, not a fix: it cannot interrupt
+a single model/tool call already in progress, so a call that starts just under our internal budget
+and itself runs long can still hit the real platform boundary with no output delivered. Confirmed
+live twice more on 2026-08-14 (`run_20260814_100527_jkhe`, 343.7s total; `run_20260814_152352_azgu`,
+758.3s total) — the check fires correctly but the caller still only sees the raw `stream timeout`
+error, not the truthful partial result the backend eventually produces. This is why we're asking
+Google directly rather than only mitigating client-side, and why we're now evaluating
+`run_query_job()` as a transport-level fix (Questions 4–6 above).
 
 ## Attachments to prepare before filing
 
