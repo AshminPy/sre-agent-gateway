@@ -245,6 +245,31 @@ def _result_attrs(result: Any) -> dict[str, Any]:
     return attrs
 
 
+def diag_161_log_context(label: str, **extra: Any) -> None:
+    """TEMPORARY diagnostic for issue #161 (Cloud Trace span fragmentation during
+    native stream_query()). Logs thread id + the CURRENT OTel trace/span id seen
+    at this exact point -- metadata only, no prompts/evidence/exceptions. Remove
+    once #161's root cause is confirmed and this diagnostic pass concludes.
+    """
+    import threading
+
+    try:
+        from opentelemetry import trace as _ot
+
+        span_ctx = _ot.get_current_span().get_span_context()
+        valid = bool(span_ctx and span_ctx.is_valid)
+        trace_id = format(span_ctx.trace_id, "032x") if valid else "none"
+        span_id = format(span_ctx.span_id, "016x") if valid else "none"
+    except Exception:
+        valid, trace_id, span_id = False, "error", "error"
+
+    extra_str = " ".join(f"{k}={v}" for k, v in extra.items())
+    log.info(
+        "otel_diag_161 label=%s thread=%s trace_id=%s span_id=%s valid=%s %s",
+        label, threading.get_ident(), trace_id, span_id, valid, extra_str,
+    )
+
+
 def trace_node(span_name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator for LangGraph node functions."""
 
@@ -254,6 +279,10 @@ def trace_node(span_name: str) -> Callable[[Callable[..., Any]], Callable[..., A
             tracer = get_tracer()
             if tracer is None:
                 return func(state, *args, **kwargs)
+
+            # issue #161 diagnostic (D): parent context as trace_node sees it,
+            # BEFORE start_as_current_span() creates the child. TEMPORARY.
+            diag_161_log_context("D_trace_node_before_start", node=span_name)
 
             # issue #76 (compliance follow-up): record_exception=False/
             # set_status_on_exception=False -- otherwise OTel's own context-manager

@@ -128,11 +128,14 @@ class GeminiAdapter(LLMClient):
     def _emit_gen_ai_span(self, usage: LLMUsage, max_tokens: int, span_start_ns: int, span_end_ns: int) -> None:
         """Emit a gen_ai.* OTEL span so Agent Platform Models/Usage tabs show data."""
         try:
-            from agent.otel import get_tracer, set_span_attributes
+            from agent.otel import get_tracer, set_span_attributes, diag_161_log_context
             from opentelemetry import trace as _ot
             tracer = get_tracer()
             if not tracer:
                 return
+            # issue #161 diagnostic (E): parent context as gemini_adapter sees it,
+            # right before capturing it for the gen_ai span's parent. TEMPORARY.
+            diag_161_log_context("E_gen_ai_span_before_capture", model=self.model)
             current_ctx = _ot.set_span_in_context(_ot.get_current_span())
             span = tracer.start_span(
                 f"gen_ai.chat {self.model}",

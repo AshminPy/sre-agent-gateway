@@ -728,6 +728,9 @@ def investigate_stream(payload: dict):
                     "otel outer span check: recording=%s trace_id_valid=%s sampled=%s",
                     span.is_recording(), span_ctx.is_valid, span_ctx.trace_flags.sampled,
                 )
+                # issue #161 diagnostic (A): immediately after the outer span is created.
+                from agent.otel import diag_161_log_context
+                diag_161_log_context("A_outer_span_created")
                 set_span_attributes(span, {
                     "sre.cluster.requested": cluster,
                     "sre.namespace.requested": namespace,
@@ -736,11 +739,18 @@ def investigate_stream(payload: dict):
                     "sre.severity": severity,
                     "sre.source_type": envelope.get("source_type", "manual"),
                 })
+                # issue #161 diagnostic (B): immediately before graph.stream() iteration begins.
+                diag_161_log_context("B_before_stream_iteration_begins")
+                seq = 0
                 for snapshot in graph.stream(
                     state, config={"recursion_limit": GRAPH_RECURSION_LIMIT}, stream_mode="values",
                 ):
                     final_state = snapshot
                     yield
+                    # issue #161 diagnostic (C): immediately after each yield/resume,
+                    # before requesting the next graph snapshot.
+                    seq += 1
+                    diag_161_log_context("C_after_yield_resume", seq=seq)
                 inv_for_span = final_state.get("investigation", {}) or {}
                 ctx_for_span = final_state.get("resolved_context", {}) or {}
                 set_span_attributes(span, {
