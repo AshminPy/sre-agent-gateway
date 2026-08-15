@@ -6,6 +6,10 @@ Usage:
   python invoke_agent.py --scenario 3tier          # single scenario
   python invoke_agent.py --scenario liveness --verbose
   python invoke_agent.py --list                    # list all scenarios
+
+  # issue #103 Slice 1 — async transport (long-running query job), requires:
+  #   pip install -e ".[invoke]"
+  python invoke_agent.py --scenario crashloop --async-query
 """
 
 import argparse
@@ -226,8 +230,23 @@ def get_agent():
     )
 
 
+def get_agent_engines_client():
+    """issue #103 Slice 1: separate client for the async long-running query job path
+    (run_query_job/check_query_job/cancel_query_job). Lives on a different SDK class
+    (vertexai._genai.agent_engines.AgentEngines) than get_agent()'s low-level GAPIC
+    client used by the synchronous path -- both are needed side by side, get_agent()
+    is unchanged.
+    """
+    import vertexai
+    client = vertexai.Client(project=PROJECT, location=REGION)
+    return client.agent_engines
+
+
 def _resource_name() -> str:
     return f"projects/{PROJECT}/locations/{REGION}/reasoningEngines/{ENGINE_ID}"
+
+
+QUERY_JOBS_BUCKET = os.environ.get("QUERY_JOBS_BUCKET", f"{PROJECT}-query-jobs")
 
 
 def create_session(agent) -> str:
@@ -380,6 +399,82 @@ def run_scenario(agent, name: str, verbose: bool = False, session_id: str = None
         return {"scenario": name, "status": "error", "elapsed": elapsed, "error": str(e)}
 
 
+class QueryJobTimeout(TimeoutError):
+    """issue #103 Slice 1: raised when the local poll loop gives up waiting.
+
+    This does NOT mean the backend job stopped. The caller-side poll loop timing out
+    is not evidence the Agent Engine execution stopped, and must never be treated as
+    such -- carries job_name/output_gcs_uri so the caller can check status later or
+    issue a best-effort cancel_query_job, rather than losing the job identifier.
+    """
+
+    def __init__(self, job_name: str, output_gcs_uri: str, timeout_s: float):
+        self.job_name = job_name
+        self.output_gcs_uri = output_gcs_uri
+        super().__init__(
+            f"query job {job_name} did not complete within {timeout_s}s "
+            f"(caller-side poll bound, NOT a platform limit). "
+            f"Backend status may still be RUNNING -- output_gcs_uri={output_gcs_uri}. "
+            f"Do not assume the backend stopped. Do not start another live run until "
+            f"this job's actual status is checked (see docs/promotion or the #103 "
+            f"design notes for the manual follow-up procedure)."
+        )
+
+
+def run_scenario_async(agent_engines_client, name: str, verbose: bool = False,
+                        poll_interval: float = 5.0, timeout_s: float = 600.0) -> dict:
+    """issue #103 Slice 1: async transport path via run_query_job()/check_query_job().
+
+    Proves run_query_job -> existing unmodified SREAgent.query() -> existing RCA
+    pipeline -> GCS result retrieval. Does NOT change investigation behavior --
+    SAFETY_BUDGET_SECONDS and max_duration_seconds still apply exactly as they do
+    for the synchronous path, since this invokes the same registered query()
+    operation.
+    """
+    scenario = dict(SCENARIOS[name])
+    print(f"\n{'='*65}")
+    print(f"  SCENARIO (async) : {name.upper()}")
+    print(f"  What             : {DESCRIPTIONS.get(name, '')}")
+    print(f"{'='*65}")
+
+    start = time.time()
+    job = agent_engines_client.run_query_job(
+        name=_resource_name(),
+        config={
+            "query": json.dumps({"input": scenario}),
+            "output_gcs_uri": f"gs://{QUERY_JOBS_BUCKET}/",
+        },
+    )
+    job_name = job.job_name
+    print(f"  Job started: {job_name}")
+    print(f"  Output URI : {job.output_gcs_uri}")
+
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        check = agent_engines_client.check_query_job(
+            name=job_name, config={"retrieve_result": True}
+        )
+        elapsed = time.time() - start
+
+        if check.status == "SUCCESS":
+            parsed = json.loads(check.result)
+            result = parsed.get("output", parsed)  # unwrap only if server mirrors sync envelope
+            print(f"\n  Job complete [{elapsed:.1f}s]: {job_name}")
+            if verbose:
+                print(json.dumps(result, indent=2))
+            return {"scenario": name, "status": "ok", "elapsed": elapsed,
+                    "result": result, "job_name": job_name}
+
+        if check.status == "FAILED":
+            print(f"\n  Job FAILED [{elapsed:.1f}s]: {job_name} — {check.result}")
+            return {"scenario": name, "status": "error", "elapsed": elapsed,
+                    "error": str(check.result), "job_name": job_name}
+
+        time.sleep(poll_interval)
+
+    raise QueryJobTimeout(job_name=job_name, output_gcs_uri=job.output_gcs_uri, timeout_s=timeout_s)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Invoke SRE Agent against live k8s incident scenarios"
@@ -388,7 +483,15 @@ def main():
     parser.add_argument("--verbose",  action="store_true", help="Print full JSON response")
     parser.add_argument("--list",     action="store_true", help="List all scenarios and exit")
     parser.add_argument("--session",  action="store_true", help="Create an Agent Engine session per scenario (multi-turn)")
+    parser.add_argument("--async-query", action="store_true",
+                         help="issue #103 Slice 1: use run_query_job() instead of the "
+                              "synchronous query_reasoning_engine() call. Requires "
+                              "--scenario (single scenario only in Slice 1) and the "
+                              "'invoke' extra (pip install -e '.[invoke]').")
     args = parser.parse_args()
+
+    if args.async_query and not args.scenario:
+        sys.exit("--async-query requires --scenario (single scenario only in Slice 1)")
 
     if args.list:
         print("\nAvailable scenarios:\n")
@@ -402,6 +505,26 @@ def main():
             for n in names:
                 print(f"    {n:14} — {DESCRIPTIONS.get(n, '')}")
             print()
+        return
+
+    if args.async_query:
+        print(f"Connecting to Agent Engine {ENGINE_ID} in {PROJECT}/{REGION} (async)...")
+        agent_engines_client = get_agent_engines_client()
+        print("Connected.")
+        try:
+            r = run_scenario_async(agent_engines_client, args.scenario, verbose=args.verbose)
+        except QueryJobTimeout as e:
+            print(f"\n  TIMEOUT (local poll bound): {e}")
+            print(f"  job_name={e.job_name}")
+            print(f"  output_gcs_uri={e.output_gcs_uri}")
+            print(
+                "  Manual follow-up required before any rerun: check this job's actual "
+                "status (check_query_job), and only then decide whether a best-effort "
+                "cancel_query_job is warranted -- cancellation is not confirmed to stop "
+                "backend execution or billing."
+            )
+            sys.exit(1)
+        print(f"\n  Result: {r['status']}")
         return
 
     print(f"Connecting to Agent Engine {ENGINE_ID} in {PROJECT}/{REGION}...")
