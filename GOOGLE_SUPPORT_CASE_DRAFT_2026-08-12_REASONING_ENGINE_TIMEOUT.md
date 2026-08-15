@@ -136,27 +136,24 @@ corrected with a direct link if one exists.
    identically regardless of which LLM the agent calls), or can it vary by model/backend? We
    believe it's model-agnostic based on our own client-code inspection (no timeout set by us,
    error text is the platform's own), but would like this confirmed.
-4. We found `run_query_job()`/`check_query_job()`/`cancel_query_job()` in the installed
-   `vertexai._genai.agent_engines.AgentEngines` SDK class (present since `google-cloud-aiplatform`
-   1.145.0, 2026-04-01 per the SDK's own CHANGELOG.md) backed by the `AsyncQueryReasoningEngine`
-   v1 API (added 1.149.0, 2026-04-27). For a custom, source-deployed agent like ours (LangGraph,
-   only a `query()` method registered — no `stream_query`/`async_query`/`register_operations`
-   defined on our agent class): does `run_query_job()` invoke our existing, already-deployed
-   `query()` operation as-is, or does our agent class need to implement something additional
-   (e.g. an `async_query()` method, or a `register_operations()` override) for
-   `AsyncQueryReasoningEngine` requests to be accepted at all?
+4. We've confirmed `run_query_job()`/`check_query_job()`/`cancel_query_job()` is the documented
+   long-running query job pattern for custom agents (present since `google-cloud-aiplatform`
+   1.145.0, 2026-04-01, backed by the `AsyncQueryReasoningEngine` v1 API, 1.149.0, 2026-04-27),
+   and that the documented request shape wraps the query as `{"input": {...}}`, matching the
+   `input` field our synchronous `query()` requests already use. Our remaining question is narrow:
+   our Reasoning Engine resource was created 2026-08-10 (after the documented 2026-04-22
+   eligibility date) — can Google confirm this specific resource/configuration (a custom,
+   source-deployed LangGraph agent registering only a `query()` operation, no `stream_query`/
+   `async_query`/`register_operations`) is fully eligible for `run_query_job()`, or is there
+   additional agent-class configuration required beyond what our synchronous `query()` already
+   implements?
 5. Cancellation: does `cancel_query_job()` (which we've traced to a POST against
    `{operation_name}:cancelAsyncQuery`) actually stop the underlying Agent Engine execution —
    in-flight Gemini calls, in-flight LangGraph node work — or does it only mark the operation
    record as cancelled while backend execution (and billing) continues? This matters directly for
    our cost control on a personal/non-production GCP account; we do not want to rely on
    cancellation as a hard cost control until this is confirmed.
-6. What is Google's recommended production pattern for an agent workload whose real investigations
-   can legitimately take anywhere from under a minute up to 5–30+ minutes (ours: Kubernetes
-   incident root-cause investigation, bounded by LangGraph loop iterations and LLM call latency,
-   not by design)? Is `run_query_job()` the intended pattern for this duration range specifically,
-   or is there a different recommended approach?
-7. Separately: is `300.5`–`300.7s` (consistently just over an exact 300s mark, across five
+6. Separately: is `300.5`–`300.7s` (consistently just over an exact 300s mark, across five
    independent runs on two different days) expected/known client-observed jitter, or could it
    indicate the real server-side cutoff is slightly different from exactly 300s?
 
