@@ -75,6 +75,18 @@ resource "google_storage_bucket_iam_member" "runtime_cluster_config_reader" {
   member = local.agent_identity_member
 }
 
+# issue #103 Slice 1: the Reasoning Engine platform service agent (already granted
+# roles below for gateway networking) is the identity that writes long-running query
+# job output during execution. Caller-side read/write (uploading the input blob,
+# downloading the output blob) happens under the caller's own already-existing
+# credentials via the installed SDK -- no separate grant needed for that here, since
+# Slice 1 does not commit a personal identity into Terraform.
+resource "google_storage_bucket_iam_member" "query_jobs_re_writer" {
+  bucket = google_storage_bucket.query_jobs.name
+  role   = "roles/storage.objectCreator"
+  member = "serviceAccount:service-${data.google_project.a.number}@gcp-sa-aiplatform-re.iam.gserviceaccount.com"
+}
+
 # ── Runtime Agent Identity: resource-level Cloud Run invoker (fallback MCP) ──
 resource "google_cloud_run_v2_service_iam_member" "runtime_invoke_mcp" {
   count = var.enable_custom_mcp ? 1 : 0
