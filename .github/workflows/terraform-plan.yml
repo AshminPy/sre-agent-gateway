@@ -92,7 +92,11 @@ jobs:
       # see archive/RESOLVED_2026-07-17_TROUBLESHOOTING_LOG.md). Keep this in sync with terraform.tfvars.
       - name: Plan
         run: |
+          # TEMPORARY, proof-only -target scoping for issue #103 deployment isolation --
+          # NOT part of the real change, this branch is throwaway and will never be merged.
           terraform plan -no-color \
+            -target="google_storage_bucket.query_jobs" \
+            -target="google_storage_bucket_iam_member.query_jobs_re_writer" \
             -var="project_a_id=${{ secrets.GCP_PROJECT_A_ID }}" \
             -var="project_b_id=${{ secrets.GCP_PROJECT_B_ID }}" \
             -var="region=${{ secrets.GCP_REGION }}" \
