@@ -386,20 +386,22 @@ def _build_rca_report(
     return "\n".join(L)
 
 
-def investigate(payload: dict) -> dict:
-    """
-    Core investigation function.
-    Called by Agent Runtime query() and by run.py locally.
+def _prepare_investigation_envelope(payload: dict):
+    """Shared setup for investigate()/investigate_stream(): session reset,
+    payload field extraction, incident envelope construction.
+
+    Returns (query, cluster, namespace, pod, deployment, severity, envelope)
+    on success, or a failure dict ({"error": ..., "status": "failed"}) if
+    query is missing -- same shape investigate() has always returned for
+    this case, callers must return it immediately without further processing.
     """
     # issue #74: the LLM adapter instance is cached process-wide (agent.llm.registry) --
     # without this reset, its session token/cost/call/latency counters accumulate across
     # EVERY investigation a warm/reused process handles, not just this one. This is the
-    # one real entry point for every investigation (this function's own docstring), so
-    # resetting here scopes those counters correctly for the rest of the run.
+    # one real entry point for every investigation, so resetting here scopes those
+    # counters correctly for the rest of the run.
     from agent.llm import reset_session
     reset_session()
-
-    started_at = time.time()
 
     query      = payload.get("query", "")
     # issue #73: never default cluster/namespace to test values -- a genuinely-missing
@@ -413,27 +415,209 @@ def investigate(payload: dict) -> dict:
     if not query:
         return {"error": "query is required", "status": "failed"}
 
+    envelope = {
+        "source_type":     payload.get("source_type", "manual"),
+        "source_event_id": payload.get("source_event_id", ""),
+        "user_query":      query,
+        "resource_hints": {
+            "cluster":    cluster,
+            "namespace":  namespace,
+            "pod":        pod,
+            "deployment": deployment,
+        },
+        "incident": {
+            "severity": severity,
+            "title":    payload.get("title", query[:80]),
+            "service":  payload.get("service", ""),
+        },
+        "memory_context": payload.get("memory_context", ""),
+    }
+    return query, cluster, namespace, pod, deployment, severity, envelope
+
+
+def _finalize_investigation_result(result: dict, started_at: float, payload: dict) -> dict:
+    """Shared post-graph-execution result builder for investigate()/investigate_stream().
+
+    Takes the final LangGraph state (from either graph.invoke() or the last
+    snapshot yielded by graph.stream(..., stream_mode="values")) and builds
+    the same observability event + final result dict investigate() has
+    always returned. Behavior-identical extraction -- not a rewrite.
+    """
+    from agent.llm import get_session_usage
+    from agent.otel import get_trace_id_hex
+
+    namespace  = (payload.get("namespace") or "").strip()
+    pod        = payload.get("pod", "")
+    cluster    = (payload.get("cluster") or "").strip()
+    deployment = payload.get("deployment", "")
+
+    summary = result.get("final_summary", {}) or {}
+    inv     = result["investigation"]
+    ctx     = result.get("resolved_context", {}) or {}
+    errors  = result.get("errors", []) or []
+    evidence_ids = result.get("evidence_ids", []) or []
+    tool_history = result.get("tool_history", []) or []
+    latency_ms = int((time.time() - started_at) * 1000)
+
+    # Try several possible places because token fields may live in different
+    # state keys depending on which node produced them.
+    usage = result.get("usage", {}) or result.get("token_usage", {}) or {}
+    tokens_input = _safe_int(
+        inv.get("tokens_input")
+        or summary.get("tokens_input")
+        or usage.get("tokens_input")
+        or usage.get("input_tokens")
+        or result.get("tokens_input")
+    )
+    tokens_output = _safe_int(
+        inv.get("tokens_output")
+        or summary.get("tokens_output")
+        or usage.get("tokens_output")
+        or usage.get("output_tokens")
+        or result.get("tokens_output")
+    )
+    tokens_total = _safe_int(
+        inv.get("tokens_total")
+        or summary.get("tokens_total")
+        or usage.get("tokens_total")
+        or usage.get("total_tokens")
+        or result.get("tokens_total")
+    )
+
+    # If only node-level totals exist in logs/state, use that if present.
+    if tokens_total == 0:
+        tokens_total = _safe_int(result.get("total_tokens") or inv.get("tokens") or summary.get("tokens"))
+
+    estimated_cost_usd = _safe_float(
+        inv.get("estimated_cost_usd")
+        or summary.get("estimated_cost_usd")
+        or usage.get("estimated_cost_usd")
+        or result.get("estimated_cost_usd")
+    )
+
+    confidence = _safe_float(inv.get("confidence", summary.get("confidence_score", 0.0)))
+    confidence_band = inv.get("confidence_band", summary.get("confidence_band", "escalate"))
+
+    # PRODUCTION-LAUNCH-PLAN.md Priority 10 fields (2026-08-07 fix): these were built
+    # and unit-tested in rca_builder.py/_write_observability_log's OWN separate
+    # "sre-agent-investigations" log entry, but never threaded into THIS event —
+    # the one iac/agent/monitoring.tf's unresolved_cluster and investigation_latency
+    # log-based metrics actually filter on. Confirmed missing via a real live agent
+    # invocation + a direct Cloud Logging query before this fix (jsonPayload had none
+    # of these keys), not assumed from code review alone.
+    mcp_latency_s = round(sum(h.get("duration_s", 0) or 0 for h in tool_history), 3)
+    session_usage = get_session_usage()
+    evidence_store = result.get("evidence_store", {}) or {}
+    evidence_storage_ok = not any(ev.get("gcs_write_failed") for ev in evidence_store.values())
+
+    # ============================================================
+    # Structured observability log — one JSON event per agent run
+    # Cloud Logging can parse this as jsonPayload when emitted to stdout.
+    # Use this later for log-based metrics and Cloud Monitoring charts.
+    # ============================================================
+    obs_event = {
+        "event_type": "sre_agent_run",
+        "run_id": result.get("run_id", ""),
+        "trace_id": get_trace_id_hex(),
+        "incident_type": ctx.get("incident_type", summary.get("incident_type", "")),
+        "project_id": ctx.get("project_id", PROJECT_ID),
+        "cluster": ctx.get("cluster_name", ctx.get("cluster", cluster)),
+        "cluster_region": ctx.get("cluster_region", ctx.get("region", "")),
+        "cluster_routing_method": ctx.get("cluster_routing_method", ""),
+        "cluster_routing_reason": ctx.get("cluster_routing_reason", ""),
+        "namespace": ctx.get("namespace", namespace),
+        "pod": ctx.get("pod", pod),
+        "deployment": ctx.get("deployment", deployment),
+        "primary_mcp_source": ctx.get("primary_mcp_source", ctx.get("mcp_source", "")),
+        "selected_mcp": result.get("selected_mcp", ""),
+        "tools_called": len(tool_history),
+        "evidence_count": len(evidence_ids),
+        "evidence_ids": evidence_ids,
+        "evidence_storage_ok": evidence_storage_ok,
+        "confidence": confidence,
+        "confidence_band": confidence_band,
+        # New confidence framework fields — additive, does not change any existing field
+        # name/value read by iac/agent/monitoring.tf's log-based metrics or alerts.
+        "outcome": summary.get("outcome", "unknown"),
+        "policy_version": summary.get("policy_version", ""),
+        "investigation_completeness_score": (summary.get("investigation_completeness") or {}).get("score"),
+        "root_cause_confidence_score": (summary.get("root_cause_confidence") or {}).get("score"),
+        "contradictions_count": len(summary.get("contradictions") or []),
+        "status": inv.get("status", "unknown"),
+        "loop_exit_reason": inv.get("loop_exit_reason", result.get("loop_exit_reason")),
+        "human_review": bool(summary.get("requires_human_review", True)),
+        "latency_ms": latency_ms,
+        "mcp_latency_s": mcp_latency_s,
+        "model_latency_s": session_usage.get("session_model_latency_s"),
+        "total_latency_s": round(latency_ms / 1000, 3),
+        "tokens_input": tokens_input,
+        "tokens_output": tokens_output,
+        "tokens_total": tokens_total,
+        "estimated_cost_usd": estimated_cost_usd,
+        "error_count": len(errors),
+        "pagerduty_incident_id": ctx.get("pagerduty_incident_id"),
+        # Placeholders, not silently omitted — mirrors rca_builder.py's own comment:
+        # connect_gateway_status has no code producing a real value yet (Priority 3
+        # has no app-observable signal into the agent process); agent_gateway_authz_mode
+        # is always None while the gateway's IAP authz extension runs in DRY_RUN.
+        "connect_gateway_status": None,
+        "agent_gateway_authz_mode": None,
+    }
+
+    # stdout JSON line for Cloud Logging jsonPayload parsing.
+    print(json.dumps(obs_event, separators=(",", ":")), flush=True)
+
+    # Human-readable fallback log line.
+    log.info(
+        "observability event written run_id=%s cluster=%s tokens=%s cost=$%.6f latency_ms=%s",
+        obs_event["run_id"],
+        obs_event["cluster"],
+        obs_event["tokens_total"],
+        obs_event["estimated_cost_usd"],
+        obs_event["latency_ms"],
+    )
+
+    from agent.otel import flush_traces
+    flush_traces(timeout_millis=5000)
+
+    return {
+        "schema_version":     "2.0",
+        "status":             inv["status"],
+        "confidence":         inv.get("confidence", 0.0),
+        "confidence_deprecated": True,
+        "confidence_band":    inv.get("confidence_band",
+                              summary.get("confidence_band", "escalate")),
+        "outcome":            summary.get("outcome", "unknown"),
+        "investigation_completeness": summary.get("investigation_completeness", {}),
+        "root_cause_confidence":      summary.get("root_cause_confidence", {}),
+        "tool_calls":         len(tool_history),
+        "evidence_ids":       evidence_ids,
+        "run_id":             result.get("run_id", ""),
+        "summary":            summary,
+        "executive_summary":  _build_executive_summary(summary, inv, ctx),
+        "rca_report":         _build_rca_report(payload, summary, inv, ctx, obs_event, evidence_ids),
+        "working_theory":     result.get("working_theory", ""),
+        "errors":             errors,
+        "requires_human_review": summary.get("requires_human_review", True),
+        "observability":      obs_event,
+    }
+
+
+def investigate(payload: dict) -> dict:
+    """
+    Core investigation function.
+    Called by Agent Runtime query() and by run.py locally.
+    """
+    started_at = time.time()
+
+    prep = _prepare_investigation_envelope(payload)
+    if isinstance(prep, dict):
+        return prep  # {"error": "query is required", "status": "failed"}
+    query, cluster, namespace, pod, deployment, severity, envelope = prep
+
     try:
         from agent.state import get_initial_state
-        from agent.otel import get_tracer, set_span_attributes, flush_traces
-
-        envelope = {
-            "source_type":     payload.get("source_type", "manual"),
-            "source_event_id": payload.get("source_event_id", ""),
-            "user_query":      query,
-            "resource_hints": {
-                "cluster":    cluster,
-                "namespace":  namespace,
-                "pod":        pod,
-                "deployment": deployment,
-            },
-            "incident": {
-                "severity": severity,
-                "title":    payload.get("title", query[:80]),
-                "service":  payload.get("service", ""),
-            },
-            "memory_context": payload.get("memory_context", ""),
-        }
+        from agent.otel import get_tracer, set_span_attributes
 
         tracer = get_tracer()
         if tracer is not None:
@@ -496,158 +680,91 @@ def investigate(payload: dict) -> dict:
             state  = get_initial_state(envelope)
             result = graph.invoke(state, config={"recursion_limit": GRAPH_RECURSION_LIMIT})
 
-        summary = result.get("final_summary", {}) or {}
-        inv     = result["investigation"]
-        ctx     = result.get("resolved_context", {}) or {}
-        errors  = result.get("errors", []) or []
-        evidence_ids = result.get("evidence_ids", []) or []
-        tool_history = result.get("tool_history", []) or []
-        latency_ms = int((time.time() - started_at) * 1000)
+        return _finalize_investigation_result(result, started_at, payload)
 
-        # Try several possible places because token fields may live in different
-        # state keys depending on which node produced them.
-        usage = result.get("usage", {}) or result.get("token_usage", {}) or {}
-        tokens_input = _safe_int(
-            inv.get("tokens_input")
-            or summary.get("tokens_input")
-            or usage.get("tokens_input")
-            or usage.get("input_tokens")
-            or result.get("tokens_input")
-        )
-        tokens_output = _safe_int(
-            inv.get("tokens_output")
-            or summary.get("tokens_output")
-            or usage.get("tokens_output")
-            or usage.get("output_tokens")
-            or result.get("tokens_output")
-        )
-        tokens_total = _safe_int(
-            inv.get("tokens_total")
-            or summary.get("tokens_total")
-            or usage.get("tokens_total")
-            or usage.get("total_tokens")
-            or result.get("tokens_total")
-        )
+    except Exception as exc:
+        log.exception("investigation failed: %s", exc)
+        return {"error": str(exc), "status": "failed"}
 
-        # If only node-level totals exist in logs/state, use that if present.
-        if tokens_total == 0:
-            tokens_total = _safe_int(result.get("total_tokens") or inv.get("tokens") or summary.get("tokens"))
 
-        estimated_cost_usd = _safe_float(
-            inv.get("estimated_cost_usd")
-            or summary.get("estimated_cost_usd")
-            or usage.get("estimated_cost_usd")
-            or result.get("estimated_cost_usd")
-        )
+def investigate_stream(payload: dict):
+    """Streaming counterpart to investigate() (issue #103, native stream_query).
 
-        confidence = _safe_float(inv.get("confidence", summary.get("confidence_score", 0.0)))
-        confidence_band = inv.get("confidence_band", summary.get("confidence_band", "escalate"))
+    Same setup, same OTel span, same recursion limit, same final-result
+    logic as investigate() — the ONLY difference is graph.stream(...,
+    stream_mode="values") in place of graph.invoke(). stream_mode="values"
+    yields the complete state snapshot after each step (NOT node-keyed
+    updates — confirmed against the installed langgraph==0.6.11's own
+    Pregel.stream() docstring). This generator yields once per snapshot as
+    an internal progress signal (no state is exposed at this layer either —
+    callers must not assume the yielded value carries any content) and
+    returns the same final result dict investigate() would return, via
+    StopIteration.value — see SREAgent.stream_query() for how callers drive
+    this generator and convert each yield into a safe external event.
+    """
+    started_at = time.time()
 
-        # PRODUCTION-LAUNCH-PLAN.md Priority 10 fields (2026-08-07 fix): these were built
-        # and unit-tested in rca_builder.py/_write_observability_log's OWN separate
-        # "sre-agent-investigations" log entry, but never threaded into THIS event —
-        # the one iac/agent/monitoring.tf's unresolved_cluster and investigation_latency
-        # log-based metrics actually filter on. Confirmed missing via a real live agent
-        # invocation + a direct Cloud Logging query before this fix (jsonPayload had none
-        # of these keys), not assumed from code review alone.
-        from agent.llm import get_session_usage
-        from agent.otel import get_trace_id_hex
+    prep = _prepare_investigation_envelope(payload)
+    if isinstance(prep, dict):
+        return prep
+    query, cluster, namespace, pod, deployment, severity, envelope = prep
 
-        mcp_latency_s = round(sum(h.get("duration_s", 0) or 0 for h in tool_history), 3)
-        session_usage = get_session_usage()
-        evidence_store = result.get("evidence_store", {}) or {}
-        evidence_storage_ok = not any(ev.get("gcs_write_failed") for ev in evidence_store.values())
+    try:
+        from agent.state import get_initial_state
+        from agent.otel import get_tracer, set_span_attributes
+        from agent.graph import GRAPH_RECURSION_LIMIT
 
-        # ============================================================
-        # Structured observability log — one JSON event per agent run
-        # Cloud Logging can parse this as jsonPayload when emitted to stdout.
-        # Use this later for log-based metrics and Cloud Monitoring charts.
-        # ============================================================
-        obs_event = {
-            "event_type": "sre_agent_run",
-            "run_id": result.get("run_id", ""),
-            "trace_id": get_trace_id_hex(),
-            "incident_type": ctx.get("incident_type", summary.get("incident_type", "")),
-            "project_id": ctx.get("project_id", PROJECT_ID),
-            "cluster": ctx.get("cluster_name", ctx.get("cluster", cluster)),
-            "cluster_region": ctx.get("cluster_region", ctx.get("region", "")),
-            "cluster_routing_method": ctx.get("cluster_routing_method", ""),
-            "cluster_routing_reason": ctx.get("cluster_routing_reason", ""),
-            "namespace": ctx.get("namespace", namespace),
-            "pod": ctx.get("pod", pod),
-            "deployment": ctx.get("deployment", deployment),
-            "primary_mcp_source": ctx.get("primary_mcp_source", ctx.get("mcp_source", "")),
-            "selected_mcp": result.get("selected_mcp", ""),
-            "tools_called": len(tool_history),
-            "evidence_count": len(evidence_ids),
-            "evidence_ids": evidence_ids,
-            "evidence_storage_ok": evidence_storage_ok,
-            "confidence": confidence,
-            "confidence_band": confidence_band,
-            # New confidence framework fields — additive, does not change any existing field
-            # name/value read by iac/agent/monitoring.tf's log-based metrics or alerts.
-            "outcome": summary.get("outcome", "unknown"),
-            "policy_version": summary.get("policy_version", ""),
-            "investigation_completeness_score": (summary.get("investigation_completeness") or {}).get("score"),
-            "root_cause_confidence_score": (summary.get("root_cause_confidence") or {}).get("score"),
-            "contradictions_count": len(summary.get("contradictions") or []),
-            "status": inv.get("status", "unknown"),
-            "loop_exit_reason": inv.get("loop_exit_reason", result.get("loop_exit_reason")),
-            "human_review": bool(summary.get("requires_human_review", True)),
-            "latency_ms": latency_ms,
-            "mcp_latency_s": mcp_latency_s,
-            "model_latency_s": session_usage.get("session_model_latency_s"),
-            "total_latency_s": round(latency_ms / 1000, 3),
-            "tokens_input": tokens_input,
-            "tokens_output": tokens_output,
-            "tokens_total": tokens_total,
-            "estimated_cost_usd": estimated_cost_usd,
-            "error_count": len(errors),
-            "pagerduty_incident_id": ctx.get("pagerduty_incident_id"),
-            # Placeholders, not silently omitted — mirrors rca_builder.py's own comment:
-            # connect_gateway_status has no code producing a real value yet (Priority 3
-            # has no app-observable signal into the agent process); agent_gateway_authz_mode
-            # is always None while the gateway's IAP authz extension runs in DRY_RUN.
-            "connect_gateway_status": None,
-            "agent_gateway_authz_mode": None,
-        }
+        tracer = get_tracer()
+        graph  = _get_graph()
+        state  = get_initial_state(envelope)
+        final_state = state
 
-        # stdout JSON line for Cloud Logging jsonPayload parsing.
-        print(json.dumps(obs_event, separators=(",", ":")), flush=True)
+        if tracer is not None:
+            with tracer.start_as_current_span(
+                "sre_agent.investigation", record_exception=False, set_status_on_exception=False,
+            ) as span:
+                span_ctx = span.get_span_context()
+                log.info(
+                    "otel outer span check: recording=%s trace_id_valid=%s sampled=%s",
+                    span.is_recording(), span_ctx.is_valid, span_ctx.trace_flags.sampled,
+                )
+                set_span_attributes(span, {
+                    "sre.cluster.requested": cluster,
+                    "sre.namespace.requested": namespace,
+                    "sre.pod.requested": pod,
+                    "sre.deployment.requested": deployment,
+                    "sre.severity": severity,
+                    "sre.source_type": envelope.get("source_type", "manual"),
+                })
+                for snapshot in graph.stream(
+                    state, config={"recursion_limit": GRAPH_RECURSION_LIMIT}, stream_mode="values",
+                ):
+                    final_state = snapshot
+                    yield
+                inv_for_span = final_state.get("investigation", {}) or {}
+                ctx_for_span = final_state.get("resolved_context", {}) or {}
+                set_span_attributes(span, {
+                    "sre.run_id": final_state.get("run_id", ""),
+                    "sre.cluster": ctx_for_span.get("cluster_name", cluster),
+                    "sre.namespace": ctx_for_span.get("namespace", namespace),
+                    "sre.pod": ctx_for_span.get("pod", pod),
+                    "sre.incident_type": ctx_for_span.get("incident_type", ""),
+                    "sre.status": inv_for_span.get("status", ""),
+                    "sre.confidence": _safe_float(inv_for_span.get("confidence", 0.0)),
+                    "sre.confidence_band": inv_for_span.get("confidence_band", ""),
+                    "sre.tool_calls": len(final_state.get("tool_history", []) or []),
+                    "sre.evidence_count": len(final_state.get("evidence_ids", []) or []),
+                    "sre.tokens_total": _safe_int(inv_for_span.get("tokens_total", 0)),
+                    "sre.estimated_cost_usd": _safe_float(inv_for_span.get("estimated_cost_usd", 0.0)),
+                })
+        else:
+            for snapshot in graph.stream(
+                state, config={"recursion_limit": GRAPH_RECURSION_LIMIT}, stream_mode="values",
+            ):
+                final_state = snapshot
+                yield
 
-        # Human-readable fallback log line.
-        log.info(
-            "observability event written run_id=%s cluster=%s tokens=%s cost=$%.6f latency_ms=%s",
-            obs_event["run_id"],
-            obs_event["cluster"],
-            obs_event["tokens_total"],
-            obs_event["estimated_cost_usd"],
-            obs_event["latency_ms"],
-        )
-
-        flush_traces(timeout_millis=5000)
-
-        return {
-            "schema_version":     "2.0",
-            "status":             inv["status"],
-            "confidence":         inv.get("confidence", 0.0),
-            "confidence_deprecated": True,
-            "confidence_band":    inv.get("confidence_band",
-                                  summary.get("confidence_band", "escalate")),
-            "outcome":            summary.get("outcome", "unknown"),
-            "investigation_completeness": summary.get("investigation_completeness", {}),
-            "root_cause_confidence":      summary.get("root_cause_confidence", {}),
-            "tool_calls":         len(tool_history),
-            "evidence_ids":       evidence_ids,
-            "run_id":             result.get("run_id", ""),
-            "summary":            summary,
-            "executive_summary":  _build_executive_summary(summary, inv, ctx),
-            "rca_report":         _build_rca_report(payload, summary, inv, ctx, obs_event, evidence_ids),
-            "working_theory":     result.get("working_theory", ""),
-            "errors":             errors,
-            "requires_human_review": summary.get("requires_human_review", True),
-            "observability":      obs_event,
-        }
+        return _finalize_investigation_result(final_state, started_at, payload)
 
     except Exception as exc:
         log.exception("investigation failed: %s", exc)
@@ -943,12 +1060,13 @@ class SREAgent:
     # ── Main query entry point ────────────────────────────────────────
 
     @classmethod
-    def query(cls, **kwargs) -> dict:
-        """Called by Agent Runtime for each investigation request.
+    def _prepare_query(cls, kwargs: dict):
+        """Shared prep for query()/stream_query(): payload normalization,
+        Model Armor input sanitize, memory recall.
 
-        Extra fields (not passed to investigate()):
-          session_id : caller-assigned session ID for multi-turn tracking
-          prompt     : JSON string sent by vertexai.Client.evals.run_inference()
+        Returns (payload, session_id, blocked_response). If blocked_response
+        is not None, the caller must return/yield-and-stop immediately with
+        it — input was blocked by Model Armor, no investigation should run.
         """
         payload = dict(kwargs or {})
 
@@ -971,14 +1089,14 @@ class SREAgent:
         session_id = payload.pop("session_id", None)
 
         log.info(
-            "SREAgent.query() cluster=%s session=%s query=%s",
+            "SREAgent query cluster=%s session=%s query=%s",
             cluster, session_id or "none", query_text[:80],
         )
 
         # 1. Model Armor — sanitize input (blocks prompt injection in k8s data)
         sanitized_query, blocked = cls._sanitize(query_text)
         if blocked:
-            return {
+            return payload, session_id, {
                 "status":     "blocked",
                 "error":      "Input blocked by safety filter (prompt injection or harmful content detected)",
                 "session_id": session_id,
@@ -999,8 +1117,19 @@ class SREAgent:
             payload["memory_context"] = memory_ctx
             log.info("Memory context injected (%d chars)", len(memory_ctx))
 
-        # 3. Run investigation
-        result = investigate(payload)
+        return payload, session_id, None
+
+    @classmethod
+    def _finalize_query(cls, payload: dict, result: dict, session_id) -> dict:
+        """Shared completion for query()/stream_query(): GCS persistence,
+        Memory Bank/in-process write, Model Armor output sanitize,
+        session_id attachment. Takes the already-computed investigation
+        result (from either investigate() or investigate_stream()) — behavior
+        identical regardless of which produced it.
+        """
+        query_text = payload.get("query", "")
+        cluster    = (payload.get("cluster") or "").strip()
+        namespace  = (payload.get("namespace") or "").strip()
 
         # 3.5 Persist RCA to GCS (never blocks response — fails silently)
         run_id = result.get("run_id", "")
@@ -1091,6 +1220,55 @@ class SREAgent:
             result["session_id"] = session_id
 
         return result
+
+    @classmethod
+    def query(cls, **kwargs) -> dict:
+        """Called by Agent Runtime for each investigation request.
+
+        Extra fields (not passed to investigate()):
+          session_id : caller-assigned session ID for multi-turn tracking
+          prompt     : JSON string sent by vertexai.Client.evals.run_inference()
+        """
+        payload, session_id, blocked_response = cls._prepare_query(kwargs)
+        if blocked_response is not None:
+            return blocked_response
+
+        result = investigate(payload)
+        return cls._finalize_query(payload, result, session_id)
+
+    @classmethod
+    def stream_query(cls, **kwargs):
+        """issue #103: native streaming counterpart to query().
+
+        Runs the SAME lifecycle as query() (input Model Armor sanitize,
+        memory recall, investigation, GCS persistence, memory write, output
+        Model Armor sanitize, session_id attach) via the shared
+        _prepare_query()/_finalize_query() helpers — the only difference is
+        the investigation runs via investigate_stream() (graph.stream())
+        instead of investigate() (graph.invoke()), so the caller receives
+        periodic safe progress events instead of blocking silently for the
+        whole investigation.
+
+        Yields ONLY these shapes — never raw graph state, node updates,
+        evidence, tool history, prompts, model output, or exceptions:
+          {"status": "investigating", "stage": "workflow_progress"}   (0+ times)
+          {"status": "complete", "result": <same dict query() returns>}  (exactly once, last)
+        """
+        payload, session_id, blocked_response = cls._prepare_query(kwargs)
+        if blocked_response is not None:
+            yield {"status": "complete", "result": blocked_response}
+            return
+
+        gen = investigate_stream(payload)
+        try:
+            while True:
+                next(gen)
+                yield {"status": "investigating", "stage": "workflow_progress"}
+        except StopIteration as stop:
+            result = stop.value if stop.value is not None else {"error": "no result produced", "status": "failed"}
+
+        final_result = cls._finalize_query(payload, result, session_id)
+        yield {"status": "complete", "result": final_result}
 
 
 # ── Local entrypoint — use run.py for full CLI experience ─────────
