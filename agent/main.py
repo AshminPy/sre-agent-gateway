@@ -728,9 +728,6 @@ def investigate_stream(payload: dict):
                     "otel outer span check: recording=%s trace_id_valid=%s sampled=%s",
                     span.is_recording(), span_ctx.is_valid, span_ctx.trace_flags.sampled,
                 )
-                # issue #161 diagnostic (A): immediately after the outer span is created.
-                from agent.otel import diag_161_log_context
-                diag_161_log_context("A_outer_span_created")
                 set_span_attributes(span, {
                     "sre.cluster.requested": cluster,
                     "sre.namespace.requested": namespace,
@@ -739,18 +736,36 @@ def investigate_stream(payload: dict):
                     "sre.severity": severity,
                     "sre.source_type": envelope.get("source_type", "manual"),
                 })
-                # issue #161 diagnostic (B): immediately before graph.stream() iteration begins.
-                diag_161_log_context("B_before_stream_iteration_begins")
-                seq = 0
-                for snapshot in graph.stream(
+                # issue #161: the ambient OTel context this `with` block relies on does
+                # NOT survive this generator's own yield/resume boundary -- confirmed live
+                # (diagnostic logging + real Cloud Trace correlation, same thread ID
+                # throughout, context valid right up to the loop and gone immediately
+                # after the first yield). LangGraph node spans (trace_node) and gen_ai
+                # spans then start as disconnected root traces instead of nesting under
+                # this span. Fix: capture this span's context explicitly ONCE, then
+                # re-attach it ourselves immediately before every single advancement of
+                # the stream iterator (where all real span-creating work -- LangGraph
+                # nodes, Gemini calls -- happens), and detach it again before yielding
+                # control back to the caller. This doesn't depend on whatever mechanism
+                # loses the ambient context between yields, since we never rely on it
+                # persisting on its own.
+                from opentelemetry import context as _otel_context
+
+                outer_otel_context = _otel_context.get_current()
+                stream_iter = graph.stream(
                     state, config={"recursion_limit": GRAPH_RECURSION_LIMIT}, stream_mode="values",
-                ):
-                    final_state = snapshot
-                    yield
-                    # issue #161 diagnostic (C): immediately after each yield/resume,
-                    # before requesting the next graph snapshot.
-                    seq += 1
-                    diag_161_log_context("C_after_yield_resume", seq=seq)
+                )
+                while True:
+                    attach_token = _otel_context.attach(outer_otel_context)
+                    try:
+                        snapshot = next(stream_iter)
+                    except StopIteration:
+                        _otel_context.detach(attach_token)
+                        break
+                    else:
+                        final_state = snapshot
+                        _otel_context.detach(attach_token)
+                        yield
                 inv_for_span = final_state.get("investigation", {}) or {}
                 ctx_for_span = final_state.get("resolved_context", {}) or {}
                 set_span_attributes(span, {
