@@ -41,14 +41,34 @@ def _safe_int(value: Any, default: int = 0) -> int:
 
 
 def get_tracer():
-    """Return a Cloud Trace OpenTelemetry tracer, or None if unavailable."""
+    """Return a Cloud Trace OpenTelemetry tracer, or None if unavailable.
+
+    issue #164 (regression from #130): this used to call trace.set_tracer_provider()
+    to become the GLOBAL default OTel provider, with fallback logic to detect if we
+    lost that race and attach our exporter to whoever won instead. #130's own fix
+    (calling this early, in set_up()) made us win that race 100% of the time (confirmed
+    live: "11/11 workers") -- which means Agent Engine's own built-in managed OTel
+    provider, which the Agent Platform Console's Traces tab and Telemetry collection
+    status read from, never gets to install itself, on any container, ever. Our own
+    spans still exported to Cloud Trace correctly the whole time (confirmed live via
+    the raw Cloud Trace API) -- the Console-side visibility gap was the side effect.
+
+    Fix: stop competing for the global slot entirely. Build our own local
+    TracerProvider, keep a direct reference in `_provider`, and hand out tracers
+    straight from that instance -- never through the global trace.get_tracer()/
+    set_tracer_provider() accessors. Our CloudTraceSpanExporter is then guaranteed to
+    receive our spans regardless of any race, and Agent Engine's own managed provider
+    is free to install itself as the global default undisturbed, restoring the
+    Console's native tracing path. Span parent/child nesting -- including issue #161's
+    context capture/reattach across stream yields -- is unaffected: that mechanism is
+    purely opentelemetry.context (contextvars) based, not tied to provider identity.
+    """
     global _tracer, _provider, _otel_error_logged
 
     if _tracer is not None:
         return _tracer
 
     try:
-        from opentelemetry import trace
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
@@ -68,50 +88,14 @@ def get_tracer():
         )
 
         provider = TracerProvider(resource=resource)
-        processor = BatchSpanProcessor(CloudTraceSpanExporter(project_id=project_id))
-        provider.add_span_processor(processor)
-        trace.set_tracer_provider(provider)
+        provider.add_span_processor(BatchSpanProcessor(CloudTraceSpanExporter(project_id=project_id)))
 
-        # issue #130 (2nd follow-up): set_tracer_provider() can only succeed ONCE per
-        # process and silently no-ops (logs its own warning, doesn't raise) on every
-        # later call -- confirmed live that Agent Engine's own managed runtime also
-        # calls it, during its own startup bootstrap, shortly after ours. Storing our
-        # local `provider` in `_provider` and just assuming it's the one actually
-        # backing spans would mean flush_traces() could be flushing an orphaned
-        # provider while real spans go through whichever provider actually won the
-        # race -- verify which one actually won instead of assuming.
-        active_provider = trace.get_tracer_provider()
-        provider_installed = active_provider is provider
+        _provider = provider
+        _tracer = provider.get_tracer("sre-agent-gcp")
         log.info(
-            "otel provider check: provider_installed=%s active_provider_type=%s configured_provider_type=%s",
-            provider_installed, type(active_provider).__name__, type(provider).__name__,
+            "OpenTelemetry Cloud Trace exporter initialized on our own local provider "
+            "(not the global default -- issue #164) project=%s", project_id,
         )
-
-        if provider_installed:
-            _provider = provider
-            _tracer = trace.get_tracer("sre-agent-gcp")
-            log.info("OpenTelemetry Cloud Trace exporter initialized project=%s", project_id)
-        elif hasattr(active_provider, "add_span_processor"):
-            # Another provider won the race, but it's a real SDK TracerProvider (not a
-            # no-op stub) -- attach our exporter to the one actually in effect instead
-            # of flushing an orphan no one reads spans from.
-            active_provider.add_span_processor(processor)
-            _provider = active_provider
-            _tracer = trace.get_tracer("sre-agent-gcp")
-            log.info(
-                "OpenTelemetry Cloud Trace exporter attached to existing active provider "
-                "project=%s active_provider_type=%s",
-                project_id, type(active_provider).__name__,
-            )
-        else:
-            log.warning(
-                "OpenTelemetry disabled: our TracerProvider was rejected and the "
-                "active provider (%s) does not support add_span_processor -- refusing "
-                "to flush an orphan provider no spans actually go through",
-                type(active_provider).__name__,
-            )
-            return None
-
         return _tracer
 
     except Exception as exc:
