@@ -84,7 +84,17 @@ locals {
       # tracing only (OTEL_TRACES_SAMPLER/_ARG below are UNCHANGED -- that's sampling
       # rate, a separate concern from content capture, and normal performance tracing is
       # still wanted at full rate). See docs/trace-content-capture.md.
-      OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = "false"
+      #
+      # issue #164 (TEMPORARY, controlled test -- 2026-08-16): set back to "true" to
+      # test whether this is why the Agent Platform Console's Traces tab stopped
+      # updating on 2026-08-13. sre-agent-app-infra-main (a known-working comparison
+      # repo, confirmed live by the user) has this set to "true" and is the ONLY
+      # remaining config difference found after the #164 tracer-provider fix. Testing
+      # ONLY against the synthetic test-cluster scenarios (sre-test-cluster /
+      # test-incidents namespace, fake seeded incidents) -- not real customer data.
+      # Revert to "false" once the test is evaluated, per docs/trace-content-capture.md's
+      # original decision, unless the user explicitly decides otherwise.
+      OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = "true"
       OTEL_TRACES_SAMPLER                                = "parentbased_traceidratio"
       OTEL_TRACES_SAMPLER_ARG                            = "1.0"
       # Make gateway-denied (403) MCP tool calls fail fast instead of hanging the
