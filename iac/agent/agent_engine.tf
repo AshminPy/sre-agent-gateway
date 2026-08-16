@@ -84,7 +84,21 @@ locals {
       # tracing only (OTEL_TRACES_SAMPLER/_ARG below are UNCHANGED -- that's sampling
       # rate, a separate concern from content capture, and normal performance tracing is
       # still wanted at full rate). See docs/trace-content-capture.md.
-      OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = "false"
+      #
+      # issue #164 (TEMPORARY, controlled test -- 2026-08-16): Google's official Agent
+      # Engine tracing doc (docs.cloud.google.com/gemini-enterprise-agent-platform/
+      # scale/runtime/tracing) documents this as an ENUM ("EVENT_ONLY" / similar), not
+      # a boolean -- our "false" was never a valid value for it. Switched to the
+      # documented no-content enum so the privacy intent (no prompt/response text in
+      # spans) is preserved with a value the platform's own SDK can actually parse,
+      # instead of a boolean string it may be silently rejecting.
+      OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = "NO_CONTENT"
+      # issue #164 (TEMPORARY, controlled test -- 2026-08-16): same official doc lists
+      # this as a required env var for Agent Engine to recognize telemetry -- confirmed
+      # via git log -S that it has never once been set in this repo's history. Testing
+      # whether its absence is why the Agent Platform Console's Traces tab doesn't
+      # index this agent, despite Cloud Trace itself having correct data.
+      OTEL_SEMCONV_STABILITY_OPT_IN                      = "gen_ai_latest_experimental"
       OTEL_TRACES_SAMPLER                                = "parentbased_traceidratio"
       OTEL_TRACES_SAMPLER_ARG                            = "1.0"
       # Make gateway-denied (403) MCP tool calls fail fast instead of hanging the
