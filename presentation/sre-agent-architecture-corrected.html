@@ -1,0 +1,268 @@
+<title>SRE Agent — Corrected Architecture</title>
+<style>
+  :root {
+    --bg: #FAFAF7;
+    --card: #FFFFFF;
+    --ink: #24262A;
+    --ink-soft: #5B5F63;
+    --ink-faint: #8A8E92;
+    --border: #DEDBD2;
+    --live: #3E8F7C;
+    --live-bg: #E7F3EF;
+    --planned: #A9762E;
+    --planned-bg: #F7EFDC;
+    --accent: #4A7CA8;
+    --accent-bg: #EAF1F7;
+    --fix-bg: #FBECEC;
+    --fix-border: #E3B7B7;
+    --fix-ink: #9A3B3B;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1C1D1F; --card: #232427; --ink: #ECECE9; --ink-soft: #B4B7BA; --ink-faint: #83868A;
+      --border: #35373A; --live-bg: #16261F; --planned-bg: #2A2312; --accent-bg: #17232D;
+      --fix-bg: #2C1B1B; --fix-border: #5C3232; --fix-ink: #E39C9C;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1C1D1F; --card: #232427; --ink: #ECECE9; --ink-soft: #B4B7BA; --ink-faint: #83868A;
+    --border: #35373A; --live-bg: #16261F; --planned-bg: #2A2312; --accent-bg: #17232D;
+    --fix-bg: #2C1B1B; --fix-border: #5C3232; --fix-ink: #E39C9C;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--ink); }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 40px 24px 70px; }
+  h1 { font-size: 24px; font-weight: 650; margin: 0 0 6px; }
+  .lede { color: var(--ink-soft); font-size: 14.5px; max-width: 760px; line-height: 1.55; margin: 0 0 28px; }
+
+  .changelog {
+    display: grid; gap: 10px;
+    margin-bottom: 34px;
+  }
+  .fix-item {
+    display: flex; gap: 12px; align-items: flex-start;
+    background: var(--fix-bg); border: 1px solid var(--fix-border);
+    border-radius: 10px; padding: 12px 16px;
+    font-size: 13.5px; color: var(--ink);
+  }
+  .fix-item b { color: var(--fix-ink); }
+  .fix-tag {
+    flex-shrink: 0; font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em;
+    color: var(--fix-ink); background: var(--card); border: 1px solid var(--fix-border);
+    border-radius: 5px; padding: 3px 7px; margin-top: 1px;
+  }
+
+  figure { margin: 0 0 40px; }
+  .fig-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 14px; background: var(--card); }
+  svg { display: block; max-width: 100%; height: auto; }
+  figcaption { font-size: 13px; color: var(--ink-faint); margin-top: 10px; line-height: 1.5; max-width: 780px; }
+  figcaption b { color: var(--ink-soft); }
+
+  .legend { display: flex; gap: 20px; flex-wrap: wrap; margin: 14px 0 30px; font-size: 12.5px; color: var(--ink-soft); }
+  .legend-item { display: flex; align-items: center; gap: 7px; }
+  .swatch { width: 22px; height: 12px; border-radius: 3px; flex-shrink: 0; }
+  .swatch.live { background: var(--live-bg); border: 1.5px solid var(--live); }
+  .swatch.planned { background: var(--planned-bg); border: 1.5px dashed var(--planned); }
+
+  text { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; }
+</style>
+
+<div class="wrap">
+  <h1>SRE Agent — Corrected Architecture</h1>
+  <p class="lede">Same target design as the working diagram, with three corrections applied so the mechanism matches what's actually built and actually planned. Scaling items (PagerDuty, cross-project GKE, on-prem, additional MCP sources) are unchanged — still shown as planned, not removed.</p>
+
+  <div class="changelog">
+    <div class="fix-item"><span class="fix-tag">FIX 1</span><div><b>Gateway attachment</b> — the CI diagram showed a separate "REST PATCH" step after deploy. That mechanism was replaced: Terraform now sets the gateway binding directly as part of the normal apply, live-verified with no resource replacement.</div></div>
+    <div class="fix-item"><span class="fix-tag">FIX 2</span><div><b>Gateway connectivity</b> — the original showed "private connectivity, no public exposure." The real design deliberately reaches Google APIs and GKE Remote MCP publicly over Google's own backbone; a private/VPC hop was tested and intentionally removed as unneeded. This is the durable design, not a gap.</div></div>
+    <div class="fix-item"><span class="fix-tag">FIX 3</span><div><b>On-prem clusters</b> — previously drawn as a live, connected target and separately listed as "not yet built," in two different places. Now shown once, consistently marked planned.</div></div>
+  </div>
+
+  <div class="legend">
+    <div class="legend-item"><span class="swatch live"></span> Live today — real, verified</div>
+    <div class="legend-item"><span class="swatch planned"></span> Planned — target design, not yet built</div>
+  </div>
+
+  <!-- ============ FIGURE 1: MAIN ARCHITECTURE ============ -->
+  <figure>
+    <div class="fig-scroll">
+      <svg viewBox="0 0 1560 780" role="img" aria-label="SRE Agent request path: an engineer or CLI call reaches the Agent Engine's investigation workflow, which asks the Agent Gateway to route tool calls to GKE Remote MCP over Google's public backbone, and writes evidence and RCA results to GCS and Memory Bank before returning to the caller. PagerDuty triggering, cross-project GKE, on-prem clusters via Connect Gateway, a custom Cloud Run MCP fallback, and gateway-level Model Armor are all drawn as planned, dashed paths, not live ones.">
+        <defs>
+          <marker id="arrLive" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+          </marker>
+          <marker id="arrPlan" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#A9762E"/>
+          </marker>
+        </defs>
+
+        <style>
+          .lane-label { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; fill: var(--ink-faint); text-transform: uppercase; }
+          .node-title { font-size: 13px; font-weight: 650; fill: var(--ink); }
+          .node-sub { font-size: 10.5px; fill: var(--ink-faint); }
+          .edge-label { font-size: 10px; fill: var(--ink-soft); }
+          .live-box { fill: var(--live-bg); stroke: var(--live); stroke-width: 1.6; }
+          .planned-box { fill: var(--planned-bg); stroke: #A9762E; stroke-width: 1.4; stroke-dasharray: 5 3; }
+          .plain-box { fill: var(--card); stroke: var(--border); stroke-width: 1.3; }
+          .edge-live { stroke: var(--live); stroke-width: 1.6; fill: none; }
+          .edge-plan { stroke: #A9762E; stroke-width: 1.4; fill: none; stroke-dasharray: 4 3; }
+        </style>
+
+        <!-- lane labels -->
+        <text x="60"  y="40" class="lane-label">Entry</text>
+        <text x="310" y="40" class="lane-label">Agent Engine</text>
+        <text x="560" y="40" class="lane-label">Agent Gateway</text>
+        <text x="810" y="40" class="lane-label">Tooling (MCP)</text>
+        <text x="1060" y="40" class="lane-label">Target environments</text>
+        <text x="1330" y="40" class="lane-label">Evidence &amp; results</text>
+
+        <!-- Entry -->
+        <rect x="40" y="70" width="180" height="56" rx="10" class="live-box"/>
+        <text x="130" y="94" text-anchor="middle" class="node-title">Engineer / CLI</text>
+        <text x="130" y="110" text-anchor="middle" class="node-sub">direct invocation, live</text>
+
+        <rect x="40" y="150" width="180" height="56" rx="10" class="planned-box"/>
+        <text x="130" y="174" text-anchor="middle" class="node-title">PagerDuty</text>
+        <text x="130" y="190" text-anchor="middle" class="node-sub">webhook trigger, planned</text>
+
+        <!-- Agent Engine -->
+        <rect x="290" y="90" width="220" height="130" rx="12" class="live-box"/>
+        <text x="400" y="115" text-anchor="middle" class="node-title">Investigation workflow</text>
+        <text x="400" y="132" text-anchor="middle" class="node-sub">Vertex AI Agent Engine</text>
+        <text x="400" y="155" text-anchor="middle" class="node-sub">plan → route → collect →</text>
+        <text x="400" y="170" text-anchor="middle" class="node-sub">evaluate → loop → RCA</text>
+        <text x="400" y="195" text-anchor="middle" class="node-sub" font-style="italic">loops until evidence sufficient</text>
+
+        <!-- Model Armor small note -->
+        <rect x="290" y="240" width="220" height="46" rx="8" class="live-box"/>
+        <text x="400" y="260" text-anchor="middle" class="node-sub" font-weight="650" fill="var(--ink)">Model Armor (app-level)</text>
+        <text x="400" y="275" text-anchor="middle" class="node-sub">live — only when gateway is off</text>
+
+        <rect x="290" y="296" width="220" height="42" rx="8" class="planned-box"/>
+        <text x="400" y="315" text-anchor="middle" class="node-sub" font-weight="650" fill="var(--ink)">Model Armor (gateway-level)</text>
+        <text x="400" y="330" text-anchor="middle" class="node-sub">under evaluation — no working path yet</text>
+
+        <!-- Agent Gateway -->
+        <rect x="545" y="90" width="200" height="110" rx="12" class="live-box"/>
+        <text x="645" y="115" text-anchor="middle" class="node-title">Agent Gateway</text>
+        <text x="645" y="133" text-anchor="middle" class="node-sub">SPIFFE identity</text>
+        <text x="645" y="148" text-anchor="middle" class="node-sub">IAP authorization</text>
+        <text x="645" y="163" text-anchor="middle" class="node-sub">routes tool calls</text>
+
+        <rect x="545" y="220" width="200" height="60" rx="10" class="live-box"/>
+        <text x="645" y="242" text-anchor="middle" class="node-sub" font-weight="650" fill="var(--ink)">Public reachability</text>
+        <text x="645" y="257" text-anchor="middle" class="node-sub">Google's own backbone</text>
+        <text x="645" y="270" text-anchor="middle" class="node-sub">— no private/VPC hop, by design</text>
+
+        <!-- MCP lane -->
+        <rect x="800" y="70" width="200" height="56" rx="10" class="live-box"/>
+        <text x="900" y="94" text-anchor="middle" class="node-title">GKE Remote MCP</text>
+        <text x="900" y="110" text-anchor="middle" class="node-sub">Google-managed, live</text>
+
+        <rect x="800" y="150" width="200" height="56" rx="10" class="planned-box"/>
+        <text x="900" y="174" text-anchor="middle" class="node-title">Custom Cloud Run MCP</text>
+        <text x="900" y="190" text-anchor="middle" class="node-sub">non-GKE fallback, disabled today</text>
+
+        <rect x="800" y="230" width="200" height="56" rx="10" class="planned-box"/>
+        <text x="900" y="254" text-anchor="middle" class="node-title">Connect Gateway MCP</text>
+        <text x="900" y="270" text-anchor="middle" class="node-sub">on-prem path, planned</text>
+
+        <!-- environments -->
+        <rect x="1050" y="70" width="220" height="56" rx="10" class="live-box"/>
+        <text x="1160" y="94" text-anchor="middle" class="node-title">GKE clusters</text>
+        <text x="1160" y="110" text-anchor="middle" class="node-sub">multi-cluster, one project — live</text>
+
+        <rect x="1050" y="150" width="220" height="56" rx="10" class="planned-box"/>
+        <text x="1160" y="174" text-anchor="middle" class="node-title">GKE, other GCP projects</text>
+        <text x="1160" y="190" text-anchor="middle" class="node-sub">cross-project scale, planned</text>
+
+        <rect x="1050" y="230" width="220" height="56" rx="10" class="planned-box"/>
+        <text x="1160" y="254" text-anchor="middle" class="node-title">On-prem / other clouds</text>
+        <text x="1160" y="270" text-anchor="middle" class="node-sub">via Connect Gateway, planned</text>
+
+        <!-- evidence -->
+        <rect x="1320" y="90" width="200" height="130" rx="12" class="live-box"/>
+        <text x="1420" y="115" text-anchor="middle" class="node-title">Evidence &amp; memory</text>
+        <text x="1420" y="135" text-anchor="middle" class="node-sub">Evidence bucket — write</text>
+        <text x="1420" y="150" text-anchor="middle" class="node-sub">Eval bucket — write</text>
+        <text x="1420" y="165" text-anchor="middle" class="node-sub">Memory Bank — read/write</text>
+        <text x="1420" y="185" text-anchor="middle" class="node-sub" font-style="italic">RCA returned to caller ↑</text>
+
+        <!-- ===== edges: entry -> engine ===== -->
+        <path d="M220,98 L290,150" class="edge-live" marker-end="url(#arrLive)"/>
+        <text x="228" y="118" class="edge-label">invoke()</text>
+        <path d="M220,178 L290,160" class="edge-plan" marker-end="url(#arrPlan)"/>
+        <text x="228" y="200" class="edge-label" fill="#A9762E">webhook (planned)</text>
+
+        <!-- engine -> gateway -->
+        <path d="M510,150 L545,150" class="edge-live" marker-end="url(#arrLive)"/>
+        <text x="512" y="142" class="edge-label">tool request</text>
+
+        <!-- gateway -> mcp -->
+        <path d="M745,140 L800,98"  class="edge-live" marker-end="url(#arrLive)"/>
+        <path d="M745,150 L800,178" class="edge-plan" marker-end="url(#arrPlan)"/>
+        <path d="M745,160 L800,258" class="edge-plan" marker-end="url(#arrPlan)"/>
+        <text x="752" y="118" class="edge-label">routes, authorized</text>
+
+        <!-- mcp -> environments -->
+        <path d="M1000,98  L1050,98"  class="edge-live" marker-end="url(#arrLive)"/>
+        <path d="M1000,178 L1050,178" class="edge-plan" marker-end="url(#arrPlan)"/>
+        <path d="M1000,258 L1050,258" class="edge-plan" marker-end="url(#arrPlan)"/>
+
+        <!-- environments -> evidence (evidence flows back through gateway/engine in reality; shown as return arrow) -->
+        <path d="M1270,150 C1300,150 1300,150 1320,150" class="edge-live" marker-end="url(#arrLive)"/>
+        <text x="1275" y="142" class="edge-label">evidence</text>
+
+        <!-- evidence -> engine loop back (dashed thin, represents evaluate/loop) -->
+        <path d="M1330,220 C1000,340 650,340 400,240" class="edge-live" stroke-dasharray="2 4" marker-end="url(#arrLive)"/>
+        <text x="820" y="352" class="edge-label" text-anchor="middle">agent reads evidence back to score confidence, loops if insufficient</text>
+
+      </svg>
+    </div>
+    <figcaption><b>What this shows:</b> the real request path today (solid teal) — engineer/CLI → investigation workflow → Agent Gateway → GKE Remote MCP, reaching Google's APIs and the target cluster over Google's own public backbone (no private network hop, by design) — and where the target design adds PagerDuty triggering, cross-project and on-prem clusters, and a gateway-level content-inspection path (dashed amber), none of which are live yet.</figcaption>
+  </figure>
+
+  <!-- ============ FIGURE 2: DEPLOY PIPELINE ============ -->
+  <figure>
+    <div class="fig-scroll">
+      <svg viewBox="0 0 980 220" role="img" aria-label="Deploy pipeline: terraform plan on pull request, then terraform apply on merge to main, which now sets the gateway binding directly as part of the same apply, followed by a smoke test. There is no longer a separate REST PATCH step after apply.">
+        <defs>
+          <marker id="arrLive2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+          </marker>
+        </defs>
+        <style>
+          .p-box { fill: var(--live-bg); stroke: var(--live); stroke-width: 1.6; }
+          .p-title { font-size: 13px; font-weight: 650; fill: var(--ink); }
+          .p-sub { font-size: 10.5px; fill: var(--ink-faint); }
+          .p-edge { stroke: var(--live); stroke-width: 1.6; fill: none; }
+          .p-label { font-size: 10px; fill: var(--ink-soft); }
+        </style>
+
+        <rect x="20" y="70" width="180" height="70" rx="10" class="p-box"/>
+        <text x="110" y="98" text-anchor="middle" class="p-title">terraform plan</text>
+        <text x="110" y="115" text-anchor="middle" class="p-sub">on pull request</text>
+
+        <rect x="260" y="70" width="220" height="70" rx="10" class="p-box"/>
+        <text x="370" y="98" text-anchor="middle" class="p-title">terraform apply</text>
+        <text x="370" y="115" text-anchor="middle" class="p-sub">on merge to main —</text>
+        <text x="370" y="129" text-anchor="middle" class="p-sub">sets gateway binding directly</text>
+
+        <rect x="540" y="70" width="200" height="70" rx="10" class="p-box"/>
+        <text x="640" y="98" text-anchor="middle" class="p-title">Register endpoints</text>
+        <text x="640" y="115" text-anchor="middle" class="p-sub">Agent Registry entries</text>
+
+        <rect x="800" y="70" width="160" height="70" rx="10" class="p-box"/>
+        <text x="880" y="98" text-anchor="middle" class="p-title">Smoke test</text>
+        <text x="880" y="115" text-anchor="middle" class="p-sub">real agent invocation</text>
+
+        <path d="M200,105 L260,105" class="p-edge" marker-end="url(#arrLive2)"/>
+        <path d="M480,105 L540,105" class="p-edge" marker-end="url(#arrLive2)"/>
+        <path d="M740,105 L800,105" class="p-edge" marker-end="url(#arrLive2)"/>
+
+        <text x="490" y="180" text-anchor="middle" class="p-sub" font-style="italic">No separate "attach gateway — REST PATCH" step: the binding is a normal Terraform-managed field now, applied in the same run as everything else.</text>
+      </svg>
+    </div>
+    <figcaption><b>What changed:</b> gateway attachment used to be a distinct post-apply script step (a REST PATCH call). It's now just another field Terraform manages directly — live-verified with no resource replacement on the underlying Agent Engine.</figcaption>
+  </figure>
+
+</div>

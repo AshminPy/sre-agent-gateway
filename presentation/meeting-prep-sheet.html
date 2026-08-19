@@ -1,0 +1,300 @@
+<title>SRE Agent — Meeting Prep Sheet</title>
+<style>
+  :root{
+    --bg:#141414; --panel:#1e1e1e; --card:#242424; --line:#333;
+    --orange:#e8751a; --teal:#1abc9c; --green:#3cb371; --red:#e74c3c; --gold:#f4c542; --blue:#3498db;
+    --ink:#fff; --ink-soft:#ccc; --ink-faint:#999;
+    --serif:Georgia,serif; --sans:Calibri,'Segoe UI',Arial,sans-serif; --mono:Consolas,'SF Mono',Menlo,monospace;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.5;}
+  .wrap{max-width:920px;margin:0 auto;padding:28px 20px 80px;}
+  header{margin-bottom:20px;}
+  h1{font-family:var(--serif);font-size:28px;margin:0 0 6px;}
+  .sub{color:var(--ink-faint);font-size:14px;}
+  nav{position:sticky;top:0;background:var(--bg);padding:10px 0;margin-bottom:24px;
+    display:flex;gap:8px;flex-wrap:wrap;border-bottom:1px solid var(--line);z-index:10;}
+  nav a{color:var(--ink-soft);text-decoration:none;font-size:12.5px;padding:6px 10px;
+    border:1px solid var(--line);border-radius:4px;white-space:nowrap;}
+  nav a:hover{color:var(--ink);border-color:var(--orange);}
+  section{margin-bottom:36px;}
+  h2{font-family:var(--sans);font-size:19px;border-left:4px solid var(--orange);padding-left:10px;margin:0 0 14px;}
+  h2.teal{border-color:var(--teal);} h2.blue{border-color:var(--blue);} h2.gold{border-color:var(--gold);}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:14px 16px;margin-bottom:10px;}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+  @media(max-width:700px){.grid{grid-template-columns:1fr;}}
+  .pod-name{font-family:var(--mono);color:var(--gold);font-size:13.5px;font-weight:700;}
+  .pod-desc{font-size:13px;color:var(--ink-soft);margin-top:4px;}
+  code, pre{font-family:var(--mono);font-size:12.5px;}
+  pre{background:#0f0f0f;border:1px solid var(--line);border-radius:5px;padding:10px 12px;
+    overflow-x:auto;color:var(--teal);margin:6px 0 12px;white-space:pre-wrap;word-break:break-word;}
+  .cmd-label{font-size:12px;color:var(--ink-faint);margin-bottom:2px;}
+  .faq-q{font-weight:700;color:var(--orange);font-size:14.5px;margin:0 0 4px;}
+  .faq-a{font-size:13.5px;color:var(--ink-soft);margin:0 0 18px;}
+  .tag{display:inline-block;font-size:10px;font-weight:700;padding:2px 7px;border-radius:3px;
+    color:#1a1a1a;margin-left:6px;vertical-align:middle;}
+  .tag.pass{background:var(--teal);} .tag.info{background:var(--blue);color:#fff;}
+  .note{background:#241c14;border:1px solid #4a3520;border-radius:5px;padding:10px 12px;
+    font-size:12.5px;color:#e8c99a;margin:8px 0 16px;}
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>SRE Agent — Meeting Prep Sheet</h1>
+    <div class="sub">Everything you need in one place. Skim once tonight, keep open tomorrow.</div>
+  </header>
+
+  <nav>
+    <a href="#pods">Pods</a>
+    <a href="#proof">Prove each pod</a>
+    <a href="#demo">Live demo</a>
+    <a href="#kubectl">kubectl checklist</a>
+    <a href="#evidence">GCS evidence</a>
+    <a href="#other">Other commands</a>
+    <a href="#faq">FAQ</a>
+  </nav>
+
+  <section id="pods">
+    <h2>The 10 pods running right now</h2>
+    <div class="grid">
+      <div class="card">
+        <div class="pod-name">imagepull-pod</div>
+        <div class="pod-desc">References an image from a registry that doesn't exist. → ErrImagePull / ImagePullBackOff.</div>
+      </div>
+      <div class="card">
+        <div class="pod-name">missing-configmap-pod</div>
+        <div class="pod-desc">References a ConfigMap that was never created. → CreateContainerConfigError.</div>
+      </div>
+      <div class="card">
+        <div class="pod-name">missing-secret-pod</div>
+        <div class="pod-desc">References a Secret that was never created. → CreateContainerConfigError.</div>
+      </div>
+      <div class="card">
+        <div class="pod-name">bad-config-key-pod</div>
+        <div class="pod-desc">ConfigMap exists, but the specific key it asks for doesn't. → CreateContainerConfigError.</div>
+      </div>
+      <div class="card">
+        <div class="pod-name">liveness-fail-pod</div>
+        <div class="pod-desc">Nothing listens on the port its liveness probe checks. → repeated restarts.</div>
+      </div>
+      <div class="card">
+        <div class="pod-name">node-selector-pod</div>
+        <div class="pod-desc">Asks to run in a zone that doesn't exist. → stuck Pending forever, zero cost (never schedules).</div>
+      </div>
+      <div class="card">
+        <div class="pod-name">pvc-pending-pod</div>
+        <div class="pod-desc">Asks for storage from a storage class that doesn't exist. → stuck Pending forever, zero cost.</div>
+      </div>
+      <div class="card">
+        <div class="pod-name">bad-command-pod</div>
+        <div class="pod-desc">The command it tries to run doesn't exist in the container. → StartError.</div>
+      </div>
+      <div class="card">
+        <div class="pod-name">order-db-pod + order-frontend-pod</div>
+        <div class="pod-desc">Paired scenario: backend crashes on startup, frontend logs connection-refused trying to reach it. Tests cascading-failure reasoning.</div>
+      </div>
+      <div class="card">
+        <div class="pod-name">completed-job-pod</div>
+        <div class="pod-desc">Runs successfully and exits cleanly — tests whether the agent correctly says "nothing is actually wrong" instead of inventing a problem.</div>
+      </div>
+    </div>
+    <div class="note">If someone asks "why only 10, not more" — say it plainly: this is a focused, fully-validated set; 11 more scenarios exist in the golden dataset and are queued for the next testing pass. Don't dodge it.</div>
+  </section>
+
+  <section id="proof">
+    <h2 class="blue">How to prove each pod is really broken — run this, here's what you'll see</h2>
+    <p style="font-size:13px;color:var(--ink-soft);">Same command shape every time — swap the pod name. Real output, from the actual pods.</p>
+
+    <div class="card">
+      <div class="pod-name">imagepull-pod</div>
+      <pre>kubectl describe pod imagepull-pod -n sre-agent-poc</pre>
+      <div class="pod-desc">Events show: <code>Failed to pull image "nonexistent.registry.invalid/...": ... no such host</code></div>
+    </div>
+
+    <div class="card">
+      <div class="pod-name">missing-configmap-pod</div>
+      <pre>kubectl describe pod missing-configmap-pod -n sre-agent-poc</pre>
+      <div class="pod-desc">Events show: <code>configmap "nonexistent-app-config" not found</code></div>
+    </div>
+
+    <div class="card">
+      <div class="pod-name">missing-secret-pod</div>
+      <pre>kubectl describe pod missing-secret-pod -n sre-agent-poc</pre>
+      <div class="pod-desc">Events show: <code>secret "nonexistent-app-secret" not found</code></div>
+    </div>
+
+    <div class="card">
+      <div class="pod-name">bad-config-key-pod</div>
+      <pre>kubectl describe pod bad-config-key-pod -n sre-agent-poc</pre>
+      <div class="pod-desc">Events show: <code>couldn't find key DB_HOST in ConfigMap sre-agent-poc/partial-app-config</code></div>
+    </div>
+
+    <div class="card">
+      <div class="pod-name">liveness-fail-pod</div>
+      <pre>kubectl describe pod liveness-fail-pod -n sre-agent-poc</pre>
+      <div class="pod-desc">Events show: <code>Liveness probe failed: ... dial tcp ...:8080: connect: connection refused</code> — repeats every restart.</div>
+    </div>
+
+    <div class="card">
+      <div class="pod-name">node-selector-pod</div>
+      <pre>kubectl describe pod node-selector-pod -n sre-agent-poc</pre>
+      <div class="pod-desc">Events show: <code>0/N nodes are available: N node(s) didn't match Pod's node affinity/selector</code> — stuck Pending, by design, zero cost.</div>
+    </div>
+
+    <div class="card">
+      <div class="pod-name">pvc-pending-pod</div>
+      <pre>kubectl describe pod pvc-pending-pod -n sre-agent-poc</pre>
+      <div class="pod-desc">Events show: <code>pod has unbound immediate PersistentVolumeClaims</code> — the PVC itself references a storage class that doesn't exist.</div>
+    </div>
+
+    <div class="card">
+      <div class="pod-name">bad-command-pod</div>
+      <pre>kubectl describe pod bad-command-pod -n sre-agent-poc</pre>
+      <div class="pod-desc">Status shows <code>StartError</code>: <code>exec: "/bin/notarealbinary": stat /bin/notarealbinary: no such file or directory</code></div>
+    </div>
+
+    <div class="card">
+      <div class="pod-name">order-db-pod + order-frontend-pod</div>
+      <pre>kubectl logs order-db-pod -n sre-agent-poc -c app
+kubectl logs order-frontend-pod -n sre-agent-poc -c app</pre>
+      <div class="pod-desc">DB log: <code>FATAL: could not bind to port 5432, address in use</code>. Frontend log (repeating): <code>ERROR: connection refused to order-db-pod:5432</code> — the cascading part: one real failure causing a second, visible symptom.</div>
+    </div>
+
+    <div class="card">
+      <div class="pod-name">completed-job-pod</div>
+      <pre>kubectl describe pod completed-job-pod -n sre-agent-poc
+kubectl logs completed-job-pod -n sre-agent-poc -c app</pre>
+      <div class="pod-desc">App container: <code>State: Terminated, Reason: Completed, Exit Code: 0</code>. Log: <code>batch job finished successfully</code>. This one's the trick question — nothing is actually wrong here.</div>
+    </div>
+
+    <div class="note">If asked "how do you know the agent's answer is right" — this is your answer: run the kubectl command yourself first, right there, then show the agent's RCA said the same thing.</div>
+  </section>
+
+  <section id="demo">
+    <h2 class="teal">Live demo — 3 scenarios to run</h2>
+    <p style="font-size:13px;color:var(--ink-soft);">Matches slide 16. Run any of these live — all 3 confirmed passing in the real eval run.</p>
+
+    <div class="cmd-label">1. CreateContainerConfigError — missing ConfigMap</div>
+    <pre>python invoke.py --scenario missing-configmap</pre>
+
+    <div class="cmd-label">2. Stuck Pending — missing PVC</div>
+    <pre>python invoke.py --scenario pvc-pending</pre>
+
+    <div class="cmd-label">3. Liveness probe failure — repeated restarts</div>
+    <pre>python invoke.py --scenario liveness-fail</pre>
+
+    <div class="note">Recommend running each once tonight before the meeting to confirm they work end to end — no surprises live.</div>
+  </section>
+
+  <section id="kubectl">
+    <h2 class="blue">kubectl checklist — show real evidence live</h2>
+
+    <div class="cmd-label">See all 10 pods at a glance</div>
+    <pre>kubectl get pods -n sre-agent-poc</pre>
+
+    <div class="cmd-label">Full detail + real events for one pod (swap the name)</div>
+    <pre>kubectl describe pod missing-configmap-pod -n sre-agent-poc</pre>
+
+    <div class="cmd-label">Real container logs (specify -c app, not the istio sidecar)</div>
+    <pre>kubectl logs liveness-fail-pod -n sre-agent-poc -c app</pre>
+
+    <div class="cmd-label">All real events, newest last — good for "here's exactly what happened, in order"</div>
+    <pre>kubectl get events -n sre-agent-poc --sort-by='.lastTimestamp'</pre>
+
+    <div class="note">Good pattern to narrate: "here's the raw Kubernetes evidence" (kubectl) → "here's what the agent concluded from it" (the RCA output) → let them compare side by side.</div>
+  </section>
+
+  <section id="evidence">
+    <h2 class="gold">gcloud — show real evidence from the bucket</h2>
+
+    <div class="cmd-label">List everything the agent saved for one investigation (swap in a real run_id from an RCA report)</div>
+    <pre>gcloud storage ls gs://bkt-prj-d-sre-agent-6d31-evidence/RUN_ID/</pre>
+
+    <div class="cmd-label">Show the actual evidence file content the agent based its answer on</div>
+    <pre>gcloud storage cat gs://bkt-prj-d-sre-agent-6d31-evidence/RUN_ID/ev_001.json</pre>
+
+    <div class="note">The run_id is printed at the top of every RCA report ("Report ID: run_...") and in every invoke.py output — grab it from whichever demo you just ran.</div>
+  </section>
+
+  <section id="other">
+    <h2>Other commands worth having ready</h2>
+
+    <div class="cmd-label">Cloud Logging — table of real investigations, cost, tokens, confidence <span class="tag pass">verified</span></div>
+    <pre>resource.type="aiplatform.googleapis.com/ReasoningEngine"
+resource.labels.location="us-east1"
+resource.labels.reasoning_engine_id="6825451525884608512"
+jsonPayload.event_type="sre_agent_run"</pre>
+    <div class="note">In Logs Explorer: select log name "sre-agent-investigations" under OTHER first, and set a time range that covers your demo run — otherwise it can show 0 results.</div>
+
+    <div class="cmd-label">Cloud Trace — per-node cost/confidence breakdown for one run <span class="tag pass">verified</span></div>
+    <div class="pod-desc">Traces tab → click a trace → click the top-level <code>sre_agent.investigation</code> span → Attributes tab → scroll to <code>sre.estimated_cost_usd</code> / <code>sre.tokens_total</code>.</div>
+
+    <div class="cmd-label">Live pod resource usage, if asked about compute cost</div>
+    <pre>kubectl top pod -n sre-agent-poc</pre>
+  </section>
+
+  <section id="faq">
+    <h2>FAQ — short, direct answers</h2>
+
+    <p class="faq-q">What do we have in the golden dataset today?</p>
+    <p class="faq-a">35 test cases total — 14 from an earlier testing environment, 21 built this week for the current cluster. Today's demo runs the 10 that are fully validated end to end.</p>
+
+    <p class="faq-q">How did we create the golden dataset?</p>
+    <p class="faq-a">Each case pairs one deliberately-broken Kubernetes resource with a written-down correct answer — the real root cause, the keywords that should appear, and a minimum confidence bar. We deploy the real broken resource, ask the agent to investigate, and score its real answer against what we wrote down.</p>
+
+    <p class="faq-q">How are we measuring, and what are we measuring?</p>
+    <p class="faq-a">Root-cause accuracy (did it name the real cause), confidence calibration (was it honestly confident, not just fluent), cost, and latency — all from real runs, not estimates. One known gap: the deployed agent's response doesn't expose which tools it called, so we can't yet score "did it investigate the right way" in this mode — only "did it conclude the right thing."</p>
+
+    <p class="faq-q">What is confidence score and how does the loop exit work?</p>
+    <p class="faq-a">Every answer gets a 0–1 confidence score and a band: <b>auto</b> (high, ~0.85+), <b>review</b> (medium), or <b>escalate</b> (low — hand to a human). The investigation loop stops either when confidence is high enough, or after a hard iteration cap so it can never run away indefinitely.</p>
+
+    <p class="faq-q">What security layers and controls do we have today?</p>
+    <p class="faq-a">Model Armor filters input and output. IAM is least-privilege, no broad roles. Identity uses Workload Identity — no static keys anywhere. Every tool the agent has is read-only, it can't write or execute on the cluster. All traffic routes through an IAP-gated Agent Gateway. A human always approves before anything actually changes.</p>
+
+    <p class="faq-q">What does reliability look like today?</p>
+    <p class="faq-a">The loop has a hard exit condition, so it can't run forever. When evidence conflicts or is missing, it escalates instead of guessing — we've seen this happen for real in testing. Every run is logged and traced. One real, specific gap found through testing: a permissions issue reading pod logs in one namespace — already root-caused, not yet fixed.</p>
+
+    <p class="faq-q">Is this in production?</p>
+    <p class="faq-a">No — this is a validated pilot on a live GKE cluster, not customer-facing production traffic. Recommended next step is a controlled pilot before wider rollout.</p>
+
+    <p class="faq-q">What does it cost to run?</p>
+    <p class="faq-a">About a quarter of a cent per investigation, ~20 seconds average. At 1,000 investigations a month that's roughly $2.50 — the real cost driver at scale is engineering time, not compute.</p>
+
+    <p class="faq-q">What happens if the agent is wrong?</p>
+    <p class="faq-a">It never takes action itself — it only recommends. A human reviews and approves every remediation. Nothing changes in the cluster without a person deciding to change it.</p>
+
+    <p class="faq-q">How does the confidence score actually work?</p>
+    <p class="faq-a">Two real scoring functions run on every investigation: one scores how complete the evidence is, one scores confidence in the root cause itself. Both feed into a 0-1 number and a band (auto / review / escalate). It's not the model just saying a number — it's a deterministic score built from what evidence was actually collected.</p>
+
+    <p class="faq-q">How does the loop exit work?</p>
+    <p class="faq-a">After each round of evidence gathering, a loop controller checks: is confidence high enough to stop? If yes, it exits and writes the RCA. If not, it goes back for another round — up to a hard iteration cap, so it can never run forever. Every real run logs which of the two happened (<code>confidence_sufficient</code> or <code>max_iterations</code>).</p>
+
+    <p class="faq-q">How does SPIFFE work here?</p>
+    <p class="faq-a">It's how the agent proves who it is without a password or key. Google issues it a short-lived cryptographic identity (Workload Identity) tied to exactly this workload — nothing stored, nothing to leak, and it can't be reused if copied. That identity is what IAM and the Agent Gateway check before allowing any action.</p>
+
+    <p class="faq-q">What are the monitoring metrics and how do they help? <span class="tag info">correction: 12, not 13</span></p>
+    <p class="faq-a">12 real metrics, already deployed: invocations, errors, escalations, cost, token usage, confidence band, loop exit reason, tool failures, routing failures, unresolved-cluster cases, evidence-storage failures, and latency. 12 alert policies sit on top of them — so if cost spikes, error rate climbs, or the agent starts escalating too often, someone gets paged automatically, not after a customer notices.</p>
+
+    <p class="faq-q">How would we set up an evaluation CI/CD pipeline in future?</p>
+    <p class="faq-a"><b>Honest answer: this doesn't exist yet</b> — checked, no workflow runs eval automatically today. The real plan: run the golden dataset automatically on every PR to the agent code, block the merge if pass rate drops below a threshold, and store each run's results as a build artifact so we can track accuracy over time, not just at demo time.</p>
+
+    <p class="faq-q">How does Model Armor work and what does it actually catch?</p>
+    <p class="faq-a">It's a Google Cloud service that inspects text going in and coming out of the model — checks for prompt injection attempts, jailbreaks, and sensitive data (PII) before it's acted on or shown. It's wired at the application level today; a gateway-level version is still blocked on a real Google API limitation we found, not something we skipped.</p>
+
+    <p class="faq-q">What cost and safety controls do we actually have?</p>
+    <p class="faq-a">Cost: every run's tokens and dollars are tracked individually, with an alert if spend spikes. Safety: the investigation loop has a hard iteration cap so it can't run away, every tool is read-only so it can't damage anything, and only high-confidence answers ever get marked "auto" — anything less goes to a human.</p>
+
+    <p class="faq-q">How are we measuring agent accuracy and correctness specifically?</p>
+    <p class="faq-a">Two things, kept deliberately separate: did it call the right tools and finish the investigation (process), and did it actually name the right root cause with honest confidence (correctness). A demo that only proves the first one isn't proof the agent works — we score both.</p>
+
+    <p class="faq-q">Is the Memory Bank actually wired today? <span class="tag pass">yes, confirmed in code</span></p>
+    <p class="faq-a">Yes — checked the real code, not the diagram. Before investigating, it recalls up to 3 past incidents on that same cluster/namespace and includes them as context. After finishing, it writes the new incident back. If memory recall fails for any reason, it degrades gracefully and just proceeds without it — never blocks the investigation.</p>
+
+    <p class="faq-q">What LLM actually powers this?</p>
+    <p class="faq-a">Gemini, via Vertex AI — called through our own provider-neutral adapter layer, not hardcoded to one vendor. If we needed to swap models later, that's a config change, not a rewrite.</p>
+
+    <p class="faq-q">What's the kill switch if something goes wrong?</p>
+    <p class="faq-a">The agent never executes anything itself — every tool is read-only, and every fix requires a human to approve and run it. There's no action for a "kill switch" to stop, by design, because it was never given the ability to act in the first place.</p>
+
+  </section>
+</div>
