@@ -1,8 +1,19 @@
 # Architecture
 
-![Architecture](architecture.png)
+> **Status: SUPERSEDED / HISTORICAL** · **Archived:** 2026-08-20
+> **Current replacement:** [`../docs/architecture/system-overview.md`](../docs/architecture/system-overview.md)
+> and the rest of `../docs/architecture/` (17 pages).
+>
+> Accurate as of 2026-07-12, kept as history. Two things below are **no longer true**:
+> the claim that the agent "filters I/O through Model Armor" (Model Armor is templated but
+> filters nothing in the live deployment — see
+> [`../docs/management/risks-and-limitations.md`](../docs/management/risks-and-limitations.md)),
+> and the gateway-attach mechanism, which moved to Terraform-native `agent_gateway_config`
+> in PR #93 on 2026-08-10.
 
-*(Diagram source: `architecture.mmd`.)*
+![Architecture](SUPERSEDED_2026-08-20_architecture-diagram.png)
+
+*(Diagram source: `SUPERSEDED_2026-08-20_architecture-diagram.mmd`.)*
 
 ## Overview
 

@@ -1,5 +1,23 @@
 # Documentation Validation Report
 
+> ## ⚠️ HISTORICAL SNAPSHOT — NOT CURRENT PROJECT STATUS
+>
+> **Status:** HISTORICAL SNAPSHOT · **Covers:** 2026-08-08 / 2026-08-09 · **Header added:** 2026-08-20
+>
+> This is a point-in-time record of the documentation-validation passes run on 2026-08-08
+> and 2026-08-09. It is kept in place — not archived — because it remains useful **audit
+> evidence**: it shows exactly which doc-vs-code contradictions existed then and how each
+> was resolved. Seven documents link to it for that reason.
+>
+> **Do not read it as the current state of the project.** Everything below was accurate on
+> 2026-08-09. More than 80 commits have landed since, changing transport, tracing,
+> confidence scoring, metrics, IAM/RBAC and CI.
+>
+> For current status, use current code and Terraform on `main`, plus:
+> - [`docs/management/implemented-vs-planned-matrix.md`](management/implemented-vs-planned-matrix.md) — what is really implemented vs planned
+> - [`docs/management/risks-and-limitations.md`](management/risks-and-limitations.md) — current known gaps
+> - `docs/management/PROJECT_TRACKER.xlsx` — authoritative task/status tracking
+
 ## 2026-08-09 re-verification — read this first, supersedes nothing below (additive)
 
 Per this report's own recommendation #3 ("re-verify this whole knowledge base after any of the

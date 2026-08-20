@@ -1,7 +1,7 @@
 # Risks and Limitations
 
 > **Implementation Status:** This page IS the honest gap list — every item below is a confirmed finding from direct code/config inspection, not speculation.
-> **Last Verified:** 2026-08-08
+> **Last Verified:** 2026-08-20 (items 1-4 and 6-14 re-checked; item 5 resolved; items 15-16 added)
 > **Owner:** SRE Agent platform team.
 
 Ranked roughly by how much it should matter to a reviewer, most significant first.
@@ -22,9 +22,9 @@ The Terraform templates exist and look correctly configured; neither the app-lay
 
 Proven only via manual `kubectl` testing and a locally-run integration test — the deployed agent cannot reach an on-prem cluster today. See [GKE vs Non-GKE Access](../architecture/gke-vs-nongke.md).
 
-## 5. Several metrics likely double-count
+## 5. ~~Several metrics likely double-count~~ — FIXED 2026-08-13
 
-`errors`, `confidence_band`, `escalations`, `invocations`, `investigation_cost_usd`, `investigation_latency_seconds` are not scoped by `logName` and likely reflect roughly 2x the real event count, due to a duplicate emission path. See [Observability](../operations/observability.md). Low severity individually, but worth fixing before this system's metrics are trusted for external reporting.
+Issue #75 is closed. Two completion-event emitters existed per investigation (`agent/main.py`'s `sre_agent_run` stdout event and `rca_builder.py`'s richer `sre-agent-investigations` Cloud Logging entry), and 8 metrics matched both. Fixed by scoping those metrics to `event_type="sre_agent_run"` — **not** by `logName`, so a `logName` grep alone will wrongly suggest this is still open. Verified in `iac/agent/monitoring.tf`. See [Observability](../operations/observability.md).
 
 ## 6. IAP authorization fails open
 
@@ -61,6 +61,14 @@ Agent Engine's compute scaling ceiling is not visible from this repo's Terraform
 ## 14. No formal SLOs are committed to
 
 Alert thresholds exist as operational tripwires; no published service-level commitment exists yet. See [Reliability](../governance/reliability.md).
+
+## 15. Cloud Trace / Console telemetry regression (issue #164, OPEN)
+
+The Agent Platform Console's Traces tab stopped updating on 2026-08-13. Root cause found: the fix for #130 made our own OpenTelemetry tracer initialise early enough to reliably win OpenTelemetry's one-time global-provider race, which blocked Agent Engine's own managed provider — the one the Console reads. PR #165 stopped our tracer competing for that slot, but the issue is **not closed**. Treat Console-based trace visibility as unreliable until it is.
+
+## 16. Agent's own observability write to Cloud Logging returns 403 (issue #139, OPEN)
+
+`rca_builder.py._write_observability_log()`'s gRPC write to `logging.googleapis.com` still returns 403 despite `logging`/`logging-mtls` being correctly registered with `protocolBinding=GRPC`. Root cause unconfirmed. **Investigation results are unaffected** — a separate, always-working stdout observability path in `agent/main.py` already covers this — so the practical impact is a missing structured audit record, not degraded RCA quality.
 
 ---
 

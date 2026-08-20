@@ -35,11 +35,17 @@ cost, MCP expansion, production readiness, and a LangGraph→ADK 2.0 migration).
 Moving a change into your own company/work repo? See
 [`docs/promotion/01-test-to-work-process.md`](docs/promotion/01-test-to-work-process.md).
 
-![Architecture](docs/architecture.png)
+For the current architecture — both projects, IAM boundaries, CI/CD, and known
+gaps flagged honestly — start at
+[`docs/architecture/system-overview.md`](docs/architecture/system-overview.md),
+which carries the current Mermaid diagrams inline.
 
-For the full, detailed architecture (both projects, IAM boundaries, CI/CD, and
-known gaps flagged honestly) see
-[`docs/diagrams/sre-agent-architecture.svg`](docs/diagrams/sre-agent-architecture.svg).
+> **Note (2026-08-20):** the two older static diagrams (`docs/architecture.png`
+> and `docs/diagrams/sre-agent-architecture.svg`) were archived. Both predate
+> the 2026-08-10 Agent Gateway Terraform migration (PR #93) and the August
+> tracing rework, and the older one still showed Model Armor as an active
+> inline filter, which it is not. They remain available as historical
+> reference in [`archive/`](archive/README.md).
 
 ---
 

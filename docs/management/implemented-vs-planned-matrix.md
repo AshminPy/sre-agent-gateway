@@ -1,6 +1,8 @@
 # Implemented vs Planned — Master Status Matrix
 
-> **Last Verified:** 2026-08-09 — via 6 parallel deep-read audits, each covering a distinct
+> **Last Verified:** partially re-verified 2026-08-20 (see the 2026-08-20 delta section below;
+> rows not named there still carry their 2026-08-09 verification date).
+> **Original verification:** 2026-08-09 — via 6 parallel deep-read audits, each covering a distinct
 > subsystem, cross-checked against the actual code, Terraform, and tests (not against other
 > documentation). Several checks used live evidence, not just static reading: `gcloud iam roles
 > describe` was run against the real predefined roles, `mcp/tests/test_no_mutation.py` was
@@ -67,16 +69,16 @@ No test in the repo exercises the compiled full graph (`compile_graph()`/`graph.
 | Agent Identity (no static creds) | ✅ | No `google_service_account_key` resource anywhere in `iac/`; `identity_type = "AGENT_IDENTITY"` set (`iac/agent/agent_engine.tf:98`) |
 | GKE read-only enforcement | ✅ | **Proven at 3 independent layers, live-verified**: (1) real `roles/container.viewer` permission set (queried via `gcloud iam roles describe`) contains zero create/patch/delete/update permissions; (2) all 33 tool names (`GKE_REMOTE_TOOLS` + `CUSTOM_K8S_TOOLS`) are `list_*`/`get_*`/`describe_*` only; (3) `mcp/tests/test_no_mutation.py` ran live, 2/2 passed, blocking any future mutating-call-pattern regression |
 | Least-privilege IAM overall | 🟡 | Bindings are genuinely narrow (no `editor`/`owner`/project-wide roles found), but `docs/least-privilege-iam.md` was missing one live role until fixed today (2026-08-09) |
-| Kubernetes RBAC scoping | ❌ (live path) / 🔵 (prototype) | Zero Terraform-managed Role/ClusterRole/RoleBinding for the live GKE Remote MCP path; a `view` ClusterRole exists only for the separate, non-production Connect Gateway prototype |
+| Kubernetes RBAC scoping | 🟡 | **Corrected 2026-08-20.** Still zero *Terraform-managed* RBAC — but `k8s/rbac.yaml` now exists in the repo (added by PR #121, 2026-08-12) with a real Role + RoleBinding granting `pods/log` `get`, applied to the live cluster with `kubectl`, out of Terraform's control. The earlier "zero RBAC anywhere" reading is wrong; the accurate gap is that this grant is **not** managed by Terraform |
 
 ## Observability / CI-CD / deployment
 
 | Capability | Status | Evidence |
 |---|---|---|
 | Structured logging | ✅ | 4 named loggers + 3 stdout event types confirmed across `rca_builder.py`, `tool_executor.py`, `mcp_router.py`, `gcs_client.py`, `main.py` |
-| Distributed tracing | ✅ | `agent/otel.py` — `get_tracer()`, `trace_node()`, fail-open design confirmed |
-| Log-based metrics | ✅ | 11/11 counted directly in `iac/agent/monitoring.tf`; double-counting caveat structurally confirmed (not yet confirmed against a live Cloud Logging count) |
-| Alert policies | ✅ | 11/11 counted directly in `iac/agent/monitoring.tf` |
+| Distributed tracing | 🟡 | `agent/otel.py` — `get_tracer()`, `trace_node()`, fail-open design confirmed. **Downgraded 2026-08-20:** issue #164 is OPEN — the Agent Platform Console Traces tab stopped updating 2026-08-13. Our own tracer no longer competes for the global provider slot (PR #165), but the regression is not closed |
+| Log-based metrics | ✅ | **12/12** counted directly in `iac/agent/monitoring.tf` (re-counted 2026-08-20; was 11). The double-counting caveat is **resolved** — issue #75 closed, 8 metrics scoped to `event_type="sre_agent_run"` |
+| Alert policies | ✅ | **12/12** counted directly in `iac/agent/monitoring.tf` (re-counted 2026-08-20; was 11) |
 | CI Terraform native tests | ✅ | `terraform test` step added to `terraform-plan.yml` 2026-08-09 (PR #52), ran live 4/4 pass, now documented (was undocumented until today) |
 | CI Terraform validate/plan | ✅ | Confirmed real steps in `terraform-plan.yml` |
 | CD (automatic deploy to Agent Engine) | ✅ | Real `terraform apply` on push to `main` updates the live `google_vertex_ai_reasoning_engine.sre_agent`, followed by gateway re-attach and a real smoke test |
@@ -104,6 +106,46 @@ No test in the repo exercises the compiled full graph (`compile_graph()`/`graph.
 | VPC-SC | 🔵 | Not implemented per 2026-08-08 audit; not re-checked today |
 | PSC (Private Service Connect) | 🔵 | Not implemented per 2026-08-08 audit; not re-checked today |
 | Production networking hardening | 🔵 | See [Risks and Limitations](risks-and-limitations.md) |
+
+## 2026-08-20 delta — changes since the 2026-08-09 audit
+
+Between 2026-08-09 and 2026-08-20, 81 commits landed on `main`. This section records what
+changed. Rows above not mentioned here were **not** re-verified on 2026-08-20 and still
+carry their 2026-08-09 evidence.
+
+### New capability, previously undocumented anywhere
+
+| Capability | Status | Evidence |
+|---|---|---|
+| Native `stream_query()` long-running transport | ✅ | `SREAgent.stream_query()` (`agent/main.py:1260`) and its `investigate_stream()` counterpart (`agent/main.py:691`), added by PRs #156/#160 for issue #103. Deployed; a real live investigation ran **315.3 s** — past the old ~300 s managed-transport boundary that used to abort the call — returning a truthful RCA with real tool calls. Native streaming is now the supported invocation for long investigations. Before this update, no document in the repo mentioned it. |
+| Cross-investigation state isolation | ✅ | Issue #74 closed. `LLMClient.reset_session()` called at the start of every investigation (`agent/main.py`), so token/cost/latency counters no longer leak between investigations sharing a warm process. |
+
+### Rows whose underlying issues have since closed
+
+`#65`–`#72` (confidence scoring: claim grounding, `resource_identity_match`, time
+correlation/freshness, evidence-domain exit gating, self-assigned `observed_fact`, MCP
+fallback audit trail and trigger conditions) are **all now CLOSED**, fixed by PRs #123,
+#124 and #125. The confidence rows above predate those fixes and describe the
+pre-fix behaviour.
+
+Also closed since: `#29` (Cloud Trace hostname), `#31`, `#60`, `#63`, `#64`, `#73`
+(missing-cluster safe-stop), `#75`, `#76`, `#87`, `#91`, `#92`, `#103`, `#130`, `#161`.
+
+### Open items a reader should know about
+
+| Item | State |
+|---|---|
+| #164 | **OPEN** — Console Traces tab stopped updating 2026-08-13. See the tracing row above. |
+| #139 | **OPEN** — `rca_builder.py._write_observability_log()` gRPC write returns 403. Investigation results are unaffected: a separate stdout observability path in `agent/main.py` always works. |
+| #77, #78 | **OPEN** — CI test/lint/security coverage and workflow path filters are **implemented, merged and deployed**, and the implementation is correct. They remain In Progress only because the required post-deployment live canary has not yet passed (blocked by the #103 condition). Implemented ≠ Completed. |
+| #32 | **OPEN** — Model Armor output-sanitization verdict handling is implemented and deployed; the actual `MATCH_FOUND` / `blocked=True` path has never been exercised live. |
+| #94 | **OPEN** — a fix is proposed in PR #157, which is **open and unmerged**. Not fixed. |
+
+**Note on `iac/gke-access/`:** no CI workflow manages that Terraform stack today. This is
+deliberately **not** part of #78 (see that issue's 2026-08-14 Correction — the workflows
+run with `working-directory: iac/agent`, so adding the path would validate the wrong
+stack). Whether it should get its own plan-only CI job is an open design question, not
+yet filed.
 
 ---
 

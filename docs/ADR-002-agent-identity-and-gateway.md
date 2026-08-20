@@ -1,6 +1,14 @@
 # ADR-002: Agent Identity and Agent Gateway binding
 
-Status: Accepted
+Status: Accepted — **implementation mechanism partially superseded 2026-08-10 by PR #93**
+
+> **Note (added 2026-08-20):** the *decision* below stands unchanged — Agent Identity plus
+> Agent Gateway binding is still how this works. What changed is the **mechanism**: the
+> gateway binding was performed by `scripts/attach_gateway_to_engine.sh` when this ADR was
+> written. PR #93 migrated it to Terraform-native `agent_gateway_config` (provider
+> `google-beta` ≥ 7.40.0). The script is retained as a manual emergency rollback tool and
+> is no longer invoked by CI. The atomic-PATCH requirement described below is still the
+> reason the binding and the source deploy must be submitted together.
 
 ## Context
 

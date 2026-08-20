@@ -7,6 +7,37 @@
 
 _Created 2026-07-28. Status is evidence-based: marked ✅/🟡 only where backed by real code/config (file:line). Scanned the working repo (agent/, mcp/, iac/agent/) before writing. Supersedes the ordering in NEXTSTEPS.md for production-launch work; NEXTSTEPS.md is retained for the deeper per-item research._
 
+## 2026-08-20 status correction — read before using any issue row below
+
+The Phase 1 issue table below was written 2026-08-11. **Twelve of its rows point at issues
+that have since CLOSED**: #29, #64, #66, #67, #68, #69, #70, #71, #72, #75, #76, #87. They
+still read as pending work. Treat any row naming those issues as historical.
+
+Also corrected as of 2026-08-20:
+
+- **Metric/alert counts** — the note further below says "real count is 11 metrics + 11
+  alerts". It is now **12 and 12** (`iac/agent/monitoring.tf`).
+- **#77** — its row says lint/security scanning is still missing. It is not: `ruff check`
+  (blocking), `pip-audit`, `pytest` and a separate `mcp-pytest` job all run in
+  `python-tests.yml` (PR #141). #77 stays **open** for a different reason — the required
+  post-deployment live canary has not passed yet, blocked by the #103 condition.
+  Implementation complete and deployed ≠ Completed.
+- **#78** — likewise implemented, merged and **correct**; open only pending the same live
+  canary. Its 2026-08-14 Correction section explicitly excludes `eval/**` and
+  `iac/gke-access/**` from its scope, with documented reasons. Do not re-derive scope from
+  the struck-through original Fix line.
+- **#32** — code fix merged and deployed (PR #96); the real `MATCH_FOUND` / `blocked=True`
+  path has never been exercised live. Open pending that.
+- **#94** — a fix is proposed in PR #157, currently **open and unmerged**. #94 is not fixed.
+- **#103** — closed. Resolved 2026-08-15 via native `stream_query()`, live-validated at
+  315.3 s past the old ~300 s transport boundary.
+
+Current capability truth lives in
+[`docs/management/implemented-vs-planned-matrix.md`](docs/management/implemented-vs-planned-matrix.md);
+current gaps in
+[`docs/management/risks-and-limitations.md`](docs/management/risks-and-limitations.md);
+task status in `docs/management/PROJECT_TRACKER.xlsx`.
+
 ## 2026-08-11 update — Phase 1/Phase 2 plan, management requirements (supersedes the 2026-08-09 section below as the current status source)
 
 **Correction from the first draft of this section (same day):** that draft classified #92 as
@@ -518,7 +549,7 @@ Legend: ✅ done · 🟡 partial · ⬜ not started
 | 7 | Confidence score redesign | 🟡 built, not ported to company repo | unchanged |
 | 8 | Minimum RCA accuracy validation | 🟡 partial (eval harness exists) | 🟡 corrected baseline established (14/14 clean run); LLM-judge + calibration still absent |
 | 9 | Production security validation | 🟡 partial (strong baseline) | unchanged |
-| 10 | Logging/metrics/alert validation | 🟡 partial (7 metrics + 3 alerts claimed) | 🟡 real count is **11 metrics + 11 alerts** (was already higher than this table said) |
+| 10 | Logging/metrics/alert validation | 🟡 partial (7 metrics + 3 alerts claimed) | 🟡 real count is **12 metrics + 12 alerts** as of 2026-08-20 (was 11+11 when this row was written) |
 | 11 | Cost validation & optimization | 🟡 partial | unchanged |
 | 12 | Controlled production launch | ⬜ gated on all of the above | unchanged |
 
