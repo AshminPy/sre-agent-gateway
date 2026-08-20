@@ -73,10 +73,18 @@ locals {
       GOOGLE_CLOUD_LOCATION     = var.region
       # Agent Identity DPoP token-sharing opt-out (codelab's --allow-token-sharing).
       GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES = "false"
-      # Telemetry ON, with the OTEL config the codelab pairs with it (telemetry ON
-      # *without* this OTEL config is what produced the OTLP "Context has already
-      # been used to create a Connection" error).
-      GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY         = "true"
+      # issue #94: GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY intentionally NOT declared
+      # here. Confirmed against the actual google provider v7.43.0 source
+      # (resource_vertex_ai_reasoning_engine.go): expandVertexAIReasoningEngineSpecDeploymentSpecEnv
+      # passes this var through like any other on create/update, but
+      # flattenVertexAIReasoningEngineSpecDeploymentSpecEnv unconditionally `continue`s past
+      # it when reading state back -- so as long as we declare it, Terraform's own state can
+      # never record it as satisfied, and every plan re-proposes adding it forever (never a
+      # real "0 changes", confirmed on every plan this session including #103's PR #156).
+      # Removing the declaration makes config and (always-telemetry-stripped) refreshed state
+      # agree -- 0 diff on this attribute, so a real apply issues no update for it at all,
+      # leaving the live resource's already-set value (from all prior applies) untouched.
+      # The OTEL config below is unrelated -- kept exactly as-is.
       # issue #76: this flag (standard OTel GenAI semantic-convention instrumentation)
       # included the actual prompt/response TEXT in trace spans -- built from real k8s
       # evidence (pod logs, events), at 100% sampling, live and undocumented. Disabled
