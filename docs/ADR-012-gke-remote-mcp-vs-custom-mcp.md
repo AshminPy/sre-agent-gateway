@@ -2,6 +2,12 @@
 
 Status: Accepted design; GKE path Accepted and live-verified; custom MCP path code-complete but NOT deployed today — see Tradeoffs
 
+> **Re-verified 2026-08-20:** still accurate. `enable_custom_mcp` still defaults to `false`
+> (`iac/agent/variables.tf`), and issue #85 ("Custom Cloud Run MCP fallback is
+> non-operational as deployed") remains **open** — no Load Balancer or Serverless NEG
+> exists in `iac/`, so the service has no network path even when enabled. No change needed
+> to this decision.
+
 ## Context
 
 The agent needs to reach two structurally different kinds of clusters: GKE

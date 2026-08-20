@@ -2,7 +2,7 @@
 
 **Implementation Status:** This entire knowledge base documents the currently-deployed system in GCP project `sreagent-t2-demo`, built by direct inspection of the repository, Terraform, and live configuration — not from design documents or assumptions. Every page carries its own status header (Implementation Status, Last Verified, Source of Truth, Owner) and marks claims IMPLEMENTED / PARTIALLY IMPLEMENTED / PLANNED / DEPRECATED / UNKNOWN.
 
-**Last Verified:** 2026-08-08
+**Last Verified:** 2026-08-20 (index and page count re-verified; individual pages carry their own dates — several were last verified 2026-08-08/09 and predate ~80 commits, so trust current code over any page that disagrees)
 **Owner:** SRE Agent platform team
 
 ---
@@ -91,14 +91,49 @@
 ### Onboarding
 | Page | Covers |
 |---|---|
-| [Run-Team Onboarding Guide](onboarding/run-team-guide.md) | A 5-day path with labs |
+| [Run-Team Onboarding Guide](onboarding/run-team-guide.md) | A 10-day path with labs |
 | [Glossary](onboarding/glossary.md) | Every term, explained simply |
+
+### Onboarding (continued) — code traceability
+
+| Page | Covers |
+|---|---|
+| [Code Reference Map](onboarding/code-reference-map.md) | **"Where is X implemented?"** — the master lookup table: file, function, Terraform, tests, and how to prove each capability is running |
+| [Code Ownership Map](onboarding/code-ownership-map.md) | Which component belongs to which area |
+
+### Status and decisions
+
+| Page | Covers |
+|---|---|
+| [Implemented vs Planned Matrix](management/implemented-vs-planned-matrix.md) | **The current capability truth** — every capability, ✅/🟡/🔵/❌, with file:line or live-command evidence |
+| [Show Me the Implementation](management/show-me-the-implementation.md) | Management-facing "prove it" answers |
+| [Documentation Validation Report](DOCUMENTATION-VALIDATION-REPORT.md) | **Historical snapshot (2026-08-08/09)** — audit evidence, not current status |
+| ADR-001 … ADR-012 | Architecture decision records — [001 two-project split](ADR-001-two-project-split.md) · [002 agent identity and gateway](ADR-002-agent-identity-and-gateway.md) · [003 LangGraph orchestration](ADR-003-langgraph-orchestration.md) · [004 MCP tool-access protocol](ADR-004-mcp-tool-access-protocol.md) · [005 read-only by design](ADR-005-read-only-by-design.md) · [006 evidence before RCA](ADR-006-evidence-before-rca.md) · [007 two confidence dimensions](ADR-007-two-confidence-dimensions.md) · [008 confidence not accuracy](ADR-008-confidence-not-accuracy.md) · [009 GCS durable evidence archive](ADR-009-gcs-durable-evidence-archive.md) · [010 human approval before trusted memory](ADR-010-human-approval-before-trusted-memory.md) · [011 Terraform-managed cluster registry](ADR-011-terraform-managed-cluster-registry.md) · [012 GKE Remote MCP vs custom MCP](ADR-012-gke-remote-mcp-vs-custom-mcp.md) |
+
+### Promotion to the company repo
+
+| Page | Covers |
+|---|---|
+| [Test-to-Work Process](promotion/01-test-to-work-process.md) | Safe personal-repo → company-repo promotion, with a worked example |
+| [Migration Manifest Template](promotion/02-migration-manifest-template.md) | The per-promotion checklist |
+
+### Design notes, baselines and test evidence
+
+| Page | Covers |
+|---|---|
+| [Confidence Framework Design](confidence-framework-design.md) | The design behind the scoring system. **Referenced directly by source code** — do not move |
+| [Least-Privilege IAM](least-privilege-iam.md) | Full live role inventory |
+| [Connect Gateway / On-Prem](connect-gateway-onprem.md) | The non-GKE access path |
+| [Custom K8s MCP](custom-k8s-mcp.md) | The Cloud Run MCP fallback |
+| [Trace Content Capture](trace-content-capture.md) | What tracing does and does not record |
+| [Tool-Scaling Baseline (corrected)](baselines/tool-scaling-baseline-2026-08-09-corrected.md) | The official baseline. [Original run](baselines/tool-scaling-baseline-2026-08-09.md) kept as history |
+| [E2E Honest Baseline](testing/e2e-honest-baseline-2026-08-09-notification-relay.md) | Real end-to-end test evidence. **Referenced by tests and `agent/mcp_client.py`** — do not move |
 
 ---
 
 ## Final deliverables checklist
 
-1. Complete knowledge-base directory — ✅ this tree, 51 pages across 6 sections
+1. Complete knowledge-base directory — ✅ this tree, 81 markdown pages across 8 sections
 2. Architecture documentation — ✅ Part 1, 17 pages
 3. Operations handbook — ✅ 10 pages
 4. Troubleshooting runbooks — ✅ 11 pages covering all 30 requested scenarios + 4 onboarding-flow runbooks

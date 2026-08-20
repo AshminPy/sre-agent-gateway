@@ -1,5 +1,17 @@
 # NEXTSTEPS.md — SRE Agent Roadmap
 
+> **Status: RESEARCH REFERENCE — not a status document.**
+> **Last Verified:** 2026-07-18 (original research date; not re-validated since)
+> **Source of Truth:** none — this file states no current status
+>
+> This is the deep per-item research behind the roadmap. It is **not** where current
+> status lives, and its "current state" notes are from 2026-07-18. For anything you need
+> to be accurate today:
+> - Ordered launch work → [PRODUCTION-LAUNCH-PLAN.md](PRODUCTION-LAUNCH-PLAN.md)
+> - What is really built vs planned → [`docs/management/implemented-vs-planned-matrix.md`](docs/management/implemented-vs-planned-matrix.md)
+> - Open gaps → [`docs/management/risks-and-limitations.md`](docs/management/risks-and-limitations.md)
+> - Task status → `docs/management/PROJECT_TRACKER.xlsx`
+
 > **→ For the PRODUCTION LAUNCH plan (2026-07-28), see [PRODUCTION-LAUNCH-PLAN.md](PRODUCTION-LAUNCH-PLAN.md).**
 > It re-sequences this roadmap for a controlled read-only production rollout (PagerDuty entry
 > point + GKE/on-prem routing) and marks each priority done/partial/not-started against the
@@ -76,7 +88,7 @@ ALREADY PRODUCTION-GRADE:
 - Zero Terraform drift confirmed (deploy-state `testing2-gcp-sre-agent.md` "CURRENT STATE" banner).
 - Observability foundation exists: `iac/agent/monitoring.tf` has 7 log-based metrics (`sre_agent/invocations`, `errors`, `escalations`, `investigation_cost`, `confidence_band`, `loop_exit_reason`, `tool_failures`) and 3 alert policies (High Error Rate, High Escalation Rate, Investigation Cost Spike >$0.10), all wired to `agent/otel.py` structured per-run logging (tokens, `estimated_cost_usd`, `confidence_band`).
 - Basic resilience exists: Gemini 429 handling with capped retries (`agent/gemini_client.py:198`, 3 attempts with backoff) and an explicit 30s httpx timeout on MCP calls (`agent/mcp_client.py:381`).
-- Docs foundation is real, not aspirational: ADR-001 (two-project split), ADR-002 (agent identity/gateway binding, mTLS root cause resolved), `docs/architecture.md` + diagram, `docs/least-privilege-iam.md`.
+- Docs foundation is real, not aspirational: ADR-001 (two-project split), ADR-002 (agent identity/gateway binding, mTLS root cause resolved), `docs/architecture/` (17 pages, entry `system-overview.md`), `docs/least-privilege-iam.md`.
 - A first-pass eval framework already exists (`agent/eval/run_eval.py`, `agent/eval/golden_cases.py`): local + remote trajectory scoring against golden cases, with an optional Vertex AI Gen AI Evaluation Service submission path.
 
 GENUINE GAPS (verified, not assumed):
@@ -95,7 +107,7 @@ Google's actual PRR reference (SRE Book Ch. 32, "The Evolving SRE Engagement Mod
 Proposed category → owning-item map:
 | PRR category | Owning backlog item(s) | Verified today |
 |---|---|---|
-| Architecture & Dependencies | 5 (GKE Connect Gateway), 9 (MCP expansion plan) | DONE (ADR-001/002, architecture.md) — extends as 5/9 add new dependency types |
+| Architecture & Dependencies | 5 (GKE Connect Gateway), 9 (MCP expansion plan) | DONE (ADR-001/002, `docs/architecture/`) — extends as 5/9 add new dependency types |
 | Capacity, Performance & Scalability | 3 (Code quality / scalability review) | PARTIAL — quota gotcha documented in README, no formal capacity plan |
 | Monitoring, Alerting & Observability | 2 (Observability) | PARTIAL — 7 metrics + 3 alerts + traces exist, agent-only; item 2's own gap statement is gateway/MCP/GKE-wide visibility |
 | Emergency Response & Incident Mgmt | 4 (PagerDuty integration) | GAP — email-only alerting, no paging, no runbook |
@@ -128,7 +140,7 @@ Proposed category → owning-item map:
 
 ### Implementation steps
 
-1. Create docs/production-readiness.md in the repo, following the existing docs/ convention (ADRs, least-privilege-iam.md, architecture.md).
+1. Create docs/production-readiness.md in the repo, following the existing docs/ convention (ADRs, least-privilege-iam.md, `docs/architecture/`).
 2. Define the category backbone: Architecture & Dependencies, Capacity/Performance/Scalability, Monitoring & Observability, Emergency Response, Change Management & Deployment Safety, Security/Identity/Data Governance, Model & Agent-Specific Governance, Evaluation & QA, Cost & Resource Efficiency, Testing Strategy, Documentation & Runbooks, Framework Migration Readiness.
 3. For each category, add a table with columns: checklist item, current status (DONE/PARTIAL/GAP), evidence (file:line, PR#, issue#), owning backlog item number.
 4. Populate every row using this session's verified evidence (CI run IDs, monitoring.tf resources, least-privilege-iam.md roles, the zero-protection-rules finding, the zero-tests finding, open issues #29-#36) rather than assumptions.
@@ -345,7 +357,7 @@ Extend the existing Cloud Trace + structured-logging foundation rather than intr
 5. Add a log-based metric + alert on Agent Gateway authz denials (filter: resource.type="networkservices.googleapis.com/Gateway" AND jsonPayload.serviceExtensionsInfo... denied), mirroring the existing tool_failures pattern in monitoring.tf, respecting the same time_sleep propagation-delay pattern already documented there.
 6. Add one google_monitoring_dashboard Terraform resource covering: MCP source split (gke_remote_mcp vs k8s_mcp call volume/latency), gateway authz denial rate, per-run cost trend (from the existing investigation_cost_usd distribution metric) — the metrics for most of this already exist, only the dashboard widget layer is missing.
 7. Set explicit SLOs as new alert-policy thresholds using values already tracked in agent/state.py (e.g. max_duration_seconds=540 investigation budget → alert if p95 run latency approaches it; tool failure rate; escalation rate as a % of invocations, not just an absolute count as today's high_escalation_rate policy does).
-8. Update docs/architecture.md's description of the Agent Gateway to state plainly that content inspection is currently agent-code-only (gateway OFF path) and the gateway itself enforces IAP REQUEST_AUTHZ (no payload MITM) — so the next engineer doesn't rebuild dashboards around a Model Armor gateway signal that doesn't exist.
+8. Update `docs/architecture/agent-gateway.md`'s description of the Agent Gateway to state plainly that content inspection is currently agent-code-only (gateway OFF path) and the gateway itself enforces IAP REQUEST_AUTHZ (no payload MITM) — so the next engineer doesn't rebuild dashboards around a Model Armor gateway signal that doesn't exist.
 
 ### Risks & gotchas
 
@@ -632,7 +644,7 @@ FACT (read from this repo):
 - The agent is invoked today only by direct calls to the Vertex AI Reasoning Engine query API — `invoke_agent.py` uses `aiplatform_v1beta1.ReasoningEngineExecutionServiceClient.query_reasoning_engine(request={"name": f"projects/{P}/locations/{R}/reasoningEngines/{ID}", "input": payload})`. There is no HTTP ingress, no webhook receiver, and nothing in `iac/agent/` or `agent/` mentions PagerDuty (`grep -rn "pagerduty" agent/ docs/ README.md` = no hits).
 - `SREAgent.query()` in `agent/main.py` (class at line 515, `query()` at line 785) accepts a flat kwargs payload and, in `investigate()` (line 323), builds an envelope that ALREADY has the exact fields an alerting webhook needs: `source_type` (default `"manual"`), `source_event_id` (default `""`), `incident.title`, `incident.service`, `incident.severity`, plus `resource_hints.{cluster,namespace,pod,deployment}` and `session_id`. This means mapping a PagerDuty incident into this agent requires **no agent code changes** — only correct field mapping in the new integration layer.
 - `agent/otel.py` already tags spans with `sre.source_type`, so a PagerDuty-originated run is automatically distinguishable in traces/logs with zero extra code.
-- The **Agent Gateway** (`iac/agent/agent_gateway.tf`, `google_network_services_agent_gateway.sre_egress`) is `google_managed { governed_access_path = "AGENT_TO_ANYWHERE" }` — confirmed by its own comments and `docs/architecture.md` ("governs all of the agent's egress"). It governs the agent's OUTBOUND calls (model, MCP, telemetry), not inbound query calls. **A PagerDuty-triggered invocation does not touch the gateway at all** — it is a separate, direct call to the Reasoning Engine's `:query` endpoint, authorized purely by project/resource-level IAM.
+- The **Agent Gateway** (`iac/agent/agent_gateway.tf`, `google_network_services_agent_gateway.sre_egress`) is `google_managed { governed_access_path = "AGENT_TO_ANYWHERE" }` — confirmed by its own comments and `docs/architecture/agent-gateway.md` ("governs all of the agent's egress"). It governs the agent's OUTBOUND calls (model, MCP, telemetry), not inbound query calls. **A PagerDuty-triggered invocation does not touch the gateway at all** — it is a separate, direct call to the Reasoning Engine's `:query` endpoint, authorized purely by project/resource-level IAM.
 - `iac/agent/iam.tf` already has a working least-privilege pattern to copy: per-component dedicated service accounts (`mcp_runtime` in `cloudrun_mcp.tf`), resource-scoped bindings (`google_cloud_run_v2_service_iam_member`), and a `runtime_project_roles` list with justifications in `docs/least-privilege-iam.md`.
 - `iac/agent/cloudrun_mcp.tf` is the existing template for "add a Cloud Run service to this stack": dedicated Artifact Registry repo, dedicated runtime SA, `google_cloud_run_v2_service` gated behind a feature-flag variable (`enable_custom_mcp`), placeholder image so `terraform apply` succeeds before the real image is built.
 - `iac/agent/monitoring.tf` has 7 log-based metrics + 2 alert policies + 1 email notification channel already wired — the pattern to extend for webhook-specific metrics (e.g., signature failures).
