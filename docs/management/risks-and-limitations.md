@@ -62,9 +62,13 @@ Agent Engine's compute scaling ceiling is not visible from this repo's Terraform
 
 Alert thresholds exist as operational tripwires; no published service-level commitment exists yet. See [Reliability](../governance/reliability.md).
 
-## 15. Cloud Trace / Console telemetry regression (issue #164, OPEN)
+## 15. Agent Platform Console Traces tab does not update (issue #164, OPEN)
 
-The Agent Platform Console's Traces tab stopped updating on 2026-08-13. Root cause found: the fix for #130 made our own OpenTelemetry tracer initialise early enough to reliably win OpenTelemetry's one-time global-provider race, which blocked Agent Engine's own managed provider — the one the Console reads. PR #165 stopped our tracer competing for that slot, but the issue is **not closed**. Treat Console-based trace visibility as unreliable until it is.
+**Fixed:** our application's own OpenTelemetry provider race. The #130 fix (PR #136) made our tracer initialise early enough to reliably win OpenTelemetry's one-time global-provider slot, which blocked Agent Engine's managed provider from installing. PR #165 removed that competition — `get_tracer()` now builds its own local `TracerProvider` instead — restoring the managed tracer path.
+
+**Still unresolved:** the Console symptom itself. The Agent Platform Console's Traces tab has not updated since 2026-08-13, and the Deployments list still shows "Learn more" rather than "Enabled" for Telemetry collection. **The Console-side root cause is not confirmed.** Three config-level hypotheses were tested live and ruled out (2026-08-14 to 2026-08-16), the last being `OTEL_SEMCONV_STABILITY_OPT_IN` / `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`; each was reverted afterwards.
+
+**Scope of the impact:** Cloud Trace itself is working — live run `run_20260816_083409_lpak` produced 54 correctly-parented spans. What is unreliable is the *Console view*, not trace collection. Use Cloud Trace directly rather than the Console tab until #164 closes.
 
 ## 16. Agent's own observability write to Cloud Logging returns 403 (issue #139, OPEN)
 

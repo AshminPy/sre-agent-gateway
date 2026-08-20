@@ -76,7 +76,7 @@ No test in the repo exercises the compiled full graph (`compile_graph()`/`graph.
 | Capability | Status | Evidence |
 |---|---|---|
 | Structured logging | ✅ | 4 named loggers + 3 stdout event types confirmed across `rca_builder.py`, `tool_executor.py`, `mcp_router.py`, `gcs_client.py`, `main.py` |
-| Distributed tracing | 🟡 | `agent/otel.py` — `get_tracer()`, `trace_node()`, fail-open design confirmed. **Downgraded 2026-08-20:** issue #164 is OPEN — the Agent Platform Console Traces tab stopped updating 2026-08-13. Our own tracer no longer competes for the global provider slot (PR #165), but the regression is not closed |
+| Distributed tracing | ✅ collection / 🟡 Console view | `agent/otel.py` — `get_tracer()`, `trace_node()`, fail-open design confirmed. **Trace collection works**: live run `run_20260816_083409_lpak` produced 54 correctly-parented spans in Cloud Trace. **Console view is the open part** — issue #164, see the note below the table |
 | Log-based metrics | ✅ | **12/12** counted directly in `iac/agent/monitoring.tf` (re-counted 2026-08-20; was 11). The double-counting caveat is **resolved** — issue #75 closed, 8 metrics scoped to `event_type="sre_agent_run"` |
 | Alert policies | ✅ | **12/12** counted directly in `iac/agent/monitoring.tf` (re-counted 2026-08-20; was 11) |
 | CI Terraform native tests | ✅ | `terraform test` step added to `terraform-plan.yml` 2026-08-09 (PR #52), ran live 4/4 pass, now documented (was undocumented until today) |
@@ -135,7 +135,7 @@ Also closed since: `#29` (Cloud Trace hostname), `#31`, `#60`, `#63`, `#64`, `#7
 
 | Item | State |
 |---|---|
-| #164 | **OPEN** — Console Traces tab stopped updating 2026-08-13. See the tracing row above. |
+| #164 | **OPEN.** *Fixed:* our own OTel provider race (PR #165 stopped `get_tracer()` competing for the global provider slot, restoring the managed tracer path). *Still unresolved:* the Agent Platform Console Traces tab has not updated since 2026-08-13 and Telemetry collection still reads "Learn more" not "Enabled". **The Console-side root cause is not confirmed** — three config hypotheses were tested live and ruled out (2026-08-14 to 2026-08-16). Cloud Trace itself is unaffected; use it directly instead of the Console tab. |
 | #139 | **OPEN** — `rca_builder.py._write_observability_log()` gRPC write returns 403. Investigation results are unaffected: a separate stdout observability path in `agent/main.py` always works. |
 | #77, #78 | **OPEN** — CI test/lint/security coverage and workflow path filters are **implemented, merged and deployed**, and the implementation is correct. They remain In Progress only because the required post-deployment live canary has not yet passed (blocked by the #103 condition). Implemented ≠ Completed. |
 | #32 | **OPEN** — Model Armor output-sanitization verdict handling is implemented and deployed; the actual `MATCH_FOUND` / `blocked=True` path has never been exercised live. |
