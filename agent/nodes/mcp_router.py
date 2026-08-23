@@ -78,7 +78,10 @@ def _log_routing_failure(run_id: str, cluster_name: str, reason: str) -> None:
 
         from google.cloud import logging as cloud_logging
 
-        cloud_logging.Client(project=os.environ.get("PROJECT_ID")).logger("sre-agent-routing-failures").log_struct(
+        # issue #139 fix, confirmed live 2026-08-23 -- see tool_executor.py's identical
+        # comment for the full evidence. _use_grpc=False is the confirmed fix, 3/3 clean
+        # live runs after the change.
+        cloud_logging.Client(project=os.environ.get("PROJECT_ID"), _use_grpc=False).logger("sre-agent-routing-failures").log_struct(
             {
                 "event":   "mcp_routing_failure",
                 "run_id":  run_id,
