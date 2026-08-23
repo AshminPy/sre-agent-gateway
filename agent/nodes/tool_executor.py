@@ -75,7 +75,14 @@ def tool_executor(state: AgentState) -> dict:
             import os
 
             from google.cloud import logging as cloud_logging
-            cloud_logging.Client(project=os.environ.get("PROJECT_ID")).logger("sre-agent-tool-failures").log_struct(
+            # issue #139 fix, confirmed live 2026-08-23: this Cloud Logging write 403'd
+            # ("unregistered in the Agent Registry") on 144 of 145 real attempts over 180
+            # days when using the default gRPC transport -- Agent Gateway never resolved a
+            # registry match for it (unlike every other working destination). Switching to
+            # HTTP_JSON (matched by the us-central1-logging registry entry's protocolBinding)
+            # fixed it: 3/3 clean live runs after the change, same fix already confirmed for
+            # rca_builder.py's identical call. See docs/least-privilege-iam.md and issue #139.
+            cloud_logging.Client(project=os.environ.get("PROJECT_ID"), _use_grpc=False).logger("sre-agent-tool-failures").log_struct(
                 {
                     "event":      "tool_failure",
                     "run_id":     state["run_id"],

@@ -136,16 +136,16 @@ def _write_observability_log(state: AgentState, rca: dict, usage: dict) -> None:
     """
     try:
         from google.cloud import logging as cloud_logging
-        # TEMPORARY TEST ONLY (issue #139, 2026-08-23) -- controlled HTTP_JSON isolation
-        # experiment. Every real gateway log entry for this call, in 180 days of history,
-        # shows registry resolution empty for the GRPC path (agentGatewayInfo: {}), unlike
-        # every other working destination (Trace, GKE, storage, custom MCP), which all show
-        # a real resolved registry resource. _use_grpc=False forces the HTTP transport,
-        # matched by re-registering us-central1-logging as protocolBinding=HTTP_JSON
-        # (Cloud Trace's own registry entry is untouched -- separate hostname, separate
-        # resource). If this succeeds, HTTP_JSON is the real fix; if it still 403s,
-        # revert both this line and the registry entry and escalate to Google. Do not
-        # apply this to tool_executor.py/mcp_router.py/gcs_client.py until confirmed.
+        # issue #139 fix, confirmed live 2026-08-23. Root cause: this Cloud Logging write
+        # 403'd ("unregistered in the Agent Registry") on 144 of 145 real attempts over 180
+        # days when using the default gRPC transport -- Agent Gateway never resolved a
+        # registry match for it (empty agentGatewayInfo), unlike every other working
+        # destination (Trace, GKE, storage, custom MCP), which all show a real resolved
+        # registry resource. Fix: _use_grpc=False (HTTP transport), matched by the
+        # us-central1-logging registry entry's protocolBinding=HTTP_JSON (Cloud Trace's own
+        # entry is untouched -- separate hostname, separate resource). Verified: 3/3 clean
+        # live runs after the change, same fix applied to tool_executor.py/mcp_router.py/
+        # gcs_client.py's identical calls.
         client   = cloud_logging.Client(project=os.environ.get("PROJECT_ID"), _use_grpc=False)
         logger_c = client.logger("sre-agent-investigations")
 

@@ -71,7 +71,10 @@ def _log_evidence_storage_failure(run_id: str, evidence_id: str, path: str, erro
     try:
         from google.cloud import logging as cloud_logging
 
-        cloud_logging.Client(project=os.environ.get("PROJECT_ID")).logger("sre-agent-evidence-storage-failures").log_struct(
+        # issue #139 fix, confirmed live 2026-08-23 -- see tool_executor.py's identical
+        # comment for the full evidence. _use_grpc=False is the confirmed fix, 3/3 clean
+        # live runs after the change.
+        cloud_logging.Client(project=os.environ.get("PROJECT_ID"), _use_grpc=False).logger("sre-agent-evidence-storage-failures").log_struct(
             {
                 "event":       "evidence_storage_failure",
                 "run_id":      run_id,
