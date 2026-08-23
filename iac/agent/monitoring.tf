@@ -324,7 +324,11 @@ resource "google_monitoring_alert_policy" "high_error_rate" {
   conditions {
     display_name = "Agent errors > 5 in 5 minutes"
     condition_threshold {
-      filter          = "metric.type=\"logging.googleapis.com/user/sre_agent/errors\" AND resource.type=\"global\""
+      # resource.type corrected 2026-08-23: real sre_agent_run log entries carry
+      # aiplatform.googleapis.com/ReasoningEngine, not "global" -- same source, same
+      # fix already proven correct for token_usage_warning below. This alert never
+      # fired before this fix; unverified until re-checked live against a real log.
+      filter          = "metric.type=\"logging.googleapis.com/user/sre_agent/errors\" AND resource.type=\"aiplatform.googleapis.com/ReasoningEngine\""
       duration        = "300s"
       comparison      = "COMPARISON_GT"
       threshold_value = 5
@@ -349,7 +353,8 @@ resource "google_monitoring_alert_policy" "high_escalation_rate" {
   conditions {
     display_name = "Escalations > 3 in 5 minutes"
     condition_threshold {
-      filter          = "metric.type=\"logging.googleapis.com/user/sre_agent/escalations\" AND resource.type=\"global\""
+      # resource.type corrected 2026-08-23 -- see high_error_rate above for why.
+      filter          = "metric.type=\"logging.googleapis.com/user/sre_agent/escalations\" AND resource.type=\"aiplatform.googleapis.com/ReasoningEngine\""
       duration        = "300s"
       comparison      = "COMPARISON_GT"
       threshold_value = 3
@@ -374,7 +379,8 @@ resource "google_monitoring_alert_policy" "cost_spike" {
   conditions {
     display_name = "Single investigation cost > $0.10"
     condition_threshold {
-      filter          = "metric.type=\"logging.googleapis.com/user/sre_agent/investigation_cost_usd\" AND resource.type=\"global\""
+      # resource.type corrected 2026-08-23 -- see high_error_rate above for why.
+      filter          = "metric.type=\"logging.googleapis.com/user/sre_agent/investigation_cost_usd\" AND resource.type=\"aiplatform.googleapis.com/ReasoningEngine\""
       duration        = "0s"
       comparison      = "COMPARISON_GT"
       threshold_value = 0.10
@@ -499,7 +505,8 @@ resource "google_monitoring_alert_policy" "unresolved_cluster" {
   conditions {
     display_name = "context_resolver unresolved-cluster safe-stop > 0 in 5 minutes"
     condition_threshold {
-      filter          = "metric.type=\"logging.googleapis.com/user/sre_agent/unresolved_cluster\" AND resource.type=\"global\""
+      # resource.type corrected 2026-08-23 -- see high_error_rate above for why.
+      filter          = "metric.type=\"logging.googleapis.com/user/sre_agent/unresolved_cluster\" AND resource.type=\"aiplatform.googleapis.com/ReasoningEngine\""
       duration        = "0s"
       comparison      = "COMPARISON_GT"
       threshold_value = 0
@@ -574,7 +581,8 @@ resource "google_monitoring_alert_policy" "excessive_latency" {
   conditions {
     display_name = "p99 investigation latency > 180s"
     condition_threshold {
-      filter          = "metric.type=\"logging.googleapis.com/user/sre_agent/investigation_latency_seconds\" AND resource.type=\"global\""
+      # resource.type corrected 2026-08-23 -- see high_error_rate above for why.
+      filter          = "metric.type=\"logging.googleapis.com/user/sre_agent/investigation_latency_seconds\" AND resource.type=\"aiplatform.googleapis.com/ReasoningEngine\""
       duration        = "0s"
       comparison      = "COMPARISON_GT"
       threshold_value = 180
@@ -634,7 +642,8 @@ resource "google_monitoring_alert_policy" "loop_token_termination" {
       # "normal" exits (confidence_sufficient, tool_signaled_done) and
       # consecutive_tool_failures/zero_new_facts, which are already covered by the
       # tool-failure alerts above and would double-count with this one.
-      filter          = "metric.type=\"logging.googleapis.com/user/sre_agent/loop_exit_reason\" AND resource.type=\"global\" AND metric.label.reason=monitoring.regex.full_match(\"timeout|token_budget_exceeded|max_iterations|oscillation_detected|stuck_detected\")"
+      # resource.type corrected 2026-08-23 -- see high_error_rate above for why.
+      filter          = "metric.type=\"logging.googleapis.com/user/sre_agent/loop_exit_reason\" AND resource.type=\"aiplatform.googleapis.com/ReasoningEngine\" AND metric.label.reason=monitoring.regex.full_match(\"timeout|token_budget_exceeded|max_iterations|oscillation_detected|stuck_detected\")"
       duration        = "600s"
       comparison      = "COMPARISON_GT"
       threshold_value = 2
