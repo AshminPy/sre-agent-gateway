@@ -136,7 +136,17 @@ def _write_observability_log(state: AgentState, rca: dict, usage: dict) -> None:
     """
     try:
         from google.cloud import logging as cloud_logging
-        client   = cloud_logging.Client(project=os.environ.get("PROJECT_ID"))
+        # TEMPORARY TEST ONLY (issue #139, 2026-08-23) -- controlled HTTP_JSON isolation
+        # experiment. Every real gateway log entry for this call, in 180 days of history,
+        # shows registry resolution empty for the GRPC path (agentGatewayInfo: {}), unlike
+        # every other working destination (Trace, GKE, storage, custom MCP), which all show
+        # a real resolved registry resource. _use_grpc=False forces the HTTP transport,
+        # matched by re-registering us-central1-logging as protocolBinding=HTTP_JSON
+        # (Cloud Trace's own registry entry is untouched -- separate hostname, separate
+        # resource). If this succeeds, HTTP_JSON is the real fix; if it still 403s,
+        # revert both this line and the registry entry and escalate to Google. Do not
+        # apply this to tool_executor.py/mcp_router.py/gcs_client.py until confirmed.
+        client   = cloud_logging.Client(project=os.environ.get("PROJECT_ID"), _use_grpc=False)
         logger_c = client.logger("sre-agent-investigations")
 
         from agent.llm.accounting import accumulate_usage
