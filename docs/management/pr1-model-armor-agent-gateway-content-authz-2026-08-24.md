@@ -2,7 +2,15 @@
 
 **Date:** 2026-08-24. **Branch:** `test/model-armor-regional-content-authz-trial` (pushed, **not merged to `main`**). **Project:** `sreagent-t2-demo`, region `us-central1`. **Tracker rows:** 21, 22, 122 (`In Progress` — not moved to Completed). **GitHub issues:** #30, #32 (both stay open).
 
-Status: **NOT DONE.** Two real limitations found, neither fixed. This version of the report adds every raw command, setting, and log entry behind each claim, so it can be handed to Google Cloud Support as-is if Limitation A needs an official case opened.
+Status: **NOT DONE.** Two real limitations found, neither fixed. This version of the report adds every raw command, setting, and log entry behind each claim, so it can be handed to Google Cloud Support as-is if a clarification case is opened.
+
+**Branch held, not merged, per your instruction. #30 and #32 are NOT re-scoped.**
+
+---
+
+## 0. Correction applied tonight, after re-reading Google's docs
+
+The first draft of this report used the Gemini `generateContent` call as the primary evidence for "RESPONSE_BODY never fires." That was the wrong artifact to lead with — Google's Model Armor + Agent Gateway integration docs do not list native Gemini `generateContent` as a documented supported egress payload for this integration at all (checked directly, see Section 4). This section replaces that with the GKE Remote MCP `tools/call` evidence, which Google's own docs **do** name as a supported payload — and adds the specific, documented transport exclusion that most likely explains the result. Everything below is corrected to match. Nothing was re-scoped on GitHub or the tracker as part of this correction.
 
 ---
 
@@ -203,7 +211,7 @@ $ jq -r '.[] | select((.httpRequest.requestUrl // "") | test("aiplatform")) |
 ```
 (The second URL is this agent's separate Vertex Memory Bank engine — `3347932092473278464` — a distinct resource from the reasoning engine itself `7801582006105538560`; not a data error, confirmed via `terraform output` below.)
 
-The full raw log entry for the `generateContent` call is in **Appendix B** — it is the single piece of evidence for both findings below (0 DENIED, and RESPONSE_BODY absent even on this exact response).
+The full raw log entries are in **Appendix B1** (GKE Remote MCP `tools/call` — primary evidence) and **Appendix B2** (Gemini `generateContent` — secondary, not primary evidence per Section 0's correction).
 
 **Conclusion:** Model Armor's PI/jailbreak filter (`MEDIUM_AND_ABOVE` confidence) did not flag this payload, in either mode. Not a visibility artifact of inspect-only — block mode showed the identical zero-DENIED result.
 
@@ -222,27 +230,71 @@ This is a `ServerError` raised by the `google-genai` SDK against the Gemini API 
 
 ---
 
-## 4. Two real limitations — neither fixed, both need a decision
+## 4. Isolating the correct reproduction — GKE Remote MCP, not Gemini
 
-### Limitation A — RESPONSE_BODY is never inspected
+**Exact MCP operation tested — read directly off the raw gateway log, not assumed:** the `container.googleapis.com/mcp/read-only` call at `2026-08-24T19:12:26.545347Z` carries its own `agentGatewayInfo.mcpInfo` field:
+```json
+"mcpInfo": { "method": "tools/call", "parameter": "list_k8s_events" }
+```
+Confirmed: this was an MCP **`tools/call`** request, tool `list_k8s_events`. Full entry in **Appendix B1**.
 
-**Required by design, per Google's own schema.** `AuthzPolicy.policyProfile: CONTENT_AUTHZ`'s REST discovery-doc description states extensions "must be capable of receiving all `EXT_PROC_GRPC` events (REQUEST_HEADERS, REQUEST_BODY, REQUEST_TRAILERS, RESPONSE_HEADERS, RESPONSE_BODY, RESPONSE_TRAILERS)."
+**Exact transport used:**
+- GKE's own docs (`kubernetes-engine/docs/how-to/use-gke-mcp`) state the Remote MCP server's transport plainly: *"Transport: HTTP"* — a remote MCP server that "offer[s] an HTTP endpoint to AI applications."
+- This repo's own client code confirms the wire-level shape of that HTTP exchange. `agent/mcp_client.py:523` and `:630-632`:
+  ```python
+  # Parse SSE or direct JSON response
+  content = _parse_response(resp.text)
+  ...
+  def _parse_response(body: str) -> Optional[Any]:
+      """Parse SSE or direct JSON response from MCP server."""
+      # Try SSE first — scan all data: frames, skip empty/notification ones
+  ```
+  The client is written to handle a response body that may be SSE-framed (`data: {...}` lines) or plain JSON, from a single buffered `resp.text` — i.e. one HTTP POST, one HTTP response, response optionally SSE-formatted. This is what the MCP spec and Google's own docs call **Streamable HTTP** (with SSE framing on the response), not a raw persistent SSE stream.
+- Could not forensically confirm from the gateway log alone whether *this specific* `list_k8s_events` response used SSE framing or plain JSON (the log captures event types and sizes, not response `Content-Type` or body bytes) — noted as an open gap, not asserted as fact.
 
-**Never observed, across every test tonight, on any host.** Event types actually seen in the raw `serviceExtensionInfo[].perProcessingRequestInfo[].eventType` field across all 9 Model-Armor-inspected requests in tonight's window: `REQUEST_HEADERS`, `REQUEST_BODY`, `RESPONSE_HEADERS`. **`RESPONSE_BODY`: zero occurrences** — including on the exact `gemini-2.5-pro:generateContent` call in Appendix B, which by definition returns a response body containing the model's generated content, and on the GKE Remote MCP call (`https://container.googleapis.com/mcp/read-only`, `19:12:26Z`, same 3-event pattern).
+**What Google's docs say about this exact combination** (`model-armor-mcp-google-cloud-integration`, fetched directly tonight):
+- Supported, request **and** response sanitized: `tools/call`, `prompts/get`.
+- Explicitly listed as **"allowed without sanitization"**: `tools/list`, `resources/*`, `notifications/*`, and — the specific line that matters here — **`"Streamable HTTP/SSE for MCP"`**.
 
-**Diagnosis performed, not skipped:**
-- `AuthzExtension` REST schema (`networkservices.googleapis.com/$discovery/rest?version=v1beta1`) — no response-scope/event-selection field exists to enable.
-- `AuthzPolicy` REST schema (`networksecurity.googleapis.com/$discovery/rest?version=v1beta1`) — same, no such field.
-- `wireFormat` — defaults to `EXT_PROC_GRPC` (confirmed, not `EXT_AUTHZ_GRPC`); ruled out as the cause.
-- Live resource fields — both `request_template_id` and `response_template_id` are correctly attached (Step 2's REST output above).
+These two rules are in tension for this exact request: the *operation* (`tools/call`) is on the supported list; the *transport* (Streamable HTTP/SSE) is on the excluded list. Google's docs don't explicitly resolve which one wins when both apply to the same call. The empirical result is consistent with the transport exclusion winning on the response leg specifically: `REQUEST_BODY` (a single buffered POST body, straightforward for the extension to inspect) shows `processingEffect: CONTENT_MODIFIED` — genuinely inspected — while `RESPONSE_BODY` never appears in `perProcessingRequestInfo` at all. Full entry and this exact read in **Appendix B1**.
 
-No missing Terraform-level configuration was found. This is reported as a live, confirmed limitation, per your instruction not to weaken the design or assume the documented behavior doesn't apply.
+**Evidence pulled for the required 4-event check:**
 
-**What this means concretely:** even with this PR fully applied, MCP responses (Kubernetes evidence) and Gemini responses are never content-inspected — only the outbound request side is.
+| Event | Observed on the `tools/call` (`list_k8s_events`) request? |
+|---|---|
+| REQUEST_HEADERS | Yes — `processingEffect: NONE` |
+| REQUEST_BODY | **Yes — `processingEffect: CONTENT_MODIFIED`** (genuine inspection) |
+| RESPONSE_HEADERS | Yes — `processingEffect: NONE` |
+| RESPONSE_BODY | **No — absent from the event array** |
 
-### Limitation B — the PI/jailbreak filter does not detect a real test payload, in either mode
+Zero `DENIED` results anywhere in the same 18:30–19:30 UTC window (Step 7's `jq` count, re-confirmed), across all 9 Model-Armor-inspected requests including this one.
 
-Established in Steps 5-7 above with a real block-mode test, not inferred. `MEDIUM_AND_ABOVE` confidence on `pi_and_jailbreak_filter_settings` did not flag a fairly blunt injection payload once embedded in this agent's larger structured investigation prompt.
+**Classification:** given a specific, named Google-documented exclusion (`"Streamable HTTP/SSE for MCP" — allowed without sanitization`) plausibly applies to exactly this transport, this is **not** presented as a confirmed product defect. It matches documented behavior closely enough that a support case should be framed as a **clarification request** — "does the Streamable HTTP/SSE exclusion apply to the response leg of an otherwise-supported `tools/call`, even though `tools/call` itself is listed as sanitized?" — not a bug report. Full reasoning and the raw log artifact for that case are in Appendix B1.
+
+**What this means concretely today:** whether by documented design or an unresolved edge case, MCP responses over this repo's actual GKE Remote MCP transport (Kubernetes evidence, the highest-value content to protect) are not content-inspected right now. Only the outbound request side is.
+
+## 4b. Limitation B — narrowed to exactly what the evidence proves
+
+Established in Steps 5–7 with a real block-mode test, not inferred. Stated narrowly, per your correction:
+
+**"The tested prompt-injection payload was not detected at the configured `MEDIUM_AND_ABOVE` threshold."**
+
+No broader claim about Model Armor's general detection rate is made — one payload, one confidence threshold, zero DENIED results in both inspect-only and block mode.
+
+## 4c. Floor settings (`GOOGLE_MCP_SERVER`) — a separate mechanism, investigated, not applied
+
+Distinct from the `AuthzExtension`/`AuthzPolicy` gateway wiring in this PR. Checked via Google's own docs tonight (`security-command-center/docs/configure-model-armor-floor-settings`, `model-armor/configure-floor-settings`):
+
+- Floor settings are a **project-level** control, separate from the Agent Gateway CONTENT_AUTHZ wiring built in this PR. Configured via `gcloud model-armor floorsettings update --add-integrated-services=GOOGLE_MCP_SERVER --google-mcp-server-enforcement-type=...`.
+- Documented scope: *"Google MCP Server: Floor settings check requests sent to or from Google or Google Cloud remote MCP servers to ensure they meet the floor setting thresholds."* GKE Remote MCP is a Google Cloud–hosted remote MCP server per its own docs, so it plausibly falls under this — **not explicitly named** in the floor-settings page itself, so this is inferred, not confirmed.
+- **Does it inspect both directions?** The docs say "requests sent to or from" — this phrasing does not explicitly separate request-body vs response-body coverage the way the Agent Gateway integration docs do. Not confirmed either way from documentation alone.
+- **Does the same Streamable HTTP/SSE exclusion apply to floor settings?** Not stated on the floor-settings page. The exclusion was only found on the Agent Gateway integration page. Unconfirmed whether floor settings would behave differently on the same GKE MCP traffic.
+- **This has not been applied or tested tonight** — `GOOGLE_MCP_SERVER` floor-setting enforcement is not currently configured on this project (nothing in tonight's Terraform or REST reads touched it). It's flagged as a separate, independent avenue worth testing, not a proven fix for Limitation A.
+
+**IAM needed to read (not set) current floor settings — reported, no grant requested:**
+- The only documented role found across both floor-settings pages checked tonight: **`roles/modelarmor.floorSettingsAdmin`** (`Model Armor Floor Setting Admin`). Google's own wording: *"To get the permissions that you need to manage floor settings, ask your administrator to grant you the Model Armor Floor Setting Admin (`roles/modelarmor.floorSettingsAdmin`) IAM role."*
+- **No separate read-only/viewer role is documented** for floor settings in either page fetched tonight — the Admin role is the only one Google names for this. Could not retrieve a granular permission breakdown (e.g. a possible `modelarmor.floorSettings.get`) from the IAM roles-and-permissions reference page tonight — its detailed permission table did not render through the fetch tool used. Reported as unverified rather than guessed.
+- **Not requesting this grant now**, per your instruction — this is the finding only.
 
 ---
 
@@ -275,20 +327,41 @@ None yet — **this branch is not merged and must not be described as "Model Arm
 
 ## 10. Exact live test still needed before this can be called done
 
-1. Resolve Limitation A — either find the actual missing configuration, or escalate to Google (this report's Appendix B is the exact evidence needed for that case).
-2. A genuine sensitive-data test case against the response template's `sdp_settings` — not yet exercised.
-3. Once (1) is resolved: re-test both prompt-injection and sensitive-data cases against the response path specifically.
-4. A latency measurement — not done tonight.
-5. Full path coverage table from `PRODUCTION-LAUNCH-PLAN.md` — Custom MCP and PagerDuty payload paths never exercised tonight.
+1. Get Google to confirm or rule out whether the "Streamable HTTP/SSE for MCP" exclusion applies to the response leg of a `tools/call` request specifically — a clarification question, framed with Appendix B1's raw log, not a bug report (see Section 4).
+2. Test whether `GOOGLE_MCP_SERVER` floor settings behave differently on the same GKE MCP traffic (Section 4c) — currently unconfigured, untested.
+3. A genuine sensitive-data test case against the response template's `sdp_settings` — not yet exercised.
+4. Once (1) or (2) resolves RESPONSE_BODY visibility: re-test both prompt-injection and sensitive-data cases against the response path specifically.
+5. A latency measurement — not done tonight.
+6. Full path coverage table from `PRODUCTION-LAUNCH-PLAN.md` — Custom MCP and PagerDuty payload paths never exercised tonight.
+
+---
+
+## 11. Tracker and GitHub issue check — no new row created, nothing re-scoped
+
+Checked `PROJECT_TRACKER.xlsx` directly (`openpyxl`, all sheets) for a row specifically scoped to "Agent Gateway CONTENT_AUTHZ request/response inspection." **None exists.** The closest existing rows, none of which is a dedicated match:
+
+| Row | Sheet | Task | Status |
+|---|---|---|---|
+| 21 | In Progress | Confirm current Model Armor configuration | In Progress |
+| 22 | In Progress | Retest Model Armor in clean environment | In Progress |
+| 122 | In Progress | Model Armor controlled validation | In Progress |
+| 24 | Not Started | Define separate Model Armor policies for input/evidence/output | Not Started |
+| 26 | Not Started | Confirm Model Armor failure/fallback behaviour | Not Started |
+| 131 | Not Started | Final Model Armor report/decision | Not Started |
+
+**No new tracker row created — reporting this to you first, per your instruction.**
+
+GitHub issue scope, checked directly tonight (`gh issue view`), confirmed **unchanged, not re-scoped**:
+- **#30** — *"Model Armor endpoint hostname mismatch"* (`OPEN`, label `bug`) — still scoped to the endpoint/registration mismatch only.
+- **#32** — *"Model Armor output-sanitization verdict is discarded"* (`OPEN`, labels `bug`, `P0-quick-fix`, `remediation-2026-08-09`) — still scoped to the output-sanitization verdict fix and its remaining live `MATCH_FOUND` validation.
+
+Neither issue's scope was touched tonight.
 
 ---
 
 ## Decision needed from you
 
-- **Merge now, re-scope #30/#32's remaining acceptance criteria** to explicitly cover Limitations A/B as separate, still-open work, or
-- **Hold the branch**, escalate Limitation A to Google Support first (Appendix B has the exact evidence), merge once resolved.
-
-Not deciding this here — flagging it for you, per your own instruction not to merge without review.
+**Held, per your instruction** — branch stays on `test/model-armor-regional-content-authz-trial`, not merged, #30/#32 not re-scoped. Next real decision point is Section 10's items 1–2 (Google clarification + floor-settings test), not a merge/re-scope call.
 
 ---
 
@@ -429,33 +502,28 @@ index bd2f149..9dfbf56 100644
  }
 ```
 
-## Appendix B — raw gateway_requests log entry (the core evidence for Limitation A)
+## Appendix B1 — raw gateway_requests log entry, GKE Remote MCP `tools/call` (PRIMARY evidence for Section 4)
 
-This is the exact, unmodified `gateway_requests` log entry for the `gemini-2.5-pro:generateContent` call at `2026-08-24T19:12:17.593699Z`, carrying the prompt-injection test payload, pulled via:
-```
-$ gcloud logging read 'resource.type="networkservices.googleapis.com/Gateway" AND
-  logName="projects/sreagent-t2-demo/logs/networkservices.googleapis.com%2Fgateway_requests" AND
-  timestamp>="2026-08-24T18:30:00Z" AND timestamp<="2026-08-24T19:30:00Z"' \
-  --project=sreagent-t2-demo --format=json
-```
+This is the exact, unmodified `gateway_requests` log entry for the GKE Remote MCP `tools/call` (`list_k8s_events`) at `2026-08-24T19:12:26.545347Z`, pulled via the same query as Step 7:
 
 ```json
 {
   "httpRequest": {
-    "latency": "2.222734s",
+    "latency": "0.879456s",
     "protocol": "HTTP/1.1",
     "requestMethod": "POST",
-    "requestSize": "2945",
-    "requestUrl": "https://us-central1-aiplatform.mtls.googleapis.com/v1beta1/projects/sreagent-t2-demo/locations/us-central1/publishers/google/models/gemini-2.5-pro:generateContent",
-    "responseSize": "1262",
+    "requestSize": "1968",
+    "requestUrl": "https://container.googleapis.com/mcp/read-only",
+    "responseSize": "508",
     "status": 200,
-    "userAgent": "google-genai-sdk/2.19.0+vertex-genai-modules/1.165.1 gl-python/3.11.15"
+    "userAgent": "python-httpx/0.28.1"
   },
-  "insertId": "ztd4bsef4s3d",
+  "insertId": "1ha6cm2edyaoy",
   "jsonPayload": {
     "@type": "type.googleapis.com/google.cloud.loadbalancing.type.LoadBalancerLogEntry",
     "agentGatewayInfo": {
-      "agentRegistryResource": "projects/327234009108/locations/us-central1/endpoints/agentregistry-00000000-0000-0000-71de-8d7e8cd0f10b"
+      "agentRegistryResource": "projects/327234009108/locations/us-central1/endpoints/agentregistry-00000000-0000-0000-00b2-d667bf7e2d34",
+      "mcpInfo": { "method": "tools/call", "parameter": "list_k8s_events" }
     },
     "authzPolicyInfo": {
       "policies": [
@@ -465,10 +533,10 @@ $ gcloud logging read 'resource.type="networkservices.googleapis.com/Gateway" AN
       "result": "ALLOWED"
     },
     "enforcedGatewaySecurityPolicy": {
-      "hostname": "us-central1-aiplatform.mtls.googleapis.com",
+      "hostname": "container.googleapis.com",
       "matchedRules": [{ "action": "ALLOWED", "name": "default_denied" }],
       "requestWasTlsIntercepted": true,
-      "serverNameIndication": "us-central1-aiplatform.mtls.googleapis.com"
+      "serverNameIndication": "container.googleapis.com"
     },
     "serviceExtensionInfo": [
       {
@@ -476,17 +544,17 @@ $ gcloud logging read 'resource.type="networkservices.googleapis.com/Gateway" AN
         "backendTargetType": "BACKEND_SERVICE",
         "grpcStatus": "OK",
         "perProcessingRequestInfo": [
-          { "eventType": "REQUEST_HEADERS", "latency": "0.102213s", "processingEffect": "NONE" },
-          { "eventType": "REQUEST_BODY", "latency": "0.102251s", "processingEffect": "CONTENT_MODIFIED" },
-          { "eventType": "RESPONSE_HEADERS", "latency": "0.042555s", "processingEffect": "NONE" }
+          { "eventType": "REQUEST_HEADERS", "latency": "0.048026s", "processingEffect": "NONE" },
+          { "eventType": "REQUEST_BODY", "latency": "0.048063s", "processingEffect": "CONTENT_MODIFIED" },
+          { "eventType": "RESPONSE_HEADERS", "latency": "0.025804s", "processingEffect": "NONE" }
         ],
         "resource": "projects/193870061732/locations/us-central1/authzExtensions/sre-agent-model-armor-authz"
       }
     ],
-    "tlsSniHostname": "us-central1-aiplatform.mtls.googleapis.com"
+    "tlsSniHostname": "container.googleapis.com"
   },
   "logName": "projects/sreagent-t2-demo/logs/networkservices.googleapis.com%2Fgateway_requests",
-  "receiveTimestamp": "2026-08-24T19:12:21.972659852Z",
+  "receiveTimestamp": "2026-08-24T19:12:31.368200551Z",
   "resource": {
     "labels": {
       "gateway_name": "sre-agent-egress",
@@ -497,11 +565,20 @@ $ gcloud logging read 'resource.type="networkservices.googleapis.com/Gateway" AN
     "type": "networkservices.googleapis.com/Gateway"
   },
   "severity": "INFO",
-  "timestamp": "2026-08-24T19:12:17.593699Z"
+  "timestamp": "2026-08-24T19:12:26.545347Z"
 }
 ```
 
-**Read directly off this entry:** `grpcStatus: "OK"` — the extension backend responded successfully. `perProcessingRequestInfo` lists exactly 3 events: `REQUEST_HEADERS`, `REQUEST_BODY` (with `processingEffect: CONTENT_MODIFIED`, proving real inspection happened), `RESPONSE_HEADERS`. **No `RESPONSE_BODY` entry exists in the array**, despite `responseSize: "1262"` proving a real response body existed and needed to travel back through this exact gateway. This is the literal, unedited artifact to attach to a Google Support case for Limitation A.
+**Read directly off this entry:**
+- `agentGatewayInfo.mcpInfo.method: "tools/call"` — confirms the exact MCP operation, no assumption involved.
+- `grpcStatus: "OK"` — the Model Armor extension backend responded successfully; no transport failure.
+- `perProcessingRequestInfo` lists exactly 3 events: `REQUEST_HEADERS`, `REQUEST_BODY` (`processingEffect: CONTENT_MODIFIED` — genuine inspection happened), `RESPONSE_HEADERS`.
+- **No `RESPONSE_BODY` entry exists**, despite `responseSize: "508"` proving a real response body existed.
+- This is the artifact to attach to a Google clarification case — framed per Section 4's classification as "does the Streamable HTTP/SSE exclusion cover the response leg of a `tools/call`", not as a defect report.
+
+## Appendix B2 — raw gateway_requests log entry, Gemini `generateContent` (SECONDARY — not primary evidence, see Section 0)
+
+Kept for completeness; do not lead with this in any escalation, since native Gemini `generateContent` is not documented as a supported Agent-to-Anywhere Model Armor payload. Same absent-`RESPONSE_BODY` pattern was observed here too (`2026-08-24T19:12:17.593699Z`, `us-central1-aiplatform.mtls.googleapis.com`, `responseSize: "1262"`, events `REQUEST_HEADERS`/`REQUEST_BODY` (`CONTENT_MODIFIED`)/`RESPONSE_HEADERS`, no `RESPONSE_BODY`) — but because the payload type itself isn't documented as covered, this entry can't be used to prove or disprove a Model Armor limitation either way.
 
 ## Appendix C — 500 error root cause (ruling out Model Armor)
 
@@ -525,7 +602,7 @@ File "/code/agent/main.py", line 693, in investigate
     raise ServerError(status_code, response_json, response)
 google.genai.errors.ServerError: 500 Internal Server Error. {'message': '', 'status': 'Internal Server Error'}
 ```
-An empty-body `500` returned by the Gemini API itself, raised by the `google-genai` SDK. This is a transient model-backend error signature (empty `message`), not a policy decision — Model Armor has no code path that produces a `google.genai.errors.ServerError`; a Model Armor block surfaces as a `DENIED` gateway policy result (Appendix B's schema), and Step 7 already showed zero of those anywhere in this window.
+An empty-body `500` returned by the Gemini API itself, raised by the `google-genai` SDK. This is a transient model-backend error signature (empty `message`), not a policy decision — Model Armor has no code path that produces a `google.genai.errors.ServerError`; a Model Armor block surfaces as a `DENIED` gateway policy result (Appendix B1's schema), and Step 7 already showed zero of those anywhere in this window.
 
 **Error 2 — unrelated, parallel, does not affect the investigation result:**
 ```
@@ -549,3 +626,17 @@ Cloud Trace span export over a broken gRPC stream — the same class of transpor
 | `sre-agent-request-guard.piAndJailbreakFilterSettings.confidenceLevel` | `MEDIUM_AND_ABOVE` | live REST read, Step 4 |
 | `MODEL_ARMOR_TEMPLATE` env var (app layer) | unset (gateway enabled) | `iac/agent/agent_engine.tf:106-108` + `terraform.tfvars:9` |
 | `var.enable_agent_gateway` | `true` | `terraform output enable_agent_gateway` |
+| GKE Remote MCP transport | `HTTP` (documented), SSE-or-JSON response parsing (this repo's client) | `kubernetes-engine/docs/how-to/use-gke-mcp`; `agent/mcp_client.py:523,630-632` |
+| Model Armor supported MCP payloads | `tools/call`, `prompts/get` (req+resp) | `model-armor/model-armor-mcp-google-cloud-integration`, fetched 2026-08-24 |
+| Model Armor excluded MCP payloads | `tools/list`, `resources/*`, `notifications/*`, **`Streamable HTTP/SSE for MCP`** | same source |
+| Floor settings IAM role (read/manage, only one documented) | `roles/modelarmor.floorSettingsAdmin` | `security-command-center/docs/configure-model-armor-floor-settings`, fetched 2026-08-24 |
+
+## Appendix E — Google documentation consulted tonight (all fetched live, not from memory)
+
+- [Model Armor + Agent Gateway integration](https://docs.cloud.google.com/model-armor/model-armor-agent-gateway-integration)
+- [Configure Model Armor on Agent Gateway (Gemini Enterprise Agent Platform)](https://docs.cloud.google.com/gemini-enterprise-agent-platform/govern/configure-model-armor)
+- [Integrate Model Armor with Google and Google Cloud MCP servers](https://docs.cloud.google.com/model-armor/model-armor-mcp-google-cloud-integration) — source of the supported/excluded MCP payload lists in Section 4.
+- [Use the GKE Remote MCP server](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/use-gke-mcp) — source of "Transport: HTTP."
+- [Configure Model Armor floor settings (Security Command Center)](https://docs.cloud.google.com/security-command-center/docs/configure-model-armor-floor-settings)
+- [Configure floor settings (Model Armor)](https://docs.cloud.google.com/model-armor/configure-floor-settings)
+- IAM roles/permissions reference for Model Armor (`docs.cloud.google.com/iam/docs/roles-permissions/modelarmor`) — fetched, but the detailed permission table did not render through the fetch tool tonight; only the role name was confirmed, not its full permission list.
