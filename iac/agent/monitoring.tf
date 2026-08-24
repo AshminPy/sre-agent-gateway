@@ -480,7 +480,12 @@ resource "google_monitoring_alert_policy" "routing_failures" {
   conditions {
     display_name = "mcp_router safe-stop > 0 in 5 minutes"
     condition_threshold {
-      filter          = "metric.type=\"logging.googleapis.com/user/sre_agent/routing_failures\" AND resource.type=\"global\""
+      # resource.type corrected 2026-08-23: this metric sources from sre-agent-routing-failures,
+      # written via cloud_logging.Client(_use_grpc=False) (issue #139 fix) -- confirmed live on
+      # the identical client construction (sre-agent-investigations log) that these entries carry
+      # resource.type=cloud_run_revision, NOT "global" and NOT aiplatform.googleapis.com/ReasoningEngine
+      # (that latter type is only for entries from the separate stdout-based observability path).
+      filter          = "metric.type=\"logging.googleapis.com/user/sre_agent/routing_failures\" AND resource.type=\"cloud_run_revision\""
       duration        = "0s"
       comparison      = "COMPARISON_GT"
       threshold_value = 0
@@ -531,7 +536,9 @@ resource "google_monitoring_alert_policy" "gke_mcp_failures" {
   conditions {
     display_name = "gke_remote_mcp tool failures > 3 in 5 minutes"
     condition_threshold {
-      filter          = "metric.type=\"logging.googleapis.com/user/sre_agent/tool_failures\" AND resource.type=\"global\" AND metric.label.mcp_source=\"gke_remote_mcp\""
+      # resource.type corrected 2026-08-23 -- see routing_failures above for why (same
+      # sre-agent-tool-failures logger, same cloud_logging.Client(_use_grpc=False) pattern).
+      filter          = "metric.type=\"logging.googleapis.com/user/sre_agent/tool_failures\" AND resource.type=\"cloud_run_revision\" AND metric.label.mcp_source=\"gke_remote_mcp\""
       duration        = "300s"
       comparison      = "COMPARISON_GT"
       threshold_value = 3
@@ -556,7 +563,9 @@ resource "google_monitoring_alert_policy" "custom_mcp_failures" {
   conditions {
     display_name = "k8s_mcp (custom Cloud Run MCP) tool failures > 3 in 5 minutes"
     condition_threshold {
-      filter          = "metric.type=\"logging.googleapis.com/user/sre_agent/tool_failures\" AND resource.type=\"global\" AND metric.label.mcp_source=\"k8s_mcp\""
+      # resource.type corrected 2026-08-23 -- see routing_failures above for why (same
+      # sre-agent-tool-failures logger, same cloud_logging.Client(_use_grpc=False) pattern).
+      filter          = "metric.type=\"logging.googleapis.com/user/sre_agent/tool_failures\" AND resource.type=\"cloud_run_revision\" AND metric.label.mcp_source=\"k8s_mcp\""
       duration        = "300s"
       comparison      = "COMPARISON_GT"
       threshold_value = 3
@@ -612,7 +621,9 @@ resource "google_monitoring_alert_policy" "repeated_tool_failures" {
       # distinct from the per-source gke_mcp_failures/custom_mcp_failures alerts above:
       # this one catches persistent flapping across BOTH sources that neither
       # per-source alert would individually cross threshold on.
-      filter          = "metric.type=\"logging.googleapis.com/user/sre_agent/tool_failures\" AND resource.type=\"global\""
+      # resource.type corrected 2026-08-23 -- see routing_failures above for why (same
+      # sre-agent-tool-failures logger, same cloud_logging.Client(_use_grpc=False) pattern).
+      filter          = "metric.type=\"logging.googleapis.com/user/sre_agent/tool_failures\" AND resource.type=\"cloud_run_revision\""
       duration        = "600s"
       comparison      = "COMPARISON_GT"
       threshold_value = 5
@@ -668,7 +679,9 @@ resource "google_monitoring_alert_policy" "evidence_storage_failures" {
   conditions {
     display_name = "GCS evidence write failure > 0 in 5 minutes"
     condition_threshold {
-      filter          = "metric.type=\"logging.googleapis.com/user/sre_agent/evidence_storage_failures\" AND resource.type=\"global\""
+      # resource.type corrected 2026-08-23 -- see routing_failures above for why (same
+      # sre-agent-evidence-storage-failures logger, same cloud_logging.Client(_use_grpc=False) pattern).
+      filter          = "metric.type=\"logging.googleapis.com/user/sre_agent/evidence_storage_failures\" AND resource.type=\"cloud_run_revision\""
       duration        = "0s"
       comparison      = "COMPARISON_GT"
       threshold_value = 0
