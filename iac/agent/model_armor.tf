@@ -40,6 +40,19 @@ resource "google_model_armor_template" "sre_agent_request" {
     }
   }
 
+  # 2026-08-24: explicit INSPECT_ONLY -- confirmed via the live REST API and
+  # Google's own docs that leaving this unset does NOT mean inspect-only; it
+  # defaults to ENFORCEMENT_TYPE_UNSPECIFIED, which is "Same as
+  # INSPECT_AND_BLOCK". This template had no enforcement_type set at all
+  # before this change, meaning it was silently blocking-capable the whole
+  # time -- including during tonight's gateway CONTENT_AUTHZ trial, contrary
+  # to PRODUCTION-LAUNCH-PLAN.md's explicit "no INSPECT_AND_BLOCK in Phase 1"
+  # requirement. Do not remove this until the Phase 1 decision gate is
+  # actually reached and blocking is deliberately approved.
+  template_metadata {
+    enforcement_type = "INSPECT_ONLY"
+  }
+
   depends_on = [google_project_service.apis]
 }
 
@@ -70,6 +83,11 @@ resource "google_model_armor_template" "sre_agent_response" {
         filter_enforcement = "ENABLED"
       }
     }
+  }
+
+  # See sre_agent_request's identical comment above -- same fix, same reason.
+  template_metadata {
+    enforcement_type = "INSPECT_ONLY"
   }
 
   depends_on = [google_project_service.apis]
