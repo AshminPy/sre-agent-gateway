@@ -505,80 +505,113 @@ def _finalize_investigation_result(result: dict, started_at: float, payload: dic
     # log-based metrics actually filter on. Confirmed missing via a real live agent
     # invocation + a direct Cloud Logging query before this fix (jsonPayload had none
     # of these keys), not assumed from code review alone.
-    mcp_latency_s = round(sum(h.get("duration_s", 0) or 0 for h in tool_history), 3)
-    session_usage = get_session_usage()
-    evidence_store = result.get("evidence_store", {}) or {}
-    evidence_storage_ok = not any(ev.get("gcs_write_failed") for ev in evidence_store.values())
+    #
+    # This whole block is guarded: it's telemetry computation, not investigation
+    # result computation (that already happened above, in `result`/`summary`/`inv`).
+    # A bad value anywhere here (e.g. a non-numeric duration_s, a malformed
+    # evidence_store entry) must degrade obs_event, not turn a successful
+    # investigation into a reported failure -- this was previously only guarded for
+    # the print/flush_traces side effects below, not this computation.
+    try:
+        mcp_latency_s = round(sum(h.get("duration_s", 0) or 0 for h in tool_history), 3)
+        session_usage = get_session_usage()
+        evidence_store = result.get("evidence_store", {}) or {}
+        evidence_storage_ok = not any(ev.get("gcs_write_failed") for ev in evidence_store.values())
 
-    # ============================================================
-    # Structured observability log — one JSON event per agent run
-    # Cloud Logging can parse this as jsonPayload when emitted to stdout.
-    # Use this later for log-based metrics and Cloud Monitoring charts.
-    # ============================================================
-    obs_event = {
-        "event_type": "sre_agent_run",
-        "run_id": result.get("run_id", ""),
-        "trace_id": get_trace_id_hex(),
-        "incident_type": ctx.get("incident_type", summary.get("incident_type", "")),
-        "project_id": ctx.get("project_id", PROJECT_ID),
-        "cluster": ctx.get("cluster_name", ctx.get("cluster", cluster)),
-        "cluster_region": ctx.get("cluster_region", ctx.get("region", "")),
-        "cluster_routing_method": ctx.get("cluster_routing_method", ""),
-        "cluster_routing_reason": ctx.get("cluster_routing_reason", ""),
-        "namespace": ctx.get("namespace", namespace),
-        "pod": ctx.get("pod", pod),
-        "deployment": ctx.get("deployment", deployment),
-        "primary_mcp_source": ctx.get("primary_mcp_source", ctx.get("mcp_source", "")),
-        "selected_mcp": result.get("selected_mcp", ""),
-        "tools_called": len(tool_history),
-        "evidence_count": len(evidence_ids),
-        "evidence_ids": evidence_ids,
-        "evidence_storage_ok": evidence_storage_ok,
-        "confidence": confidence,
-        "confidence_band": confidence_band,
-        # New confidence framework fields — additive, does not change any existing field
-        # name/value read by iac/agent/monitoring.tf's log-based metrics or alerts.
-        "outcome": summary.get("outcome", "unknown"),
-        "policy_version": summary.get("policy_version", ""),
-        "investigation_completeness_score": (summary.get("investigation_completeness") or {}).get("score"),
-        "root_cause_confidence_score": (summary.get("root_cause_confidence") or {}).get("score"),
-        "contradictions_count": len(summary.get("contradictions") or []),
-        "status": inv.get("status", "unknown"),
-        "loop_exit_reason": inv.get("loop_exit_reason", result.get("loop_exit_reason")),
-        "human_review": bool(summary.get("requires_human_review", True)),
-        "latency_ms": latency_ms,
-        "mcp_latency_s": mcp_latency_s,
-        "model_latency_s": session_usage.get("session_model_latency_s"),
-        "total_latency_s": round(latency_ms / 1000, 3),
-        "tokens_input": tokens_input,
-        "tokens_output": tokens_output,
-        "tokens_total": tokens_total,
-        "estimated_cost_usd": estimated_cost_usd,
-        "error_count": len(errors),
-        "pagerduty_incident_id": ctx.get("pagerduty_incident_id"),
-        # Placeholders, not silently omitted — mirrors rca_builder.py's own comment:
-        # connect_gateway_status has no code producing a real value yet (Priority 3
-        # has no app-observable signal into the agent process); agent_gateway_authz_mode
-        # is always None while the gateway's IAP authz extension runs in DRY_RUN.
-        "connect_gateway_status": None,
-        "agent_gateway_authz_mode": None,
-    }
+        # ============================================================
+        # Structured observability log — one JSON event per agent run
+        # Cloud Logging can parse this as jsonPayload when emitted to stdout.
+        # Use this later for log-based metrics and Cloud Monitoring charts.
+        # ============================================================
+        obs_event = {
+            "event_type": "sre_agent_run",
+            "run_id": result.get("run_id", ""),
+            "trace_id": get_trace_id_hex(),
+            "incident_type": ctx.get("incident_type", summary.get("incident_type", "")),
+            "project_id": ctx.get("project_id", PROJECT_ID),
+            "cluster": ctx.get("cluster_name", ctx.get("cluster", cluster)),
+            "cluster_region": ctx.get("cluster_region", ctx.get("region", "")),
+            "cluster_routing_method": ctx.get("cluster_routing_method", ""),
+            "cluster_routing_reason": ctx.get("cluster_routing_reason", ""),
+            "namespace": ctx.get("namespace", namespace),
+            "pod": ctx.get("pod", pod),
+            "deployment": ctx.get("deployment", deployment),
+            "primary_mcp_source": ctx.get("primary_mcp_source", ctx.get("mcp_source", "")),
+            "selected_mcp": result.get("selected_mcp", ""),
+            "tools_called": len(tool_history),
+            "evidence_count": len(evidence_ids),
+            "evidence_ids": evidence_ids,
+            "evidence_storage_ok": evidence_storage_ok,
+            "confidence": confidence,
+            "confidence_band": confidence_band,
+            # New confidence framework fields — additive, does not change any existing field
+            # name/value read by iac/agent/monitoring.tf's log-based metrics or alerts.
+            "outcome": summary.get("outcome", "unknown"),
+            "policy_version": summary.get("policy_version", ""),
+            "investigation_completeness_score": (summary.get("investigation_completeness") or {}).get("score"),
+            "root_cause_confidence_score": (summary.get("root_cause_confidence") or {}).get("score"),
+            "contradictions_count": len(summary.get("contradictions") or []),
+            "status": inv.get("status", "unknown"),
+            "loop_exit_reason": inv.get("loop_exit_reason", result.get("loop_exit_reason")),
+            "human_review": bool(summary.get("requires_human_review", True)),
+            "latency_ms": latency_ms,
+            "mcp_latency_s": mcp_latency_s,
+            "model_latency_s": session_usage.get("session_model_latency_s"),
+            "total_latency_s": round(latency_ms / 1000, 3),
+            "tokens_input": tokens_input,
+            "tokens_output": tokens_output,
+            "tokens_total": tokens_total,
+            "estimated_cost_usd": estimated_cost_usd,
+            "error_count": len(errors),
+            "pagerduty_incident_id": ctx.get("pagerduty_incident_id"),
+            # Placeholders, not silently omitted — mirrors rca_builder.py's own comment:
+            # connect_gateway_status has no code producing a real value yet (Priority 3
+            # has no app-observable signal into the agent process); agent_gateway_authz_mode
+            # is always None while the gateway's IAP authz extension runs in DRY_RUN.
+            "connect_gateway_status": None,
+            "agent_gateway_authz_mode": None,
+        }
+    except Exception:
+        log.warning(
+            "observability event construction failed for run_id=%s -- investigation "
+            "result unaffected, telemetry degraded to a minimal event",
+            result.get("run_id", ""), exc_info=True,
+        )
+        obs_event = {
+            "event_type": "sre_agent_run",
+            "run_id": result.get("run_id", ""),
+            "trace_id": get_trace_id_hex(),
+            "status": inv.get("status", "unknown"),
+            "observability_degraded": True,
+        }
 
-    # stdout JSON line for Cloud Logging jsonPayload parsing.
-    print(json.dumps(obs_event, separators=(",", ":")), flush=True)
+    # Telemetry side effects (stdout log line + trace flush) must never fail the
+    # investigation itself -- see PRODUCTION-LAUNCH-PLAN.md's reliability requirement.
+    # Previously this block ran unguarded inside investigate()/investigate_stream()'s
+    # own try/except, so e.g. a non-JSON-serializable value slipping into obs_event
+    # would make json.dumps() raise here and get reported back to the caller as a
+    # failed investigation, even though the real result below was already built.
+    try:
+        # stdout JSON line for Cloud Logging jsonPayload parsing.
+        print(json.dumps(obs_event, separators=(",", ":")), flush=True)
 
-    # Human-readable fallback log line.
-    log.info(
-        "observability event written run_id=%s cluster=%s tokens=%s cost=$%.6f latency_ms=%s",
-        obs_event["run_id"],
-        obs_event["cluster"],
-        obs_event["tokens_total"],
-        obs_event["estimated_cost_usd"],
-        obs_event["latency_ms"],
-    )
+        # Human-readable fallback log line.
+        log.info(
+            "observability event written run_id=%s cluster=%s tokens=%s cost=$%.6f latency_ms=%s",
+            obs_event["run_id"],
+            obs_event["cluster"],
+            obs_event["tokens_total"],
+            obs_event["estimated_cost_usd"],
+            obs_event["latency_ms"],
+        )
 
-    from agent.otel import flush_traces
-    flush_traces(timeout_millis=5000)
+        from agent.otel import flush_traces
+        flush_traces(timeout_millis=5000)
+    except Exception:
+        log.warning(
+            "observability side effects failed for run_id=%s -- investigation result unaffected",
+            obs_event.get("run_id", ""), exc_info=True,
+        )
 
     return {
         "schema_version":     "2.0",

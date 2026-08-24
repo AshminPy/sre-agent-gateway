@@ -46,24 +46,44 @@ import sys
 # issue #130 (protocol follow-up): every endpoint used to be registered as
 # protocolBinding=JSONRPC unconditionally. That's correct for the REST-based clients
 # this agent actually uses for most hosts (Gemini/Vertex AI, GKE Remote MCP -- both
-# confirmed live as plain "HTTP Request: POST ..." calls). But the Cloud Trace and
-# Cloud Logging Python clients are gRPC-only -- confirmed directly against the
-# installed packages: google.cloud.trace_v2's TraceServiceClient and
-# google.cloud.logging_v2's LoggingServiceV2Client both only offer 'grpc'/'grpc_asyncio'
-# transports, no REST option exists to fall back to. Google's own Agent Registry docs
-# (docs.cloud.google.com/agent-registry/manage-endpoints) confirm protocolBinding has
-# three real, distinct values -- JSONRPC, HTTP_JSON, GRPC -- not just JSONRPC. A host
-# whose real client is gRPC-only needs the GRPC binding, not JSONRPC.
+# confirmed live as plain "HTTP Request: POST ..." calls). The Cloud Trace Python
+# client is gRPC-only -- confirmed directly against the installed package:
+# google.cloud.trace_v2's TraceServiceClient only offers 'grpc'/'grpc_asyncio'
+# transports, no REST option exists to fall back to.
+#
+# issue #139 CORRECTION (2026-08-23): this file used to also list
+# logging.googleapis.com/logging.mtls.googleapis.com as GRPC-only, on the same
+# "no REST option exists" claim -- that was checked against the wrong class.
+# google.cloud.logging_v2's LOW-LEVEL LoggingServiceV2Client really is gRPC-only,
+# but the HIGH-LEVEL google.cloud.logging.Client wrapper this agent actually
+# constructs (agent/gcs_client.py, agent/nodes/{rca_builder,tool_executor,
+# mcp_router}.py) has its own independent _use_grpc parameter -- confirmed via
+# inspect.signature(cloud_logging.Client.__init__). Cloud Logging writes 403'd
+# ("unregistered in the Agent Registry") under the default gRPC transport;
+# switching the client to _use_grpc=False AND re-registering the
+# us-central1-logging endpoint as HTTP_JSON fixed it -- live-verified 2026-08-23,
+# 3/3 clean runs. Registering these hosts as GRPC here would silently reintroduce
+# #139 on any full re-registration (fresh project, DR, manual delete+recreate --
+# the "Smart Skipping" logic above only skips hosts that already exist, it does
+# not correct a wrong binding on an existing entry). See mistakes.yaml M018 and
+# docs/management/observability-architecture-review-2026-08-23.md section 1.
 _GRPC_ONLY_HOSTNAMES = {
     "cloudtrace.googleapis.com",
     "cloudtrace.mtls.googleapis.com",
+}
+
+_HTTP_JSON_HOSTNAMES = {
     "logging.googleapis.com",
     "logging.mtls.googleapis.com",
 }
 
 
 def protocol_binding_for(hostname: str) -> str:
-    return "GRPC" if hostname in _GRPC_ONLY_HOSTNAMES else "JSONRPC"
+    if hostname in _GRPC_ONLY_HOSTNAMES:
+        return "GRPC"
+    if hostname in _HTTP_JSON_HOSTNAMES:
+        return "HTTP_JSON"
+    return "JSONRPC"
 
 def get_gcloud_config(prop):
     try:

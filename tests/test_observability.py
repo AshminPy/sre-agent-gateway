@@ -42,6 +42,18 @@ class _FakeLoggingClient:
         return _FakeLogger(name, self._sink)
 
 
+class _Sink(list):
+    """A plain list (existing tests use it exactly as one) that also records the
+    kwargs each Client(...) call was constructed with, in .client_kwargs --
+    added for the M018/#139 regression test below (issue: a mock that swallows
+    kwargs entirely would never catch _use_grpc=False being dropped from any of
+    the 4 real call sites)."""
+
+    def __init__(self):
+        super().__init__()
+        self.client_kwargs: list = []
+
+
 def _patch_cloud_logging(monkeypatch) -> list:
     """Patches google.cloud.logging.Client so every `from google.cloud import logging as
     cloud_logging; cloud_logging.Client()` call site in the codebase picks up the fake —
@@ -50,8 +62,13 @@ def _patch_cloud_logging(monkeypatch) -> list:
     rca_builder.py without needing per-module patches."""
     import google.cloud.logging as cloud_logging_pkg
 
-    sink: list = []
-    monkeypatch.setattr(cloud_logging_pkg, "Client", lambda *a, **k: _FakeLoggingClient(sink))
+    sink = _Sink()
+
+    def _fake_client(*a, **k):
+        sink.client_kwargs.append(k)
+        return _FakeLoggingClient(sink)
+
+    monkeypatch.setattr(cloud_logging_pkg, "Client", _fake_client)
     return sink
 
 
@@ -305,3 +322,47 @@ def test_write_evidence_success_writes_no_failure_log(monkeypatch):
 
     assert raw_ref == f"gs://{gcs_client_mod.BUCKET}/run_test_gcs_ok/ev_001.json"
     assert sink == []
+
+
+def _tool_executor_failing_state() -> dict:
+    return {
+        "run_id": "run_test_tool_exec_log",
+        "current_action": {"tool": "describe_k8s_resource", "mcp_source": "gke_remote_mcp", "arguments": {}},
+        "resolved_context": {"cluster_name": "sre-test-cluster"},
+        "investigation": {"current_step": 1},
+    }
+
+
+def test_use_grpc_false_on_all_four_cloud_logging_call_sites(monkeypatch):
+    """M018/#139 regression test: the mock used to swallow Client(...)'s kwargs
+    entirely (lambda *a, **k), so a future refactor dropping _use_grpc=False
+    from any of the 4 call sites would go unnoticed. Now asserts it explicitly
+    on all 4: rca_builder, mcp_router, gcs_client, tool_executor."""
+    import agent.nodes.tool_executor as tool_executor_mod
+
+    sink = _patch_cloud_logging(monkeypatch)
+    _mock_llm_json(monkeypatch)
+    rca_builder_mod.rca_builder(_rca_state(errors=[]))
+
+    monkeypatch.setattr(mcp_router_mod, "_get_cluster_registry", lambda: {})
+    mcp_router_mod.mcp_router(_router_state("prod-cluster-us-east1"))
+
+    monkeypatch.setattr(gcs_client_mod.time, "sleep", lambda *_: None)
+
+    class _AlwaysFailsStorageClient:
+        def bucket(self, *_a, **_k):
+            raise RuntimeError("simulated GCS outage")
+
+    monkeypatch.setattr(gcs_client_mod, "_get_client", lambda: _AlwaysFailsStorageClient())
+    gcs_client_mod.write_evidence("run_test_gcs2", "ev_002", {"foo": "bar"})
+
+    monkeypatch.setattr(
+        tool_executor_mod, "call_tool",
+        lambda **kwargs: {"ok": False, "error": "boom", "duration_s": 0.1,
+                           "tool": "describe_k8s_resource", "mcp_source": "gke_remote_mcp"},
+    )
+    tool_executor_mod.tool_executor(_tool_executor_failing_state())
+
+    assert len(sink.client_kwargs) == 4, f"expected 4 Cloud Logging Client(...) calls, got {len(sink.client_kwargs)}"
+    for kwargs in sink.client_kwargs:
+        assert kwargs.get("_use_grpc") is False, f"a call site dropped _use_grpc=False: {kwargs}"

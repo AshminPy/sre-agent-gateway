@@ -6,6 +6,7 @@ Only ok/error/duration stored in tool_history.
 Raw result passes ONLY to evidence_extractor via latest_tool_result.
 latest_tool_result is cleared by evidence_extractor after GCS write.
 """
+import contextlib
 import logging
 from agent.state import AgentState
 from agent.mcp_client import call_tool
@@ -34,13 +35,30 @@ def tool_executor(state: AgentState) -> dict:
         mcp_source, tool_name, cluster_name, args,
     )
 
-    result = call_tool(
-        mcp_source=mcp_source,
-        tool_name=tool_name,
-        arguments=args,
-        run_id=state["run_id"],
-        cluster_name=cluster_name,
+    from agent.otel import get_tracer, set_span_attributes
+
+    tracer = get_tracer()
+    span_cm = (
+        tracer.start_as_current_span(f"mcp.{tool_name}")
+        if tracer is not None
+        else contextlib.nullcontext()
     )
+    with span_cm as span:
+        result = call_tool(
+            mcp_source=mcp_source,
+            tool_name=tool_name,
+            arguments=args,
+            run_id=state["run_id"],
+            cluster_name=cluster_name,
+        )
+        # set_span_attributes() no-ops on span=None and never raises (agent/otel.py) --
+        # matches this codebase's existing pattern instead of raw span.set_attribute().
+        set_span_attributes(span, {
+            "mcp.tool":          tool_name,
+            "mcp.server":        mcp_source,
+            "tool.duration_ms":  round(result.get("duration_s", 0) * 1000),
+            "tool.status":       "ok" if result.get("ok") else "error",
+        })
 
     # issue #71: call_tool() can auto-fall back to a different tool/mcp_source than
     # requested (GKE Remote MCP failure -> custom MCP, or issue #70's broadened retry).

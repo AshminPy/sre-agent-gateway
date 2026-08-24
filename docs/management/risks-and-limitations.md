@@ -70,9 +70,9 @@ Alert thresholds exist as operational tripwires; no published service-level comm
 
 **Scope of the impact:** Cloud Trace itself is working — live run `run_20260816_083409_lpak` produced 54 correctly-parented spans. What is unreliable is the *Console view*, not trace collection. Use Cloud Trace directly rather than the Console tab until #164 closes.
 
-## 16. Agent's own observability write to Cloud Logging returns 403 (issue #139, OPEN)
+## 16. Agent's own observability write to Cloud Logging returns 403 (issue #139, RESOLVED for rca_builder.py; 3 sibling call sites deployed, pending live validation)
 
-`rca_builder.py._write_observability_log()`'s gRPC write to `logging.googleapis.com` still returns 403 despite `logging`/`logging-mtls` being correctly registered with `protocolBinding=GRPC`. Root cause unconfirmed. **Investigation results are unaffected** — a separate, always-working stdout observability path in `agent/main.py` already covers this — so the practical impact is a missing structured audit record, not degraded RCA quality.
+**Root cause found, live-verified 2026-08-23:** the default gRPC transport never resolved a registry match through Agent Gateway for `logging.googleapis.com`/`logging.mtls.googleapis.com` (confirmed via 180 days of gateway logs — every gRPC call to this host showed an empty `agentGatewayInfo`, unlike every other working destination). **Fix:** switched the Cloud Logging client to `_use_grpc=False` (HTTP_JSON transport) and re-registered the `us-central1-logging` Agent Registry entry to `protocolBinding=HTTP_JSON`. `rca_builder.py`'s write (`sre-agent-investigations` log): 3/3 clean live runs after the fix, zero 403s. The identical fix was applied to the 3 sibling call sites sharing this pattern — `tool_executor.py`, `mcp_router.py`, `gcs_client.py` — deployed (PR #175) but **not yet independently live-validated**, since each only writes on a genuine tool/routing/evidence-storage failure that hasn't occurred naturally yet (tracker row 159). **Investigation results were never affected** even before the fix — the separate, always-working stdout observability path in `agent/main.py` covers the same data independently.
 
 ---
 

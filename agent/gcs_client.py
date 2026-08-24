@@ -34,31 +34,56 @@ def write_evidence(
     Returns gs:// path on success, "gcs_write_failed:{path}" on failure.
     Retries once before giving up — callers must check for gcs_write_failed prefix.
     """
+    import contextlib
+
+    from agent.otel import get_tracer, set_span_attributes
+
     path = f"{run_id}/{evidence_id}.json"
-    for attempt in range(2):
-        try:
-            client = _get_client()
-            bucket = client.bucket(BUCKET)
-            blob = bucket.blob(path)
-            blob.upload_from_string(
-                json.dumps(sanitized_data, indent=2),
-                content_type="application/json",
-            )
-            raw_ref = f"gs://{BUCKET}/{path}"
-            log.info("Evidence written: %s", raw_ref)
-            return raw_ref
-        except Exception as e:
-            if attempt == 0:
-                log.warning("GCS write attempt 1 failed for %s: %s — retrying", evidence_id, e)
-                time.sleep(1)
-            else:
-                log.error(
-                    "GCS write failed for %s after 2 attempts: %s — audit chain broken",
-                    evidence_id, e,
+    start = time.time()
+    tracer = get_tracer()
+    span_cm = (
+        tracer.start_as_current_span("gcs.write_evidence")
+        if tracer is not None
+        else contextlib.nullcontext()
+    )
+    with span_cm as span:
+        # set_span_attributes() no-ops on span=None and never raises (agent/otel.py) --
+        # deliberately used everywhere below, including inside the retry try/except,
+        # so a span-attribute failure can never be misread as a GCS write failure.
+        set_span_attributes(span, {"run_id": run_id, "evidence_id": evidence_id, "bucket": BUCKET})
+
+        for attempt in range(2):
+            try:
+                client = _get_client()
+                bucket = client.bucket(BUCKET)
+                blob = bucket.blob(path)
+                blob.upload_from_string(
+                    json.dumps(sanitized_data, indent=2),
+                    content_type="application/json",
                 )
-                _log_evidence_storage_failure(run_id, evidence_id, path, str(e))
-                return f"gcs_write_failed:{path}"
-    return f"gcs_write_failed:{path}"
+                raw_ref = f"gs://{BUCKET}/{path}"
+                log.info("Evidence written: %s", raw_ref)
+                set_span_attributes(span, {
+                    "duration_ms": round((time.time() - start) * 1000),
+                    "ok": True,
+                })
+                return raw_ref
+            except Exception as e:
+                if attempt == 0:
+                    log.warning("GCS write attempt 1 failed for %s: %s — retrying", evidence_id, e)
+                    time.sleep(1)
+                else:
+                    log.error(
+                        "GCS write failed for %s after 2 attempts: %s — audit chain broken",
+                        evidence_id, e,
+                    )
+                    _log_evidence_storage_failure(run_id, evidence_id, path, str(e))
+                    set_span_attributes(span, {
+                        "duration_ms": round((time.time() - start) * 1000),
+                        "ok": False,
+                    })
+                    return f"gcs_write_failed:{path}"
+        return f"gcs_write_failed:{path}"
 
 
 def _log_evidence_storage_failure(run_id: str, evidence_id: str, path: str, error: str) -> None:
