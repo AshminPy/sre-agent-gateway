@@ -45,6 +45,16 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]
 
+# presentation/build_deck.py is a slide-deck generator, not application or
+# infrastructure code. It uses semicolon-joined statements throughout for compact
+# layout calls -- 121 E702 findings, and no other rule anywhere in the repo. That
+# style is deliberate there and ruff cannot autofix it. Without this ignore,
+# "ruff check ." fails, which is what has been breaking the blocking CI gate since
+# 2026-08-23. Scoped to the one file and the one rule: E702 still applies everywhere
+# else, and every other rule still applies to this file.
+[tool.ruff.lint.per-file-ignores]
+"presentation/build_deck.py" = ["E702"]
+
 [tool.black]
 line-length = 100
 target-version = ["py311"]
