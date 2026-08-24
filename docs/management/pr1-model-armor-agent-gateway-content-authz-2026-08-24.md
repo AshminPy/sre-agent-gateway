@@ -249,14 +249,15 @@ Confirmed: this was an MCP **`tools/call`** request, tool `list_k8s_events`. Ful
       """Parse SSE or direct JSON response from MCP server."""
       # Try SSE first — scan all data: frames, skip empty/notification ones
   ```
-  The client is written to handle a response body that may be SSE-framed (`data: {...}` lines) or plain JSON, from a single buffered `resp.text` — i.e. one HTTP POST, one HTTP response, response optionally SSE-formatted. This is what the MCP spec and Google's own docs call **Streamable HTTP** (with SSE framing on the response), not a raw persistent SSE stream.
-- Could not forensically confirm from the gateway log alone whether *this specific* `list_k8s_events` response used SSE framing or plain JSON (the log captures event types and sizes, not response `Content-Type` or body bytes) — noted as an open gap, not asserted as fact.
+  The client is written to **accept** a response that may be SSE-framed or plain JSON — that proves the client can receive either shape, not which shape this MCP server actually sent.
+- **What is proven:** operation = `tools/call`; tool = `list_k8s_events`; GKE Remote MCP uses an HTTP endpoint; our client supports parsing either SSE-framed or plain-JSON responses.
+- **What is NOT proven:** whether this exact 508-byte response was actually sent as SSE/Streamable HTTP framing or as plain JSON. The gateway log captures event types and byte sizes, not response `Content-Type` or body content — nothing from tonight settles this.
 
 **What Google's docs say about this exact combination** (`model-armor-mcp-google-cloud-integration`, fetched directly tonight):
 - Supported, request **and** response sanitized: `tools/call`, `prompts/get`.
 - Explicitly listed as **"allowed without sanitization"**: `tools/list`, `resources/*`, `notifications/*`, and — the specific line that matters here — **`"Streamable HTTP/SSE for MCP"`**.
 
-These two rules are in tension for this exact request: the *operation* (`tools/call`) is on the supported list; the *transport* (Streamable HTTP/SSE) is on the excluded list. Google's docs don't explicitly resolve which one wins when both apply to the same call. The empirical result is consistent with the transport exclusion winning on the response leg specifically: `REQUEST_BODY` (a single buffered POST body, straightforward for the extension to inspect) shows `processingEffect: CONTENT_MODIFIED` — genuinely inspected — while `RESPONSE_BODY` never appears in `perProcessingRequestInfo` at all. Full entry and this exact read in **Appendix B1**.
+These two rules are in tension for this exact request: the *operation* (`tools/call`) is on the supported list; the *transport* (Streamable HTTP/SSE) is on the excluded list. Google's docs don't explicitly resolve which one wins when both apply to the same call, and — per the correction above — this repo does not have proof the response actually used SSE framing. Full entry in **Appendix B1**.
 
 **Evidence pulled for the required 4-event check:**
 
@@ -269,9 +270,9 @@ These two rules are in tension for this exact request: the *operation* (`tools/c
 
 Zero `DENIED` results anywhere in the same 18:30–19:30 UTC window (Step 7's `jq` count, re-confirmed), across all 9 Model-Armor-inspected requests including this one.
 
-**Classification:** given a specific, named Google-documented exclusion (`"Streamable HTTP/SSE for MCP" — allowed without sanitization`) plausibly applies to exactly this transport, this is **not** presented as a confirmed product defect. It matches documented behavior closely enough that a support case should be framed as a **clarification request** — "does the Streamable HTTP/SSE exclusion apply to the response leg of an otherwise-supported `tools/call`, even though `tools/call` itself is listed as sanitized?" — not a bug report. Full reasoning and the raw log artifact for that case are in Appendix B1.
+**Classification, stated at the precision the evidence actually supports:** the documented Streamable HTTP/SSE exclusion is a possible explanation, but the actual response transport/framing has not been confirmed. This is deliberately not stated as "matches" the exclusion — that would overclaim what tonight's evidence proves. A Google clarification case, if opened, should present this as one candidate explanation among others, not as the confirmed cause.
 
-**What this means concretely today:** whether by documented design or an unresolved edge case, MCP responses over this repo's actual GKE Remote MCP transport (Kubernetes evidence, the highest-value content to protect) are not content-inspected right now. Only the outbound request side is.
+**What this means concretely today:** regardless of which explanation turns out to be correct, MCP responses over this repo's actual GKE Remote MCP path (Kubernetes evidence, the highest-value content to protect) are not content-inspected right now by the Agent Gateway `CONTENT_AUTHZ` wiring built in this PR. Only the outbound request side is. Section 4c tests whether the separate floor-settings mechanism does better.
 
 ## 4b. Limitation B — narrowed to exactly what the evidence proves
 
@@ -289,12 +290,79 @@ Distinct from the `AuthzExtension`/`AuthzPolicy` gateway wiring in this PR. Chec
 - Documented scope: *"Google MCP Server: Floor settings check requests sent to or from Google or Google Cloud remote MCP servers to ensure they meet the floor setting thresholds."* GKE Remote MCP is a Google Cloud–hosted remote MCP server per its own docs, so it plausibly falls under this — **not explicitly named** in the floor-settings page itself, so this is inferred, not confirmed.
 - **Does it inspect both directions?** The docs say "requests sent to or from" — this phrasing does not explicitly separate request-body vs response-body coverage the way the Agent Gateway integration docs do. Not confirmed either way from documentation alone.
 - **Does the same Streamable HTTP/SSE exclusion apply to floor settings?** Not stated on the floor-settings page. The exclusion was only found on the Agent Gateway integration page. Unconfirmed whether floor settings would behave differently on the same GKE MCP traffic.
-- **This has not been applied or tested tonight** — `GOOGLE_MCP_SERVER` floor-setting enforcement is not currently configured on this project (nothing in tonight's Terraform or REST reads touched it). It's flagged as a separate, independent avenue worth testing, not a proven fix for Limitation A.
+### Read-only discovery — actual current state, pulled live tonight, nothing changed
 
-**IAM needed to read (not set) current floor settings — reported, no grant requested:**
-- The only documented role found across both floor-settings pages checked tonight: **`roles/modelarmor.floorSettingsAdmin`** (`Model Armor Floor Setting Admin`). Google's own wording: *"To get the permissions that you need to manage floor settings, ask your administrator to grant you the Model Armor Floor Setting Admin (`roles/modelarmor.floorSettingsAdmin`) IAM role."*
-- **No separate read-only/viewer role is documented** for floor settings in either page fetched tonight — the Admin role is the only one Google names for this. Could not retrieve a granular permission breakdown (e.g. a possible `modelarmor.floorSettings.get`) from the IAM roles-and-permissions reference page tonight — its detailed permission table did not render through the fetch tool used. Reported as unverified rather than guessed.
-- **Not requesting this grant now**, per your instruction — this is the finding only.
+```
+$ TOKEN=$(gcloud auth print-access-token)
+$ curl -s -H "Authorization: Bearer $TOKEN" \
+  "https://modelarmor.googleapis.com/v1/projects/sreagent-t2-demo/locations/global/floorSetting"
+```
+```json
+{
+  "name": "projects/sreagent-t2-demo/locations/global/floorSetting",
+  "createTime": "2026-07-13T04:41:20.691605672Z",
+  "updateTime": "2026-07-15T03:16:46.809490716Z",
+  "filterConfig": {
+    "raiSettings": { "raiFilters": [
+      { "filterType": "SEXUALLY_EXPLICIT", "confidenceLevel": "MEDIUM_AND_ABOVE" },
+      { "filterType": "HATE_SPEECH", "confidenceLevel": "MEDIUM_AND_ABOVE" }
+    ]},
+    "piAndJailbreakFilterSettings": { "filterEnforcement": "ENABLED", "confidenceLevel": "MEDIUM_AND_ABOVE" },
+    "maliciousUriFilterSettings": { "filterEnforcement": "ENABLED" }
+  },
+  "enableFloorSettingEnforcement": false,
+  "integratedServices": ["GOOGLE_MCP_SERVER", "AI_PLATFORM"],
+  "aiPlatformFloorSetting": { "inspectOnly": true, "enableCloudLogging": true },
+  "googleMcpServerFloorSetting": { "inspectOnly": true, "enableCloudLogging": true }
+}
+```
+
+**Read directly off this:**
+- `enableFloorSettingEnforcement: false` — the project-level master switch is **OFF**. Whatever the sub-settings say, nothing is currently enforced.
+- `integratedServices` already lists **`GOOGLE_MCP_SERVER`** — it has been configured (created `2026-07-13`, updated `2026-07-15`, before tonight's PR 1 work), just not turned on.
+- `googleMcpServerFloorSetting.inspectOnly: true` and `enableCloudLogging: true` — if enforcement were turned on, this would run in inspect-only mode (matching the same no-blocking posture as this PR's gateway templates) and would write to Cloud Logging.
+- A regional read (`modelarmor.us-central1.rep.googleapis.com/.../locations/us-central1/floorSetting`) returned a `500 INTERNAL` — floor settings appear to be a `global`-scope resource only, not modeled per-region; not investigated further, not a blocker for the plan below.
+- **Nothing was changed.** This was one `curl` GET, no `update` call made.
+
+**This directly answers your two discovery questions:** current floor setting = configured but not enforced; `GOOGLE_MCP_SERVER` = already added to `integratedServices`, `enableFloorSettingEnforcement` = `false`.
+
+### Proposed minimal live test plan for `GOOGLE_MCP_SERVER` floor settings — NOT executed, awaiting your approval
+
+Since `GOOGLE_MCP_SERVER` is already in `integratedServices`, the only change needed to test this mechanism is flipping the master switch:
+
+1. **Enable enforcement** (real, reversible change — requires approval):
+   ```
+   gcloud model-armor floorsettings update --project=sreagent-t2-demo \
+     --enable-floor-setting-enforcement=TRUE
+   ```
+   `googleMcpServerFloorSetting.inspectOnly` stays `true` — no blocking risk during the test.
+2. **Regression check — prove a normal `tools/call` still works:** re-run the same benign `list_k8s_events` call used in tonight's Step 3 trial; confirm `status: done`, no new errors.
+3. **Prove REQUEST inspection:** query the floor-setting-specific log (distinct from the `gateway_requests` log used all night):
+   ```
+   gcloud logging read 'jsonPayload."@type"="type.googleapis.com/google.cloud.modelarmor.logging.v1.SanitizeOperationLogEntry"' \
+     --project=sreagent-t2-demo --format=json
+   ```
+   confirm an entry exists for the `tools/call` request with a real evaluation result.
+4. **Prove RESPONSE inspection — the actual open question:** the same log query, checked specifically for whether a `SanitizeOperationLogEntry` exists for the **response** leg of the same call (not just the request) — this is the direct test of whether floor settings succeed where the gateway-level `AuthzExtension`/`AuthzPolicy` wiring did not.
+5. **Controlled trigger test:** run one `list_k8s_events` call against a test namespace/event seeded with a deliberately filter-triggering string (e.g. an obvious fake secret pattern, for the `sdp_settings`-style filters, or a malicious-URI pattern) in a field that flows back through the tool's response (event message or annotation) — confirm a `SanitizeOperationLogEntry` shows a real `MATCH`/`FILTER_MATCH_STATE` result, not just `ALLOWED`.
+6. **Revert:** `--enable-floor-setting-enforcement=FALSE`, verify live via the same `curl` GET used above.
+
+**Only if step 4 also shows no response-side evidence** does this become a case for a Google Support/clarification escalation — per your instruction, floor settings are tried first.
+
+Nothing in this plan has been executed. Steps 1, 5, and 6 change live state and need your explicit go-ahead before they run.
+
+**IAM needed to read (not set) current floor settings — corrected tonight:**
+
+Your correction was right — a dedicated read-only role does exist. My first pass missed it because I only checked the two floor-settings *how-to* pages, not the dedicated roles/permissions reference. Re-checked directly against [`model-armor/access-control/roles-permissions`](https://docs.cloud.google.com/model-armor/access-control/roles-permissions):
+
+| Role | Key permissions | Fits |
+|---|---|---|
+| **`roles/modelarmor.floorSettingsViewer`** | `modelarmor.floorSettings.get`, `modelarmor.locations.get`, `modelarmor.locations.list` | **Least-privilege for read-only** — this is the correct one if we ever request scoped access. |
+| `roles/modelarmor.floorSettingsAdmin` | adds `modelarmor.floorSettings.update` + folder/org write scope | Broader than needed for read-only — my first report wrongly named this as the only option. |
+| `roles/modelarmor.editor` | includes `floorSettings.get` + template/topic write | Not least-privilege for a read-only need either. |
+| `roles/modelarmor.viewer` | templates/topics/locations only — **does not** include `floorSettings.get` | Would NOT be sufficient by itself. |
+
+**Not requesting or applying this role now**, per your instruction. In practice tonight's read (below) used my own existing `roles/owner` on the project — confirmed via `gcloud projects get-iam-policy` — not a scoped grant. If a narrower operator or service account needs this later, `roles/modelarmor.floorSettingsViewer` is the one to request.
 
 ---
 
@@ -629,7 +697,8 @@ Cloud Trace span export over a broken gRPC stream — the same class of transpor
 | GKE Remote MCP transport | `HTTP` (documented), SSE-or-JSON response parsing (this repo's client) | `kubernetes-engine/docs/how-to/use-gke-mcp`; `agent/mcp_client.py:523,630-632` |
 | Model Armor supported MCP payloads | `tools/call`, `prompts/get` (req+resp) | `model-armor/model-armor-mcp-google-cloud-integration`, fetched 2026-08-24 |
 | Model Armor excluded MCP payloads | `tools/list`, `resources/*`, `notifications/*`, **`Streamable HTTP/SSE for MCP`** | same source |
-| Floor settings IAM role (read/manage, only one documented) | `roles/modelarmor.floorSettingsAdmin` | `security-command-center/docs/configure-model-armor-floor-settings`, fetched 2026-08-24 |
+| Floor settings IAM role, least-privilege read-only | `roles/modelarmor.floorSettingsViewer` (`modelarmor.floorSettings.get`) | `model-armor/access-control/roles-permissions`, fetched 2026-08-24 |
+| Floor setting, current live state | `enableFloorSettingEnforcement: false`; `GOOGLE_MCP_SERVER` already in `integratedServices`, `inspectOnly: true` | live REST read, Section 4c |
 
 ## Appendix E — Google documentation consulted tonight (all fetched live, not from memory)
 
@@ -639,4 +708,4 @@ Cloud Trace span export over a broken gRPC stream — the same class of transpor
 - [Use the GKE Remote MCP server](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/use-gke-mcp) — source of "Transport: HTTP."
 - [Configure Model Armor floor settings (Security Command Center)](https://docs.cloud.google.com/security-command-center/docs/configure-model-armor-floor-settings)
 - [Configure floor settings (Model Armor)](https://docs.cloud.google.com/model-armor/configure-floor-settings)
-- IAM roles/permissions reference for Model Armor (`docs.cloud.google.com/iam/docs/roles-permissions/modelarmor`) — fetched, but the detailed permission table did not render through the fetch tool tonight; only the role name was confirmed, not its full permission list.
+- [Model Armor access control — roles and permissions](https://docs.cloud.google.com/model-armor/access-control/roles-permissions) — source of the corrected `roles/modelarmor.floorSettingsViewer` finding (Section 4c); the first report checked the wrong page and missed this role.
