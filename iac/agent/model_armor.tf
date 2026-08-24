@@ -49,6 +49,13 @@ resource "google_model_armor_template" "sre_agent_request" {
   # to PRODUCTION-LAUNCH-PLAN.md's explicit "no INSPECT_AND_BLOCK in Phase 1"
   # requirement. Do not remove this until the Phase 1 decision gate is
   # actually reached and blocking is deliberately approved.
+  #
+  # Briefly flipped to INSPECT_AND_BLOCK for one diagnostic test (2026-08-24,
+  # 19:12 UTC) to check whether the PI/jailbreak filter detects a deliberate
+  # prompt-injection payload -- it did not (0 DENIED results in the gateway
+  # log across 2 real Gemini calls carrying the payload; the request's own
+  # 500 error was unrelated to Model Armor). Reverted back to INSPECT_ONLY
+  # immediately after, verified live via REST.
   template_metadata {
     enforcement_type = "INSPECT_ONLY"
   }
