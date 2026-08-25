@@ -105,7 +105,13 @@ BLOCKED_ACTIONS = frozenset({
 # ── MCP Source Registry ───────────────────────────────────────────
 MCP_REGISTRY = {
     "gke_remote_mcp": {
-        "url":         "https://container.googleapis.com/mcp/read-only",
+        # 2026-08-25: TEMPORARILY pointed at an invalid path (real host, wrong
+        # path -- fails fast and clean via a real 404, not a hang) to force
+        # every investigation onto the custom-MCP fallback for one controlled
+        # test: does the fallback path actually work, does its traffic show
+        # up in the Agent Gateway's own logs, and does Model Armor cover it.
+        # Reverted to the real URL via a follow-up commit in the same session.
+        "url":         "https://container.googleapis.com/mcp/read-only-DISABLED-FOR-TEST",
         "auth":        "access_token",
         "description": "Google-managed GKE Remote MCP — read-only K8s investigation",
         "tools":       list(GKE_REMOTE_TOOLS),
