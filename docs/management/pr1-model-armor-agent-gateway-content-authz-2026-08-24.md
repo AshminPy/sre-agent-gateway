@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-24. **Branch:** `test/model-armor-regional-content-authz-trial` (pushed, **not merged to `main`**). **Project:** `sreagent-t2-demo`, region `us-central1`. **Tracker rows:** 21, 22, 122 (`In Progress` — not moved to Completed). **GitHub issues:** #30, #32 (both stay open).
 
-Status: **NOT DONE.** Two real limitations found, neither fixed. This version of the report adds every raw command, setting, and log entry behind each claim, so it can be handed to Google Cloud Support as-is if a clarification case is opened.
+Status: **NOT DONE for this PR's own Agent Gateway `CONTENT_AUTHZ` wiring** (still request-only, Section 4). **RESOLVED for MCP request+response protection overall** — a separate, already-configured mechanism (`GOOGLE_MCP_SERVER` floor settings) was live-tested tonight and proven to cover both directions (Section 4c). No Google Support case needed.
 
 **Branch held, not merged, per your instruction. #30 and #32 are NOT re-scoped.**
 
@@ -326,30 +326,80 @@ $ curl -s -H "Authorization: Bearer $TOKEN" \
 
 **This directly answers your two discovery questions:** current floor setting = configured but not enforced; `GOOGLE_MCP_SERVER` = already added to `integratedServices`, `enableFloorSettingEnforcement` = `false`.
 
-### Proposed minimal live test plan for `GOOGLE_MCP_SERVER` floor settings — NOT executed, awaiting your approval
+### Floor-settings test — EXECUTED tonight, approved, both services left enabled per your instruction
 
-Since `GOOGLE_MCP_SERVER` is already in `integratedServices`, the only change needed to test this mechanism is flipping the master switch:
+**STATUS: FLOOR SETTINGS PROTECT REQUEST + RESPONSE.** This is a definitive, live-proven result — not inferred, not a documentation reading.
 
-1. **Enable enforcement** (real, reversible change — requires approval):
-   ```
-   gcloud model-armor floorsettings update --project=sreagent-t2-demo \
-     --enable-floor-setting-enforcement=TRUE
-   ```
-   `googleMcpServerFloorSetting.inspectOnly` stays `true` — no blocking risk during the test.
-2. **Regression check — prove a normal `tools/call` still works:** re-run the same benign `list_k8s_events` call used in tonight's Step 3 trial; confirm `status: done`, no new errors.
-3. **Prove REQUEST inspection:** query the floor-setting-specific log (distinct from the `gateway_requests` log used all night):
-   ```
-   gcloud logging read 'jsonPayload."@type"="type.googleapis.com/google.cloud.modelarmor.logging.v1.SanitizeOperationLogEntry"' \
-     --project=sreagent-t2-demo --format=json
-   ```
-   confirm an entry exists for the `tools/call` request with a real evaluation result.
-4. **Prove RESPONSE inspection — the actual open question:** the same log query, checked specifically for whether a `SanitizeOperationLogEntry` exists for the **response** leg of the same call (not just the request) — this is the direct test of whether floor settings succeed where the gateway-level `AuthzExtension`/`AuthzPolicy` wiring did not.
-5. **Controlled trigger test:** run one `list_k8s_events` call against a test namespace/event seeded with a deliberately filter-triggering string (e.g. an obvious fake secret pattern, for the `sdp_settings`-style filters, or a malicious-URI pattern) in a field that flows back through the tool's response (event message or annotation) — confirm a `SanitizeOperationLogEntry` shows a real `MATCH`/`FILTER_MATCH_STATE` result, not just `ALLOWED`.
-6. **Revert:** `--enable-floor-setting-enforcement=FALSE`, verify live via the same `curl` GET used above.
+**Step 1 — baseline captured before any change** (matches the earlier read-only discovery exactly, confirming nothing had drifted):
+```
+$ curl -s -H "Authorization: Bearer $TOKEN" \
+  "https://modelarmor.googleapis.com/v1/projects/sreagent-t2-demo/locations/global/floorSetting"
+```
+`enableFloorSettingEnforcement: false`, `integratedServices: [GOOGLE_MCP_SERVER, AI_PLATFORM]`, both `inspectOnly: true`, both `enableCloudLogging: true`.
 
-**Only if step 4 also shows no response-side evidence** does this become a case for a Google Support/clarification escalation — per your instruction, floor settings are tried first.
+**Steps 2-3 — confirmed from that same baseline read**, no separate call needed: both services `inspectOnly: true`; both `enableCloudLogging: true`.
 
-Nothing in this plan has been executed. Steps 1, 5, and 6 change live state and need your explicit go-ahead before they run.
+**Step 4 — enabled enforcement**, both integrated services left on per your instruction, scoped update mask so nothing else could change:
+```
+$ curl -s -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  "https://modelarmor.googleapis.com/v1/projects/sreagent-t2-demo/locations/global/floorSetting?updateMask=enableFloorSettingEnforcement" \
+  -d '{"enableFloorSettingEnforcement": true}'
+```
+Result: `enableFloorSettingEnforcement: true`, `updateTime: 2026-08-25T02:39:06Z`. Everything else in the response byte-identical to Step 1's baseline.
+
+**Step 5 — normal GKE Remote MCP test, real investigation, not simulated:**
+```
+$ python3 invoke_agent.py --scenario imagepull --verbose
+```
+Ran `2026-08-25T02:40:19Z`–`02:41:23Z` (~1 minute). Completed normally: `run_id: run_20260825_024032_zghn`, `investigation_completeness.score: 1.0`, `confidence: 0.65`, no errors, no regression. Three GKE Remote MCP `tools/call` invocations happened: `list_k8s_events`, `describe_k8s_resource` (pod), `describe_k8s_resource` (replicaset).
+
+**Steps 6-7 — the actual evidence.** Queried the floor-setting-specific log (distinct from the `gateway_requests` log used all night):
+```
+$ gcloud logging read 'jsonPayload."@type"="type.googleapis.com/google.cloud.modelarmor.logging.v1.SanitizeOperationLogEntry" AND
+  timestamp>="2026-08-25T02:39:00Z" AND timestamp<="2026-08-25T02:42:00Z"' \
+  --project=sreagent-t2-demo --format=json
+```
+28 entries total in the window. Broken down by `labels."modelarmor.googleapis.com/client_name"`:
+
+| client_name | SANITIZE_USER_PROMPT (request leg) | SANITIZE_MODEL_RESPONSE (response leg) |
+|---|---|---|
+| **`GOOGLE_MCP_SERVER`** | **3** | **3** |
+| `VERTEX_AI` (this is the `AI_PLATFORM` activity, Step 7's ask) | 11 | 11 |
+
+**The 3 `GOOGLE_MCP_SERVER` request entries, decoded from `sanitizationInput.byteItem.byteData` (base64):**
+```
+{"name":"list_k8s_events","arguments":{"name":"imagepull-pod","namespace":"test-incidents","parent":"projects/sreagent-demo/locations/us-central1/clusters/sre-test-cluster","resourceType":"pod"}}
+{"name":"describe_k8s_resource","arguments":{"name":"imagepull-pod","namespace":"test-incidents",...,"resourceType":"pod"}}
+{"name":"describe_k8s_resource","arguments":{"name":null,"namespace":"test-incidents",...,"resourceType":"replicaset"}}
+```
+**The 3 `GOOGLE_MCP_SERVER` response entries, same decode:**
+```
+{"events":"LAST SEEN   TYPE   REASON   OBJECT   MESSAGE\n"}
+{"description":"\nError from server (NotFound): Pod \"imagepull-pod\" not found"}
+[{"type":"text","text":"{}\n"}]
+```
+These are the literal MCP tool **response** bodies — the exact content that never produced a `RESPONSE_BODY` event under this PR's Agent Gateway `CONTENT_AUTHZ` wiring (Section 4) — here being sanitized directly, one request/response pair per tool call, 3-for-3. Every entry: `sanitizationVerdict: MODEL_ARMOR_SANITIZATION_VERDICT_ALLOW`, all filters (`csam`, `malicious_uris`, `pi_and_jailbreak`, `rai`) `NO_MATCH_FOUND`, `invocationResult: SUCCESS` — consistent with a benign investigation, no false positives, matching tonight's earlier finding that this project's filters don't false-positive on normal SRE queries.
+
+**Step 7 — `AI_PLATFORM` activity in the same run:** 22 `VERTEX_AI`-labeled entries (11 request + 11 response) in the identical window — confirms the Agent Platform floor setting was active and logging in parallel, covering this investigation's Gemini prompt/response pairs. Not the focus of this test, noted per your instruction.
+
+**Step 8 — no malicious/sensitive trigger was run**, per your explicit instruction.
+
+**Step 9 — reverted:**
+```
+$ curl -s -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  "https://modelarmor.googleapis.com/v1/projects/sreagent-t2-demo/locations/global/floorSetting?updateMask=enableFloorSettingEnforcement" \
+  -d '{"enableFloorSettingEnforcement": false}'
+```
+`enableFloorSettingEnforcement: false`, `updateTime: 2026-08-25T02:42:39Z`. Total time enforcement was live: **~3.5 minutes** (`02:39:06Z`–`02:42:39Z`).
+
+**Step 10 — proved restoration, not just claimed it:**
+```
+$ diff <(jq 'del(.createTime,.updateTime)' 01_baseline.json) <(jq 'del(.createTime,.updateTime)' 10_final_readback.json)
+IDENTICAL — full original state restored
+```
+Byte-for-byte identical to Step 1's baseline except the two server-managed timestamps, which necessarily change on any PATCH.
+
+**Conclusion:** floor settings (`GOOGLE_MCP_SERVER`, already configured on this project since 2026-07-13, `inspectOnly: true`) inspect both the request and response legs of a real GKE Remote MCP `tools/call`, proven with 3 real tool calls and 6 matching log entries. Per your instruction, a Google Support clarification/escalation is **not** warranted now — the documented mechanism works. This does not change Limitation A's status for the Agent Gateway `CONTENT_AUTHZ` wiring *this PR* builds (Section 4) — that wiring still shows no `RESPONSE_BODY` — but it does mean the project has a working, already-configured, alternative path to full request+response MCP protection that doesn't depend on resolving that open question.
 
 **IAM needed to read (not set) current floor settings — corrected tonight:**
 
@@ -395,12 +445,11 @@ None yet — **this branch is not merged and must not be described as "Model Arm
 
 ## 10. Exact live test still needed before this can be called done
 
-1. Get Google to confirm or rule out whether the "Streamable HTTP/SSE for MCP" exclusion applies to the response leg of a `tools/call` request specifically — a clarification question, framed with Appendix B1's raw log, not a bug report (see Section 4).
-2. Test whether `GOOGLE_MCP_SERVER` floor settings behave differently on the same GKE MCP traffic (Section 4c) — currently unconfigured, untested.
-3. A genuine sensitive-data test case against the response template's `sdp_settings` — not yet exercised.
-4. Once (1) or (2) resolves RESPONSE_BODY visibility: re-test both prompt-injection and sensitive-data cases against the response path specifically.
-5. A latency measurement — not done tonight.
-6. Full path coverage table from `PRODUCTION-LAUNCH-PLAN.md` — Custom MCP and PagerDuty payload paths never exercised tonight.
+1. ~~Test whether `GOOGLE_MCP_SERVER` floor settings behave differently on the same GKE MCP traffic~~ — **DONE tonight, Section 4c.** Result: floor settings inspect both request and response. Google clarification/escalation is not needed as a result — your own conditional in the prior turn is now resolved without needing it.
+2. Decide whether to adopt floor settings as the production path for MCP request+response protection (separate from this PR's Agent Gateway `CONTENT_AUTHZ` wiring, which still only covers requests) — a real scope decision, not made here.
+3. A genuine sensitive-data/prompt-injection controlled-trigger test against floor settings specifically — tonight deliberately used only benign traffic (Step 8, per your instruction). The 6 entries in Section 4c prove inspection happens; they don't yet prove a real malicious payload gets caught (same open question Limitation B already raised for the gateway-level templates).
+4. A latency measurement — not done tonight, for either mechanism.
+5. Full path coverage table from `PRODUCTION-LAUNCH-PLAN.md` — Custom MCP and PagerDuty payload paths never exercised tonight, and floor settings' behavior on those paths is unverified.
 
 ---
 
@@ -429,7 +478,7 @@ Neither issue's scope was touched tonight.
 
 ## Decision needed from you
 
-**Held, per your instruction** — branch stays on `test/model-armor-regional-content-authz-trial`, not merged, #30/#32 not re-scoped. Next real decision point is Section 10's items 1–2 (Google clarification + floor-settings test), not a merge/re-scope call.
+**Held, per your instruction** — branch stays on `test/model-armor-regional-content-authz-trial`, not merged, #30/#32 not re-scoped. The floor-settings test (Section 4c) is done and resolved the request+response question without needing Google Support. Next real decision point is Section 10's item 2 — whether floor settings become the production MCP-protection path, separate from what this PR delivers.
 
 ---
 
