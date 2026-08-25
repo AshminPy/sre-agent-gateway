@@ -142,13 +142,20 @@ resource "google_model_armor_floorsetting" "mcp" {
     }
   }
 
+  # 2026-08-25: TEMPORARY block-mode diagnostic -- flipped from inspect_only to
+  # inspect_and_block on both services for one controlled test: (1) confirm a
+  # known-malicious payload (Google's own Safe Browsing test URI, already
+  # proven to MATCH_FOUND 8/8 under inspect_only) actually gets blocked, not
+  # just logged; (2) confirm a normal benign investigation still completes
+  # with no false-positive block. Reverted back to inspect_only in the same
+  # session via a follow-up commit -- see git log for the revert.
   google_mcp_server_floor_setting {
-    inspect_only         = true
+    inspect_and_block    = true
     enable_cloud_logging = true
   }
 
   ai_platform_floor_setting {
-    inspect_only         = true
+    inspect_and_block    = true
     enable_cloud_logging = true
   }
 
