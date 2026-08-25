@@ -74,3 +74,71 @@ resource "google_model_armor_template" "sre_agent_response" {
 
   depends_on = [google_project_service.apis]
 }
+
+# ── Project-level Model Armor floor setting — Terraform adoption of live drift ──
+#
+# 2026-08-25: this resource has existed live since 2026-07-13 (created by an
+# earlier version of this same Terraform, commits 815392e/6b393fd/d78bdc2) but
+# was removed from code in 9799494 on the theory that it caused the same
+# gateway TLS man-in-the-middle problem as Agent Gateway CONTENT_AUTHZ. That
+# reason does not hold: floor settings are a project-level Model Armor /
+# Vertex AI / GKE Remote MCP integration setting, unrelated to the Agent
+# Gateway's own traffic path — verified live 2026-08-24/25 by running a real
+# investigation (real mTLS Gemini calls through the gateway) with floor-setting
+# enforcement temporarily on; no TLS failure, no regression. The object was
+# never destroyed, only orphaned from Terraform state — this block adopts it
+# back under Terraform with NO functional change (see the import step in the
+# PR that added this comment for the verified zero-diff proof).
+#
+# `enable_floor_setting_enforcement = true`: this PR imports the resource
+# against a code copy matching live exactly (enforcement=false, verified via
+# `terraform plan` showing "No changes"), THEN flips this one field. Both
+# services stay `inspect_only = true` — this turns on real inspection and
+# logging, never blocking. Live-tested 2026-08-24/25 with a real GKE Remote
+# MCP + Vertex AI investigation: both request and response legs inspected on
+# both services, zero regression, clean rollback proven twice. Sensitive Data
+# Protection is deliberately NOT configured here — a separate, later change,
+# gated on its own synthetic detector test (see docs/management/
+# floor-settings-production-plan-2026-08-25.md).
+resource "google_model_armor_floorsetting" "mcp" {
+  count    = var.enable_agent_gateway ? 1 : 0
+  provider = google-beta
+
+  parent   = "projects/${var.project_a_id}"
+  location = "global"
+
+  enable_floor_setting_enforcement = true
+  integrated_services              = ["GOOGLE_MCP_SERVER", "AI_PLATFORM"]
+
+  filter_config {
+    rai_settings {
+      rai_filters {
+        filter_type      = "SEXUALLY_EXPLICIT"
+        confidence_level = "MEDIUM_AND_ABOVE"
+      }
+      rai_filters {
+        filter_type      = "HATE_SPEECH"
+        confidence_level = "MEDIUM_AND_ABOVE"
+      }
+    }
+    pi_and_jailbreak_filter_settings {
+      filter_enforcement = "ENABLED"
+      confidence_level   = var.model_armor_pi_confidence
+    }
+    malicious_uri_filter_settings {
+      filter_enforcement = "ENABLED"
+    }
+  }
+
+  google_mcp_server_floor_setting {
+    inspect_only         = true
+    enable_cloud_logging = true
+  }
+
+  ai_platform_floor_setting {
+    inspect_only         = true
+    enable_cloud_logging = true
+  }
+
+  depends_on = [google_project_service.apis]
+}
