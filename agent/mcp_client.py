@@ -105,13 +105,20 @@ BLOCKED_ACTIONS = frozenset({
 # ── MCP Source Registry ───────────────────────────────────────────
 MCP_REGISTRY = {
     "gke_remote_mcp": {
-        # 2026-08-25: TEMPORARILY pointed at an invalid path (real host, wrong
-        # path -- fails fast and clean via a real 404, not a hang) to force
-        # every investigation onto the custom-MCP fallback for one controlled
-        # test: does the fallback path actually work, does its traffic show
-        # up in the Agent Gateway's own logs, and does Model Armor cover it.
-        # Reverted to the real URL via a follow-up commit in the same session.
-        "url":         "https://container.googleapis.com/mcp/read-only-DISABLED-FOR-TEST",
+        # 2026-08-25: diagnostic run and reverted, same session (PR #193).
+        # Real result: forcing this path to fail correctly fell through to
+        # the custom-MCP fallback (CI's own smoke test: primary_mcp_source=
+        # gke_remote_mcp, actual_mcp_sources=[k8s_mcp], smoke test passed).
+        # The fallback's traffic DID appear in the Agent Gateway's own log
+        # (TLS-intercepted, IAP-governed, ALLOWED) -- corrects an earlier
+        # same-session assumption that custom MCP bypasses the gateway
+        # entirely; it does not, it had simply never been exercised before.
+        # Model Armor floor settings did NOT inspect it (0 GOOGLE_MCP_SERVER
+        # entries in the same window, vs 12 real VERTEX_AI entries) --
+        # confirmed empirically, matching the Model Armor API's own schema
+        # (integratedServices only allows AI_PLATFORM / GOOGLE_MCP_SERVER,
+        # no custom option).
+        "url":         "https://container.googleapis.com/mcp/read-only",
         "auth":        "access_token",
         "description": "Google-managed GKE Remote MCP — read-only K8s investigation",
         "tools":       list(GKE_REMOTE_TOOLS),
