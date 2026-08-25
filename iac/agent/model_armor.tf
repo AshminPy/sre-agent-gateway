@@ -90,16 +90,23 @@ resource "google_model_armor_template" "sre_agent_response" {
 # back under Terraform with NO functional change (see the import step in the
 # PR that added this comment for the verified zero-diff proof).
 #
-# `enable_floor_setting_enforcement = true`: this PR imports the resource
-# against a code copy matching live exactly (enforcement=false, verified via
-# `terraform plan` showing "No changes"), THEN flips this one field. Both
-# services stay `inspect_only = true` — this turns on real inspection and
-# logging, never blocking. Live-tested 2026-08-24/25 with a real GKE Remote
-# MCP + Vertex AI investigation: both request and response legs inspected on
-# both services, zero regression, clean rollback proven twice. Sensitive Data
-# Protection is deliberately NOT configured here — a separate, later change,
-# gated on its own synthetic detector test (see docs/management/
-# floor-settings-production-plan-2026-08-25.md).
+# `enable_floor_setting_enforcement = true`: adopted + enabled via PR #183
+# (2026-08-24/25) — verified zero-diff import, then a clean isolated flip,
+# merged and applied via CI. Both services stay `inspect_only = true` — real
+# inspection and logging, never blocking. Live-tested with real investigations
+# and a real detector test (Google's own Safe Browsing test URIs +
+# a prompt-injection payload): malicious_uris caught both test URIs with
+# precise offsets every time; pi_and_jailbreak caught the payload in a short
+# prompt but missed it in a longer one — evidence in docs/management/
+# floor-settings-production-plan-2026-08-25.md.
+#
+# 2026-08-25: added `sdp_settings.basic_config` — Sensitive Data Protection,
+# same fixed six-info-type basic config already used on the
+# `sre_agent_response` template above (no new Cloud DLP template dependency).
+# This project's evidence path pulls raw Kubernetes events/logs, which can
+# carry real secrets or PII — this was the one gap left after PR #183.
+# Stays `inspect_only` throughout; gated on its own synthetic SDP test before
+# being called done (see the same plan doc).
 resource "google_model_armor_floorsetting" "mcp" {
   count    = var.enable_agent_gateway ? 1 : 0
   provider = google-beta
@@ -127,6 +134,11 @@ resource "google_model_armor_floorsetting" "mcp" {
     }
     malicious_uri_filter_settings {
       filter_enforcement = "ENABLED"
+    }
+    sdp_settings {
+      basic_config {
+        filter_enforcement = "ENABLED"
+      }
     }
   }
 
