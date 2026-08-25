@@ -142,22 +142,29 @@ resource "google_model_armor_floorsetting" "mcp" {
     }
   }
 
-  # 2026-08-25: block-mode diagnostic run and reverted, same session (see
-  # PR #190 for the temporary flip). Real result: a known-malicious payload
-  # (Google's own Safe Browsing test URI) got sanitizationVerdict=BLOCK,
-  # confirmed via the live SanitizeOperationLogEntry log (1 entry, BLOCK,
-  # MATCH_FOUND) -- genuine blocking, not just logging. Immediately after, a
-  # normal benign investigation completed normally with 44/44 log entries
-  # verdict=ALLOW -- zero false-positive blocking of legitimate SRE traffic.
-  # Back to inspect_only here -- production stays watch-only until a
-  # deliberate decision to enable blocking for real.
+  # 2026-08-25: inspect_and_block enabled for real (deliberate decision, not
+  # a diagnostic this time). Diagnostic run earlier the same session (PR #190,
+  # reverted by PR #191) proved: a known-malicious payload (Google's own Safe
+  # Browsing test URI) got sanitizationVerdict=BLOCK, confirmed via the live
+  # SanitizeOperationLogEntry log (1 entry, BLOCK, MATCH_FOUND) -- genuine
+  # blocking, not just logging. Immediately after, a normal benign
+  # investigation completed normally with 44/44 log entries verdict=ALLOW --
+  # zero false-positive blocking of legitimate SRE traffic.
+  #
+  # Known limitation of that evidence, stated plainly: the benign test only
+  # covered one investigation scenario (imagepull) and the malicious test only
+  # covered the malicious_uris filter (its most reliable trigger, 8/8 hit
+  # rate all session). pi_and_jailbreak has shown inconsistent detection
+  # (catches a short prompt, misses the same payload in a longer one) and has
+  # not been block-tested specifically; SDP has not been block-tested at all.
+  # Blocking is now live for every filter, not just the one tested.
   google_mcp_server_floor_setting {
-    inspect_only         = true
+    inspect_and_block    = true
     enable_cloud_logging = true
   }
 
   ai_platform_floor_setting {
-    inspect_only         = true
+    inspect_and_block    = true
     enable_cloud_logging = true
   }
 
