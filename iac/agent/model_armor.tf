@@ -142,20 +142,22 @@ resource "google_model_armor_floorsetting" "mcp" {
     }
   }
 
-  # 2026-08-25: TEMPORARY block-mode diagnostic -- flipped from inspect_only to
-  # inspect_and_block on both services for one controlled test: (1) confirm a
-  # known-malicious payload (Google's own Safe Browsing test URI, already
-  # proven to MATCH_FOUND 8/8 under inspect_only) actually gets blocked, not
-  # just logged; (2) confirm a normal benign investigation still completes
-  # with no false-positive block. Reverted back to inspect_only in the same
-  # session via a follow-up commit -- see git log for the revert.
+  # 2026-08-25: block-mode diagnostic run and reverted, same session (see
+  # PR #190 for the temporary flip). Real result: a known-malicious payload
+  # (Google's own Safe Browsing test URI) got sanitizationVerdict=BLOCK,
+  # confirmed via the live SanitizeOperationLogEntry log (1 entry, BLOCK,
+  # MATCH_FOUND) -- genuine blocking, not just logging. Immediately after, a
+  # normal benign investigation completed normally with 44/44 log entries
+  # verdict=ALLOW -- zero false-positive blocking of legitimate SRE traffic.
+  # Back to inspect_only here -- production stays watch-only until a
+  # deliberate decision to enable blocking for real.
   google_mcp_server_floor_setting {
-    inspect_and_block    = true
+    inspect_only         = true
     enable_cloud_logging = true
   }
 
   ai_platform_floor_setting {
-    inspect_and_block    = true
+    inspect_only         = true
     enable_cloud_logging = true
   }
 
