@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-25. **Branch:** `test/model-armor-regional-content-authz-trial` (still held, not merged — this is a separate proposal from PR 1, documented here rather than a new branch, per tonight's pattern of keeping all investigation evidence together until a decision is made). **No Terraform written or applied this turn** — design and verdict only, per your instruction.
 
-## VERDICT: **IMPLEMENTED AND LIVE (2026-08-25, PR #183).** Import, enforcement, and a real detector test (not synthetic-and-untested) are all done — see Section 4. Remaining open items: SDP, and this only covers Google-managed MCP/AI Platform, not custom MCP (Section 7).
+## VERDICT: **IMPLEMENTED AND LIVE (2026-08-25, PR #183 + PR #187).** Import, enforcement, malicious_uris + pi_and_jailbreak detection, and now SDP detection are all proven live — see Section 4. Remaining open item: this only covers Google-managed MCP/AI Platform, not custom MCP (Section 7).
 
 ---
 
@@ -54,7 +54,16 @@ Live `filterConfig` (re-confirmed tonight): PI/jailbreak (`MEDIUM_AND_ABOVE`), m
 
    **Result: `pi_and_jailbreak` — genuinely nuanced, not a flat "doesn't work.**" It triggered on **1 of the 8** matched entries: the short, tightly-scoped "SRE alert parser" extraction prompt (client `VERTEX_AI`, `SANITIZE_USER_PROMPT`), where the injected instruction stands out clearly against a ~15-line task. It did **not** trigger on the much longer, structured RCA-writing prompt the same payload also flows through later in the same investigation (the same non-detection already found twice earlier tonight, in two different mechanisms — gateway-level template block-mode, and now floor settings). **Conclusion, evidence-specific:** the `pi_and_jailbreak` filter at `MEDIUM_AND_ABOVE` can and does detect this exact payload — but detection depends on how much legitimate text surrounds it. In this agent's longest, most structured prompt (the one that actually writes the final RCA), the same payload is not detected. Short, focused prompts earlier in the pipeline are more likely to catch it.
 
-4. **Not yet run.** SDP — one synthetic SDP payload (a fake-but-recognizable info-type, e.g. a dummy email or fake API-key-shaped string) through the same path, once SDP is added to the floor setting's `filter_config`. Same 4-part proof as above.
+4. **DONE (2026-08-25, PR #187, merged + applied via CI).** Added `sdp_settings.basic_config` to the floor setting (same fixed six-info-type pattern already used on `sre_agent_response`, no new Cloud DLP dependency). CI plan/apply: `0 add / 1 change / 0 destroy`, isolated to this one field, verified live via REST after apply.
+
+   **First attempt used the wrong info-type category — an honest miss, not a filter failure.** Sent a synthetic email address and IP address through a real investigation — 0 SDP matches. Checked Google's own docs for what basic config actually covers: **credit card numbers, US Social Security Numbers, Google Cloud API keys, and clear-text passwords** — not generic email/IP addresses. Re-tested with a payload actually matching that set.
+
+   **Second attempt, correctly targeted — real detection, confirmed.** Sent a synthetic test credit-card number (`4111 1111 1111 1111`, the industry-standard test Visa number) plus a fake Google-API-key-shaped string, embedded in a real investigation query. Result: `run_id: run_20260825_063714_uksn`, `status: done` — `inspect_only` held, nothing blocked. `SanitizeOperationLogEntry` log: **4 real `MATCH_FOUND` entries**, all `client_name=VERTEX_AI`, `operationType=SANITIZE_USER_PROMPT`, each with:
+   ```json
+   "findings": [{ "infoType": "CREDIT_CARD_NUMBER", "likelihood": "VERY_LIKELY",
+                  "location": { "byteRange": { "start": "1569", "end": "1588" } } }]
+   ```
+   The fake API-key string did not match — its shape didn't match a real Google API key's exact character pattern (`AIza` + 35 fixed-format characters); not chased further since the credit-card detection already proves the detector is live and working.
 5. **No genuinely separate non-production GCP project exists for this** — `sreagent-t2-demo` is the only environment used throughout this investigation. The detector test above ran against real infra with synthetic (not real-incident) data — the closest available substitute.
 
 ## 5. Cloud Logging — what's actually required, not over-designed
