@@ -62,6 +62,27 @@ resource "google_storage_bucket_object" "clusters_json" {
   name    = "clusters.json"
   bucket  = google_storage_bucket.cluster_config.name
   content = local.clusters_json
+
+  # Cluster-name collision guard. An additional_clusters key must not collide
+  # with var.gke_cluster_name, or the two entries silently collapse into one
+  # when agent/mcp_client.py's registry parser calls .strip() on every name.
+  #
+  # 2026-08-26: this lives here as a precondition (Terraform >= 1.2) rather
+  # than as a cross-variable `validation` block on var.additional_clusters
+  # (Terraform >= 1.9), so this stack stays deployable on the same 1.4.7 that
+  # company Spacelift pins. A precondition fails plan and apply just like a
+  # validation block; a `check` block would only warn, and was rejected in
+  # review for exactly that reason. Condition text is unchanged from the
+  # original, trimspace() on both sides included.
+  lifecycle {
+    precondition {
+      condition = !contains(
+        [for k in keys(var.additional_clusters) : trimspace(k)],
+        trimspace(var.gke_cluster_name)
+      )
+      error_message = "additional_clusters contains a key that collides with var.gke_cluster_name (after trimming whitespace) — pick a distinct name for the additional cluster."
+    }
+  }
 }
 
 # Seed the eval dataset so `eval.py`/the eval suite can run out of the box.

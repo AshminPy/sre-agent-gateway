@@ -46,7 +46,7 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "1.9.0"
+          terraform_version: "1.4.7"
 
       - name: Init
         run: terraform init -backend-config="bucket=${{ secrets.TFSTATE_BUCKET }}" -backend-config="prefix=agent"

@@ -52,18 +52,17 @@ variable "additional_clusters" {
   }))
   default = {}
 
-  # Cross-variable validation (Terraform >= 1.9 — see versions.tf) — this
-  # actually fails plan/apply, unlike a `check` block. trimspace() on both
-  # sides so a whitespace-padded key (e.g. " sre-test-cluster") can't sneak
-  # past the comparison and then silently collapse with the real entry when
-  # agent/mcp_client.py's registry parser calls .strip() on every name.
-  validation {
-    condition = !contains(
-      [for k in keys(var.additional_clusters) : trimspace(k)],
-      trimspace(var.gke_cluster_name)
-    )
-    error_message = "additional_clusters contains a key that collides with var.gke_cluster_name (after trimming whitespace) — pick a distinct name for the additional cluster."
-  }
+  # 2026-08-26: the collision guard MOVED out of this variable, into a
+  # `lifecycle.precondition` on google_storage_bucket_object.clusters_json
+  # (buckets.tf). It was a cross-variable `validation` block referencing
+  # var.gke_cluster_name, which requires Terraform >= 1.9. Company Spacelift
+  # is pinned to 1.4.7, and this repo must stay deployable on the same version
+  # as sre-agent-app-infra so the two cannot drift.
+  #
+  # Nothing is weakened by the move. A precondition (Terraform >= 1.2) fails
+  # plan and apply exactly like a validation block does — unlike a `check`
+  # block, which only ever warns and was rejected in review for that reason.
+  # The condition itself is unchanged, trimspace() on both sides included.
 }
 
 variable "notification_email" {
