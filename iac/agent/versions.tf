@@ -21,12 +21,20 @@
 # together in one configuration and are kept version-aligned on purpose, so
 # they can't silently drift into an untested combination.
 terraform {
-  # >= 1.9.0 (bumped from 1.6.0): var.additional_clusters' collision guard
-  # (variables.tf) is a cross-variable `validation` block referencing
-  # var.gke_cluster_name — that capability requires Terraform 1.9+. CI already
-  # pins exactly 1.9.0 (.github/workflows/terraform-*.yml), so this doesn't
-  # tighten anything CI wasn't already using.
-  required_version = ">= 1.9.0"
+  # 2026-08-26: lowered 1.9.0 -> 1.4.7 to match company Spacelift's pinned
+  # version, so this repo and sre-agent-app-infra stay deployable on the same
+  # Terraform and cannot drift apart.
+  #
+  # The 1.9.0 floor existed for ONE reason: var.additional_clusters' collision
+  # guard was a cross-variable `validation` block referencing
+  # var.gke_cluster_name, which needs 1.9+. That guard now lives as a
+  # `lifecycle.precondition` on google_storage_bucket_object.clusters_json
+  # (buckets.tf) — available since Terraform 1.2, same fail-on-plan/apply
+  # behaviour, same condition. Nothing else in this stack uses a 1.5+ feature:
+  # no check blocks, no import blocks, no removed blocks, no .tftest.hcl, no
+  # provider-defined functions. CI is pinned to 1.4.7 to match
+  # (.github/workflows/terraform-*.yml, claude-merge-gate.yml).
+  required_version = ">= 1.4.7"
 
   required_providers {
     google = {

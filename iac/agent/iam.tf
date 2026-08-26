@@ -98,41 +98,39 @@ resource "google_cloud_run_v2_service_iam_member" "runtime_invoke_mcp" {
   member   = local.agent_identity_member
 }
 
-# ── Platform service agents for the gateway data plane (gated on gateway) ───
-# These are Google-managed identities that provision the gateway's networking
-# and DNS. Roles are the minimum documented for the gateway to function.
-
-# Vertex AI + Reasoning Engine service agents need to program networking/DNS for
-# the gateway's PSC data plane.
-resource "google_project_iam_member" "aiplatform_sa_network" {
-  for_each = var.enable_agent_gateway ? toset(["roles/compute.networkAdmin", "roles/dns.peer"]) : toset([])
-
-  project = var.project_a_id
-  role    = each.value
-  member  = "serviceAccount:${google_project_service_identity.aiplatform.email}"
-
-  depends_on = [google_project_service_identity.aiplatform]
-}
-
-resource "google_project_iam_member" "aiplatform_re_sa_network" {
-  for_each = var.enable_agent_gateway ? toset(["roles/compute.networkAdmin", "roles/dns.peer"]) : toset([])
-
-  project = var.project_a_id
-  role    = each.value
-  member  = "serviceAccount:service-${data.google_project.a.number}@gcp-sa-aiplatform-re.iam.gserviceaccount.com"
-
-  # The -re service agent is created when the first reasoning engine is deployed.
-  depends_on = [google_vertex_ai_reasoning_engine.sre_agent]
-}
-
-# Agent Gateway P4SA programs DNS for the data path.
-resource "google_project_iam_member" "agentgateway_p4sa_dns" {
-  count = var.enable_agent_gateway ? 1 : 0
-
-  project = var.project_a_id
-  role    = "roles/dns.admin"
-  member  = "serviceAccount:service-${data.google_project.a.number}@gcp-sa-agentgateway.iam.gserviceaccount.com"
-
-  depends_on = [google_network_services_agent_gateway.sre_egress]
-}
+# ── Platform service agents for the gateway data plane ──────────────────────
+#
+# REMOVED 2026-08-26. Three project-level network/DNS grants used to live here:
+#
+#   gcp-sa-aiplatform      -> roles/compute.networkAdmin, roles/dns.peer
+#   gcp-sa-aiplatform-re   -> roles/compute.networkAdmin, roles/dns.peer
+#   gcp-sa-agentgateway    -> roles/dns.admin
+#
+# Why they are gone:
+#
+# 1. They existed to program a Private Service Connect data plane. This stack
+#    no longer creates one — the PSC-I network_attachment (sre-agent-egress-na)
+#    and its dedicated subnet were removed on 2026-08-07 (see
+#    agent_gateway.tf's header). The grants outlived the thing they served.
+# 2. Google's own docs scope these to the Agent Gateway service agent on the
+#    SHARED VPC HOST project, and name roles/compute.networkUser for the
+#    network attachment, with compute.networkAdmin only as a broader
+#    alternative. gcp-sa-aiplatform and gcp-sa-aiplatform-re are not mentioned
+#    in that context, and roles/dns.admin is not listed as a requirement for
+#    gcp-sa-agentgateway (dns.peer is).
+#    https://docs.cloud.google.com/gemini-enterprise-agent-platform/govern/gateways/set-up-vpc-connectivity
+# 3. compute.networkAdmin and dns.admin are broad, project-level roles. The
+#    company environment this stack is mirrored into (sre-agent-app-infra) is a
+#    Shared VPC, where such grants need real justification. Both repos must
+#    stay identical apart from variables, so the reduction is made here first
+#    and validated live before it is copied over.
+#
+# roles/aiplatform.serviceAgent on gcp-sa-aiplatform is a separate, genuinely
+# required grant and is untouched — the Agent Engine cannot be created without
+# it.
+#
+# If the gateway ever fails to program its data path, add back ONLY the
+# identity and role the error actually names. Prefer compute.networkUser over
+# compute.networkAdmin, and dns.peer over dns.admin. Do not restore the whole
+# block wholesale on a parity diff.
 
