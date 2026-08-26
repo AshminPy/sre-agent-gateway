@@ -374,6 +374,34 @@ def _is_not_found_result(content: Any) -> bool:
     return "notfound" in text.lower()
 
 
+# Model Armor replaces a blocked response body with this notice, in-band, over a
+# normal HTTP 200. Exact string observed in run_20260826_211251_rlwe's ev_002:
+#   "Model Armor: Response violates content security configurations.
+#    However, the operation was successful."
+MODEL_ARMOR_BLOCK_MARKERS = ("model armor", "violates content security")
+
+
+def _is_model_armor_blocked_result(content: Any) -> bool:
+    """True when Model Armor replaced the real tool output with its block notice.
+
+    Same failure shape as _is_not_found_result above: HTTP 200, non-empty body,
+    but the body is NOT the data that was asked for. Detected 2026-08-26 --
+    Model Armor's pi_and_jailbreak filter matched (MEDIUM_AND_ABOVE) on a
+    describe_k8s_resource response and, with the floor setting running
+    inspect_and_block=true, the pod spec was discarded and replaced with the
+    notice. call_tool returned ok=True, the notice was stored as ev_002, and the
+    LLM -- with no pod spec but a prompt saying the pod "cannot pull its image"
+    -- fabricated an image name, an error string, and a root cause, citing an
+    unrelated evidence_id.
+
+    Both markers must be present. "model armor" alone would match legitimate
+    output from a cluster that happens to run a workload with that name.
+    """
+    text = content if isinstance(content, str) else json.dumps(content)
+    lowered = text.lower()
+    return all(marker in lowered for marker in MODEL_ARMOR_BLOCK_MARKERS)
+
+
 def _try_custom_mcp_fallback(
     is_gke_remote: bool,
     cluster_info: dict,
@@ -563,6 +591,32 @@ def call_tool(
                 )
                 broadened["broadened_after_not_found"] = pod_name
                 return broadened
+
+            # A Model Armor block is a FAILED call, not a successful one. The real
+            # payload is gone; only the block notice came back. Returning ok=True
+            # here is what let a fabricated RCA be produced (see
+            # _is_model_armor_blocked_result). Deliberately NOT routed through
+            # _try_custom_mcp_fallback: the same floor setting is project-wide and
+            # would sanitize the fallback's response identically, so retrying only
+            # burns latency. Fail loudly and let the caller record the gap.
+            if _is_model_armor_blocked_result(content):
+                log.error(
+                    "call_tool: MODEL_ARMOR_BLOCKED tool=%s mcp_source=%s cluster=%s -- "
+                    "response body replaced by Model Armor's block notice, real payload "
+                    "discarded. Treating as a failed call so no evidence is written and "
+                    "completeness scoring reflects the gap.",
+                    tool_name, mcp_source, cluster_name,
+                )
+                return {
+                    "ok": False,
+                    "error": (
+                        "MODEL_ARMOR_BLOCKED: response body was replaced by Model Armor's "
+                        "block notice; the requested data was never received"
+                    ),
+                    "blocked": True,
+                    "blocked_by": "model_armor",
+                    "tool": tool_name, "mcp_source": mcp_source, "duration_s": duration,
+                }
 
             return {
                 "ok": True, "result": content,
