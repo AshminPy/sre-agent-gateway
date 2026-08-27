@@ -193,8 +193,30 @@ resource "google_model_armor_floorsetting" "mcp" {
   #      prompts).
   #   2. pi_and_jailbreak block-tested specifically, with a real payload.
   #   3. SDP block-tested at all -- still never done.
+  #
+  # 2026-08-27: PR #200's own apply failed twice, on two different errors, in
+  # the same evening -- both confirmed against the real API/provider, neither
+  # guessed:
+  #
+  # Attempt 1 (PR #200 as merged): only inspect_and_block=false was set.
+  #   Error 400: "Enforcement type must be specified for integrated
+  #   service(s): 'GOOGLE_MCP_SERVER, AI_PLATFORM'." reason:
+  #   "ENFORCEMENT_TYPE_MISSING". Leaving the enforcement type fully unset is
+  #   ambiguous and the API refuses it.
+  #
+  # Attempt 2 (first fix here): tried setting BOTH inspect_and_block=false AND
+  #   inspect_only=true, from a provider-schema dump that showed both fields
+  #   as independently optional. `terraform plan` itself rejected it:
+  #   "only one of `inspect_and_block,inspect_only` can be specified, but ...
+  #   were specified." The schema dump showed each field's own optionality,
+  #   not the ExactlyOneOf constraint between them -- wrong evidence to read
+  #   for this question.
+  #
+  # Correct form: inspect_only=true ALONE. inspect_and_block is not "the
+  # other value of the same switch" -- omitting it is how you select
+  # inspect-only, not setting it to false.
   google_mcp_server_floor_setting {
-    inspect_and_block    = false
+    inspect_only         = true
     enable_cloud_logging = true
   }
 
@@ -208,8 +230,9 @@ resource "google_model_armor_floorsetting" "mcp" {
   # both directions carry ordinary SRE text. Blocking one and not the other
   # would only move the failure. Re-enable both together, under the same three
   # conditions listed above.
+  # Same fix, same reason -- see the block above.
   ai_platform_floor_setting {
-    inspect_and_block    = false
+    inspect_only         = true
     enable_cloud_logging = true
   }
 
