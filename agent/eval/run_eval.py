@@ -199,8 +199,33 @@ def run_remote(case: dict[str, Any], engine_id: str) -> dict[str, Any]:
         except Exception:
             result = {"likely_root_cause": result}
 
-    result["_latency_seconds"] = elapsed
-    return {"final_summary": result}
+    # 2026-08-27: `result` here is the FULL top-level dict SREAgent.query()
+    # returns -- confirmed by reading agent/main.py's _finalize_query() (its
+    # `return result` at the end, no reshaping) and _finalize_investigation_result()
+    # (which builds that dict with keys like status/confidence/run_id/executive_summary
+    # AND a "summary" sub-dict). The scorer expects the shape run_local() produces:
+    # {"final_summary": <the inner dict with tools_called/likely_root_cause/
+    # confidence_score>}. Returning {"final_summary": result} here wrapped the
+    # WRONG level -- score_case() then read tools_called/likely_root_cause/
+    # confidence_score off the outer dict, where none of those three keys exist
+    # (they are one level down, inside result["summary"]), and silently defaulted
+    # to []/""/0.0 every time. Reproduced directly: a perfect agent response
+    # scored predicted_tools=[], root_cause='', confidence=0.0, PASSED=False.
+    # Remote-mode eval failed every single case regardless of real agent quality,
+    # with no error, no warning -- nothing to say the harness itself was broken.
+    inner_summary = result.get("summary")
+    if not isinstance(inner_summary, dict):
+        log.error(
+            "run_remote: Agent Engine response has no 'summary' dict (keys=%s) -- "
+            "scoring will be meaningless for this case; check the deployed agent's "
+            "response shape, not the agent's actual behavior",
+            sorted(result.keys()) if isinstance(result, dict) else type(result).__name__,
+        )
+        inner_summary = {}
+
+    inner_summary = dict(inner_summary)
+    inner_summary["_latency_seconds"] = elapsed
+    return {"final_summary": inner_summary}
 
 
 # ── Vertex AI Gen AI Evaluation Service ──────────────────────────
