@@ -237,7 +237,30 @@ def loop_controller(state: AgentState) -> dict:
         exit_reason = "zero_new_facts"
 
     done   = exit_reason is not None
-    status = "done" if done else "running"
+
+    # 2026-08-27: an upstream node in this SAME iteration can already have
+    # declared the run failed (mcp_router when it cannot plan a tool call;
+    # context_resolver when a cluster cannot be resolved). `investigation` merges
+    # with operator.or_ and loop_controller runs LAST, so unconditionally writing
+    # "done"/"running" here silently overwrote that verdict -- turning a real
+    # failure into a normal completion with loop_exit_reason="tool_signaled_done".
+    #
+    # graph.py already documents this exact hazard for context_resolver and works
+    # around it with a conditional edge that skips the loop entirely. mcp_router
+    # has no such edge (it must still reach rca_builder through the loop), so the
+    # guard belongs here.
+    upstream_failed = state["investigation"].get("status") == "failed"
+    if upstream_failed:
+        status = "failed"
+        exit_reason = state["investigation"].get("loop_exit_reason") or exit_reason
+        done = True
+        log.error(
+            "loop_controller: preserving upstream FAILED status (exit_reason=%s) at "
+            "step %d -- not overwriting it with a normal completion",
+            exit_reason, step,
+        )
+    else:
+        status = "done" if done else "running"
 
     log.info(
         "loop_controller step=%d/%d status=%s exit_reason=%s enough=%s",

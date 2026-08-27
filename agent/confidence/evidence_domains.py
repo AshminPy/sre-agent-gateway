@@ -75,7 +75,18 @@ def domain_weight(domain: EvidenceDomain, present_domains: set) -> float:
     of 1.0, so two related domains together contribute 1.0 total — one independent source, not
     two — per "current logs and previous container logs may be related evidence, not fully
     independent."
+
+    2026-08-27: UNKNOWN now contributes 0.0. classify_tool's own docstring
+    already promised it was "never silently counted as a fresh independent
+    domain", but this function returned 1.0 for it -- so evidence from a tool the
+    agent cannot even classify bought a full independent corroborating source,
+    worth 0.5 of the independent_corroboration component on its own. UNKNOWN
+    means "we do not know what this evidence is"; that cannot corroborate
+    anything. Same class as _ground_claim's empty/empty branch: code
+    contradicting its own stated contract in the generous direction.
     """
+    if domain is EvidenceDomain.UNKNOWN:
+        return 0.0
     for group in RELATED_DOMAIN_GROUPS:
         if domain in group and len(group & present_domains) > 1:
             return 0.5

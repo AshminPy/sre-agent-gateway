@@ -13,10 +13,13 @@ from agent.llm.base import (
     ALL_CAPABILITIES,
     CAPABILITY_STRUCTURED_OUTPUT,
     CAPABILITY_TOOL_CALLING,
+    LLM_JSON_PARSE_FAILED_KEY,
     LLMClient,
     LLMUsage,
     validate_capabilities,
 )
+
+
 from agent.llm.registry import get_client
 
 _client: LLMClient = get_client()
@@ -51,10 +54,24 @@ def reset_session() -> None:
     _client.reset_session()
 
 
+def llm_json_failed(result: dict) -> str:
+    """Returns the failure reason when llm_json() could not parse the model's
+    response, or "" when the result is a real parse.
+
+    Use this anywhere a caller would otherwise mistake an unparseable model
+    response for a legitimately empty one. See LLM_JSON_PARSE_FAILED_KEY.
+    """
+    if not isinstance(result, dict):
+        return "llm_json returned a non-dict result"
+    return str(result.get(LLM_JSON_PARSE_FAILED_KEY) or "")
+
+
 __all__ = [
     "ALL_CAPABILITIES",
     "CAPABILITY_STRUCTURED_OUTPUT",
     "CAPABILITY_TOOL_CALLING",
+    "LLM_JSON_PARSE_FAILED_KEY",
+    "llm_json_failed",
     "LLMClient",
     "LLMUsage",
     "MODEL",

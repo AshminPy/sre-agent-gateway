@@ -341,7 +341,33 @@ def rca_builder(state: AgentState) -> dict:
     evidence_store  = state.get("evidence_store", {})
     incident_type   = ctx.get("incident_type", "Unknown")
 
-    no_evidence = len(evidence_ids) == 0
+    # 2026-08-27: was `len(evidence_ids) == 0`, which counted evidence SLOTS
+    # rather than usable evidence. A FAILED tool call still gets an ev_id and a
+    # store entry (evidence_extractor's error path writes ok=False with empty
+    # key_facts), so a run where every single tool call failed still produced
+    # evidence_ids=["ev_001","ev_002","ev_003"] -> no_evidence=False -> this
+    # safety gate never fired -> the LLM was asked to write a root cause from
+    # three failure records.
+    #
+    # Fixing the Model Armor bug made this MORE reachable, not less: blocked
+    # calls now correctly become ok=False failures, which is exactly the shape
+    # that fills slots without carrying data.
+    #
+    # scorer.py's _evidence_domains_present already applies this same
+    # `if not ev.get("ok", True): continue` filter (issue #91, so failed calls
+    # can't count toward required_evidence_coverage). This gate was simply never
+    # given the same treatment -- an inconsistency, not a deliberate difference.
+    usable_evidence_ids = [
+        ev_id for ev_id in evidence_ids
+        if evidence_store.get(ev_id, {}).get("ok", True)
+    ]
+    no_evidence = len(usable_evidence_ids) == 0
+    if evidence_ids and no_evidence:
+        log.error(
+            "rca_builder: %d evidence slot(s) exist but ALL are failed tool calls "
+            "(run_id=%s) -- treating as no evidence. No root cause can be grounded.",
+            len(evidence_ids), state["run_id"],
+        )
 
     # Lazy GCS re-read for thin evidence. Previously gated on confidence_band=='escalate',
     # which didn't exist yet at this point in the old design — now gated on the deterministic
@@ -377,15 +403,35 @@ def rca_builder(state: AgentState) -> dict:
 
     memory_ctx = state.get("incident_envelope", {}).get("memory_context", "")
 
+    # 2026-08-27: a failed/unconfigured Memory Bank recall used to arrive here as
+    # "" and be rendered to the model as "No past investigations on record." --
+    # an assertion that could lead it to reason "this is a novel incident" with
+    # nothing backing that. Tell the model the truth: unknown, not none.
+    # Local import beside its use (the auto-formatter strips distant imports).
+    from agent.main import MEMORY_RECALL_UNAVAILABLE
+    if memory_ctx == MEMORY_RECALL_UNAVAILABLE:
+        memory_ctx_for_prompt = (
+            "Prior investigations could NOT be checked — the memory store was "
+            "unreachable. Do not assume this incident is novel or recurring."
+        )
+    else:
+        memory_ctx_for_prompt = memory_ctx or "No past investigations on record."
+
     result, usage = llm_json(
         RCA_BUILDER_SYSTEM,
         RCA_BUILDER_USER.format(
             query=state["incident_envelope"].get("user_query", ""),
             incident_type=incident_type,
             theory=theory,
-            memory_context=memory_ctx or "No past investigations on record.",
+            memory_context=memory_ctx_for_prompt,
             evidence_digest=evidence_digest_str,
-            evidence_ids=json.dumps(evidence_ids),
+            # 2026-08-27: was json.dumps(evidence_ids) — the FULL list, which
+            # offered the model failed/unextractable evidence IDs as things it
+            # could cite. _ground_claim now scores such a citation 0.0, so the
+            # damage is contained, but the cleaner fix is not to offer them at
+            # all: the prompt says "Every claim MUST reference a specific
+            # evidence_id", and it should only ever be handed IDs that carry data.
+            evidence_ids=json.dumps(usable_evidence_ids),
             cluster=ctx.get("cluster_name", ""),
             region=ctx.get("cluster_region", ""),
             project=ctx.get("project_id", ""),
@@ -394,19 +440,74 @@ def rca_builder(state: AgentState) -> dict:
     )
     log_node_tokens("rca_builder", state["run_id"], inv.get("current_step", 0), usage)
 
-    # Final safety gate: no evidence means no claims can be grounded, no auto-approval.
+    # 2026-08-27: the model's response could not be parsed as JSON at all. This
+    # used to arrive as a bare {} and sail straight through: likely_root_cause
+    # became "", claims fell back to a single empty legacy claim, and the report
+    # rendered as a confident-looking blank RCA with no indication the model call
+    # had failed. Report the failure instead of dressing it up as an answer.
+    # Local import beside its use -- the auto-formatter strips a top-level import
+    # whose usage lands in a separate edit.
+    from agent.llm import llm_json_failed
+    llm_failure = llm_json_failed(result)
+    if llm_failure:
+        log.error(
+            "rca_builder: llm_json could not parse the model response (run_id=%s): %s",
+            state["run_id"], llm_failure,
+        )
+        result = {
+            "likely_root_cause": (
+                "The model's response could not be parsed, so no root cause was produced."
+            ),
+            "claims": [],
+            "alternative_hypotheses_considered": [],
+            "evidence_gaps": [
+                f"RCA generation failed: {llm_failure}.",
+                "This is a model/parsing failure, not an evidence failure — "
+                "the collected evidence may be fine.",
+            ],
+            "reasoning_trace": [
+                "The RCA model call returned a response that was not valid JSON.",
+                "No claim can be made from an unparsed response.",
+            ],
+        }
+
+    # Final safety gate: no USABLE evidence means no claims can be grounded, no
+    # auto-approval. Two distinct ways to get here, reported distinctly -- the
+    # old wording ("No evidence IDs were created") was simply false in the
+    # all-failed case and would send the reader looking in the wrong place.
     if no_evidence:
-        result["likely_root_cause"] = "No evidence was extracted, so root cause cannot be determined."
+        all_calls_failed = bool(evidence_ids)
+        if all_calls_failed:
+            failed_summary = "; ".join(
+                f"{ev_id}: {evidence_store.get(ev_id, {}).get('summary', 'unknown failure')[:120]}"
+                for ev_id in evidence_ids
+            )
+            result["likely_root_cause"] = (
+                "Every tool call failed, so no evidence was retrieved and the root cause "
+                "cannot be determined."
+            )
+            result["evidence_gaps"] = [
+                f"All {len(evidence_ids)} tool call(s) failed — zero usable evidence.",
+                f"Failures: {failed_summary}",
+                "Fix the failing tool calls before trusting any RCA output.",
+            ]
+            result["reasoning_trace"] = [
+                "Evidence slots exist, but every one records a failed tool call.",
+                "A failed call carries no data, so nothing here can ground a claim.",
+                "Reporting the tool failures instead of inferring a cause from them.",
+            ]
+        else:
+            result["likely_root_cause"] = "No evidence was extracted, so root cause cannot be determined."
+            result["evidence_gaps"] = [
+                "No evidence IDs were created from tool output.",
+                "Fix evidence extraction/state handoff before trusting RCA output.",
+            ]
+            result["reasoning_trace"] = [
+                "The agent cannot prove a root cause without evidence IDs.",
+                "Successful tool calls alone are not enough; their outputs must be extracted and cited.",
+            ]
         result["claims"] = []
         result["alternative_hypotheses_considered"] = []
-        result["evidence_gaps"] = [
-            "No evidence IDs were created from tool output.",
-            "Fix evidence extraction/state handoff before trusting RCA output.",
-        ]
-        result["reasoning_trace"] = [
-            "The agent cannot prove a root cause without evidence IDs.",
-            "Successful tool calls alone are not enough; their outputs must be extracted and cited.",
-        ]
 
     # ── Build claims, hypotheses, contradictions — LLM proposes, code grounds/scores ──
     claims          = build_claims(result, evidence_ids, evidence_store)

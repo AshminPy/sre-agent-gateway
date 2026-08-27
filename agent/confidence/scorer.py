@@ -87,6 +87,23 @@ def score_investigation_completeness(
         coverage = 1.0
     components["required_evidence_coverage"] = coverage
 
+    # 2026-08-27: evidence_domains.classify_tool's docstring promised unmapped
+    # tools are "logged as a gap by the scorer" -- nothing here ever did that, so
+    # unclassifiable evidence was invisible in the reported gaps. It now shows up,
+    # which also makes a missing _TOOL_DOMAIN table entry findable instead of
+    # silently degrading every score that touches it.
+    from agent.confidence.evidence_domains import EvidenceDomain
+    unknown_ids = [
+        ev_id for ev_id, d in _evidence_domains_present(evidence_store, tool_history).items()
+        if d is EvidenceDomain.UNKNOWN
+    ]
+    if unknown_ids:
+        gaps.append(
+            f"{len(unknown_ids)} evidence item(s) came from an unclassifiable tool "
+            f"({', '.join(sorted(unknown_ids))}) — they contribute no corroboration; "
+            "check the _TOOL_DOMAIN table in evidence_domains.py"
+        )
+
     # freshness: how long ago was each piece of evidence actually collected (issue #68 --
     # evidence_extractor.py now stamps a real collected_at per item; this used to be a single
     # investigation-start proxy applied uniformly to all evidence, which couldn't tell fresh

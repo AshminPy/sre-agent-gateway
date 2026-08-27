@@ -130,16 +130,49 @@ def evidence_extractor(state: AgentState) -> dict:
     )
     log_node_tokens("evidence_extractor", state["run_id"], state["investigation"].get("current_step", 0), usage)
 
+    # 2026-08-27: extraction can fail while the TOOL CALL succeeded -- llm_json
+    # could not parse the model's response, or the model returned no summary.
+    # This fallback used to write a plausible placeholder ("Results from
+    # describe_k8s_resource") with key_facts=[] and, critically, ok=True.
+    #
+    # An ok=True entry with no facts is indistinguishable from a successful
+    # extraction to everything downstream, and it INFLATES the scores. Measured
+    # on a real ImagePullBackOff shape: required_evidence_coverage 0.0 -> 0.5,
+    # overall completeness 0.35 -> 0.55, and one genuinely missing evidence
+    # domain (kubernetes_status) vanished from the reported gaps. That is the
+    # same "high completeness, no real evidence" pattern as the Model Armor
+    # incident.
+    #
+    # It also defeated the rca_builder no_evidence gate, which filters on `ok`.
+    #
+    # The raw tool output is NOT lost -- it is already written to GCS at
+    # raw_ref, so rca_builder's thin-evidence enrichment path can still re-read
+    # it. Only the EXTRACTION is degraded, and it is now labelled as such.
+    from agent.llm import llm_json_failed
+    extraction_failure = llm_json_failed(extracted)
     if not extracted or not extracted.get("summary"):
+        extraction_failure = extraction_failure or "extractor returned no summary"
+        log.error(
+            "evidence_extractor: EXTRACTION FAILED for %s (tool=%s) -- %s. The raw "
+            "output is still at %s, but no facts were extracted, so this entry is "
+            "marked unusable rather than counted as evidence.",
+            ev_id, tool, extraction_failure, raw_ref,
+        )
         extracted = {
             "resource_type": "pod",
             "resource_id": f"{ctx.get('namespace', '')}/{prefer_pod}",
-            "summary": f"Results from {tool}",
+            "summary": f"EXTRACTION FAILED for {tool} ({extraction_failure}) — raw output at {raw_ref}",
             "key_facts": [],
         }
+    else:
+        extraction_failure = ""
 
     ev_entry = {
-        "ok": True,
+        # ok=False when extraction failed, so every existing `ok` filter treats
+        # this correctly: scorer's domain coverage (issue #91), claim grounding,
+        # and rca_builder's no-evidence gate.
+        "ok": not extraction_failure,
+        "extraction_failed": bool(extraction_failure),
         "tool": tool,
         "mcp_source": mcp_source,
         "cluster": ctx.get("cluster_name", ""),
@@ -162,6 +195,19 @@ def evidence_extractor(state: AgentState) -> dict:
         raw_ref,
     )
 
+    node_errors: list = []
+    if gcs_failed:
+        node_errors.append(
+            f"GCS write failed for {ev_id} — raw audit trail missing, requires human review"
+        )
+    if extraction_failure:
+        # Surfaced in state so the final report shows the gap. A log line alone
+        # is invisible to whoever reads the RCA.
+        node_errors.append(
+            f"evidence extraction failed for {ev_id} (tool={tool}): {extraction_failure} — "
+            f"raw output preserved at {raw_ref}"
+        )
+
     from agent.llm.accounting import accumulate_usage
 
     return {
@@ -169,5 +215,8 @@ def evidence_extractor(state: AgentState) -> dict:
         "evidence_store": {ev_id: ev_entry},
         "latest_tool_result": None,
         "investigation": accumulate_usage(state["investigation"], usage),
-        **({"errors": [f"GCS write failed for {ev_id} — raw audit trail missing, requires human review"]} if gcs_failed else {}),
+        # Both failures can happen in the same call, so they are collected into a
+        # single list. Two separate **{"errors": [...]} spreads in one dict
+        # literal would silently drop the first -- a later key wins.
+        **({"errors": node_errors} if node_errors else {}),
     }

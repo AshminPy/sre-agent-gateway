@@ -287,8 +287,19 @@ class GeminiAdapter(LLMClient):
             # same content-capture concern as the Trace flag above, different system.
             # Length-only is still useful for diagnosing "empty response" vs "malformed
             # response" without capturing the actual content.
-            log.warning("llm_json: no JSON object found (response length=%d)", len(text))
-            return {}, usage
+            #
+            # 2026-08-27: this returned a bare {}, which no caller could tell apart
+            # from a legitimately empty result -- the failure was completely silent.
+            # Imported locally, immediately beside its use, because the repo's
+            # auto-formatter strips a top-level import whose usage lands in a later
+            # edit.
+            from agent.llm.base import LLM_JSON_PARSE_FAILED_KEY
+            log.error(
+                "llm_json: no JSON object found in model response (length=%d) -- "
+                "returning a marked-failed result so callers can detect this",
+                len(text),
+            )
+            return {LLM_JSON_PARSE_FAILED_KEY: "no JSON object in model response"}, usage
 
         depth, end = 0, start
         for i in range(start, len(text)):
@@ -309,11 +320,17 @@ class GeminiAdapter(LLMClient):
         except json.JSONDecodeError as exc:
             # issue #76: same fix as above -- length + parser error position, not the
             # actual candidate text.
-            log.warning(
-                "llm_json: repair failed (candidate length=%d, error at pos %d): %s",
+            # 2026-08-27: same silent-{} problem as the branch above; marked so the
+            # failure is detectable. Local import for the same formatter reason.
+            from agent.llm.base import LLM_JSON_PARSE_FAILED_KEY
+            log.error(
+                "llm_json: JSON repair failed (candidate length=%d, error at pos %d): %s "
+                "-- returning a marked-failed result so callers can detect this",
                 len(candidate), getattr(exc, "pos", -1), exc.msg,
             )
-            return {}, usage
+            return {
+                LLM_JSON_PARSE_FAILED_KEY: f"malformed JSON from model: {exc.msg}"
+            }, usage
 
     def get_session_usage(self) -> dict:
         return {

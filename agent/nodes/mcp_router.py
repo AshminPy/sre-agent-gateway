@@ -106,7 +106,12 @@ def mcp_router(state: AgentState) -> dict:
     pod             = ctx.get("pod", "")
     task_plan       = state["investigation"].get("task_plan", "")
     primary_gap     = state["investigation"].get("primary_gap", "")
-    evidence_count  = len(state.get("evidence_ids", []))
+    # 2026-08-27: was len(evidence_ids), which counts SLOTS. Failed calls and
+    # failed extractions fill slots, so this over-stated how much evidence the
+    # agent held -- and it goes straight into the router's prompt, telling the
+    # model it has evidence it does not have.
+    from agent.state import usable_evidence_ids
+    evidence_count  = len(usable_evidence_ids(state))
 
     # ── Phase 1: deterministic MCP source selection (no LLM tokens) ─
     # GKE clusters → gke_remote_mcp first. On-prem → k8s_mcp first.
@@ -166,6 +171,35 @@ def mcp_router(state: AgentState) -> dict:
     log_node_tokens("mcp_router", state["run_id"], step, usage)
 
     tool = action.get("tool", "") if action else ""
+
+    # 2026-08-27: these were one branch, all logged as a benign
+    # "mcp_router → done" at INFO, and all producing
+    # loop_exit_reason="tool_signaled_done". Only ONE of them is the router
+    # actually deciding the investigation is complete. The other two are
+    # failures -- an unparseable model response, or a response with no `tool`
+    # key -- that silently ended the investigation while the final report
+    # claimed a normal, complete run.
+    #
+    # Local import beside its use; the auto-formatter strips a top-level import
+    # whose usage lands in a separate edit.
+    from agent.llm import llm_json_failed
+    router_failure = llm_json_failed(action)
+    if router_failure or (action and not tool):
+        reason = router_failure or "model response contained no 'tool' key"
+        log.error(
+            "mcp_router: CANNOT PLAN A TOOL CALL -- %s (mcp_source=%s step=%d "
+            "evidence_count=%d). Ending the investigation as FAILED rather than "
+            "reporting it as a normal completion.",
+            reason, selected_mcp, step, evidence_count,
+        )
+        return {
+            "current_action": {"tool": "done", "arguments": {}, "mcp_source": "none"},
+            "errors": [f"mcp_router could not plan a tool call: {reason}"],
+            "investigation": {
+                "status": "failed",
+                "loop_exit_reason": "router_failed",
+            },
+        }
 
     if not action or not tool or tool == "done":
         log.info("mcp_router → done (evidence_count=%d)", evidence_count)

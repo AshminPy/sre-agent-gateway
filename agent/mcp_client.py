@@ -16,7 +16,7 @@ import json
 import logging
 import os
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import httpx
 import google.auth
@@ -562,7 +562,58 @@ def call_tool(
             }
 
         # Parse SSE or direct JSON response
-        content = _parse_response(resp.text)
+        content, protocol_error, is_tool_error = _parse_response(resp.text)
+
+        # MCP protocol error (unknown tool, invalid arguments, server error).
+        # Surface the server's own message instead of the old generic
+        # "Empty response" -- see _rpc_error_message. Fallback is still attempted
+        # first, since a different MCP source may accept the same call.
+        if protocol_error is not None:
+            log.warning(
+                "call_tool: %s tool=%s mcp_source=%s cluster=%s",
+                protocol_error, tool_name, mcp_source, cluster_name,
+            )
+            fallback_result = _try_custom_mcp_fallback(
+                is_gke_remote, cluster_info, tool_name, namespace, pod_name, run_id, cluster_name,
+            )
+            # A fallback that SUCCEEDS is the answer. A fallback that FAILS must not
+            # overwrite the original diagnostic with its own: caught by this fix's own
+            # test, where a real "-32602 Invalid arguments" was replaced by the far less
+            # useful "No URL for k8s_mcp" -- losing the message all over again, which is
+            # the exact thing this change exists to prevent. Keep both, primary first.
+            if fallback_result is not None:
+                if fallback_result.get("ok"):
+                    return fallback_result
+                fallback_result["error"] = (
+                    f"{protocol_error} (fallback also failed: "
+                    f"{fallback_result.get('error', 'unknown')})"
+                )
+                return fallback_result
+            return {
+                "ok": False, "error": protocol_error,
+                "tool": tool_name, "mcp_source": mcp_source, "duration_s": duration,
+            }
+
+        # MCP tool execution error: `isError: true`. The body is an error message
+        # sitting exactly where real data normally sits. This is a FAILED call --
+        # returning ok=True here is what let an error string become evidence.
+        # Deliberately checked BEFORE the NotFound/broadened-retry branch below:
+        # that retry exists for a name-scoped miss, not for a tool that reported
+        # its own failure, and retrying an isError result only burns latency.
+        if is_tool_error:
+            detail = content if isinstance(content, str) else json.dumps(content)
+            log.error(
+                "call_tool: MCP_TOOL_ERROR tool=%s mcp_source=%s cluster=%s -- server set "
+                "isError=true; the body is an error message, not the requested data. "
+                "Treating as a failed call so it cannot become evidence.",
+                tool_name, mcp_source, cluster_name,
+            )
+            return {
+                "ok": False,
+                "error": f"MCP_TOOL_ERROR: {detail[:500]}",
+                "tool": tool_name, "mcp_source": mcp_source, "duration_s": duration,
+            }
+
         if content is not None:
             # issue #70: a name-scoped lookup returning NotFound is not proof the
             # resource doesn't exist -- the caller-supplied name hint itself can be
@@ -694,8 +745,62 @@ def _extract_content(result: Dict[str, Any]) -> Optional[Any]:
     return other or None
 
 
-def _parse_response(body: str) -> Optional[Any]:
-    """Parse SSE or direct JSON response from MCP server."""
+def _rpc_error_message(data: Dict[str, Any]) -> Optional[str]:
+    """Extract a JSON-RPC 2.0 protocol error message, if this frame carries one.
+
+    Per the MCP spec's Error Handling section, protocol errors (unknown tool,
+    invalid arguments, server errors) come back as a top-level `error` object
+    INSTEAD of `result`:
+        {"jsonrpc": "2.0", "id": 3,
+         "error": {"code": -32602, "message": "Unknown tool: invalid_tool_name"}}
+
+    Previously call_tool read only `data.get("result", {})`, so an error frame
+    produced an empty dict, then a generic "Empty response". The actual message
+    -- the single most useful line for diagnosing a bad tool call -- was thrown
+    away. Surface it instead.
+    """
+    err = data.get("error")
+    if not isinstance(err, dict):
+        return None
+    code = err.get("code")
+    message = err.get("message") or "unknown JSON-RPC error"
+    return f"MCP_PROTOCOL_ERROR: {message}" + (f" (code {code})" if code is not None else "")
+
+
+def _parse_response(body: str) -> Tuple[Optional[Any], Optional[str], bool]:
+    """Parse an SSE or direct-JSON MCP response.
+
+    Returns (content, protocol_error, is_tool_error):
+      content        -- real tool output, or None if none was found
+      protocol_error -- JSON-RPC error message, or None
+      is_tool_error  -- True when the result carried MCP's `isError: true`
+
+    WHY the two extra return values (2026-08-27): the MCP spec defines TWO
+    distinct failure channels and this function previously honored NEITHER --
+    it returned bare content and dropped the rest of the envelope.
+
+      1. Protocol errors  -> top-level `error` (see _rpc_error_message).
+      2. Tool execution errors -> `result.isError: true`, with the error text
+         delivered in `content` exactly where real data normally sits:
+            {"result": {"content": [{"type": "text",
+                                     "text": "Failed to fetch: rate limit"}],
+                        "isError": true}}
+
+    Channel 2 is the dangerous one, and it is the same failure SHAPE as the
+    Model Armor incident (run_20260826_211251_rlwe): HTTP 200, non-empty body,
+    but the body is an error message rather than the data that was requested.
+    Without reading `isError`, call_tool returned ok=True and that error string
+    became an evidence item the LLM then reasoned over as if it were cluster
+    state. Only the narrow _is_not_found_result() substring check caught any of
+    these; every other tool error -- permission denied, invalid resourceType,
+    upstream rate limit -- passed straight through as a success.
+
+    The spec is explicit that clients must do this: "Clients SHOULD ... Validate
+    tool results before passing to LLM."
+    https://modelcontextprotocol.io/specification/2025-06-18/server/tools
+    """
+    first_protocol_error: Optional[str] = None
+
     # Try SSE first — scan all data: frames, skip empty/notification ones
     for line in body.splitlines():
         if line.startswith("data:"):
@@ -703,22 +808,40 @@ def _parse_response(body: str) -> Optional[Any]:
                 data = json.loads(line[5:].strip())
             except Exception:
                 continue
+            if not isinstance(data, dict):
+                continue
+
+            # Keep the FIRST protocol error seen, but keep scanning: a later
+            # frame may still carry real content, and real content wins.
+            if first_protocol_error is None:
+                first_protocol_error = _rpc_error_message(data)
+
             result = data.get("result", {})
             if not isinstance(result, dict):
                 continue
             content = _extract_content(result)
             if content is not None:
-                return content
+                return content, None, bool(result.get("isError"))
+
+    if first_protocol_error is not None:
+        return None, first_protocol_error, False
 
     # Try direct JSON
     try:
         data = json.loads(body)
     except Exception:
-        return None
+        return None, None, False
+    if not isinstance(data, dict):
+        return None, None, False
+
+    protocol_error = _rpc_error_message(data)
+    if protocol_error is not None:
+        return None, protocol_error, False
+
     result = data.get("result", {})
     if not isinstance(result, dict):
-        return None
-    return _extract_content(result)
+        return None, None, False
+    return _extract_content(result), None, bool(result.get("isError"))
 
 
 def get_source_descriptions() -> str:

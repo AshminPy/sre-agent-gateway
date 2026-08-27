@@ -36,6 +36,13 @@ PROJECT_ID           = os.environ.get("PROJECT_ID", "your-gcp-project-id")
 REGION               = os.environ.get("REGION", "us-central1")
 MEMORY_BANK_RESOURCE = os.environ.get("MEMORY_BANK_RESOURCE", "")  # full resource path of the memory bank agent engine
 MODEL_ARMOR_TEMPLATE = os.environ.get("MODEL_ARMOR_TEMPLATE", "")
+
+# Sentinel distinguishing "prior-incident recall could not run" from "recall ran
+# and found nothing". Both used to be "", so the report asserted "No prior
+# similar incidents found in Memory Bank" even when Memory Bank was unconfigured
+# or had thrown. Never inject this into an LLM prompt as if it were context --
+# _memory_note() and the rca_builder prompt both branch on it explicitly.
+MEMORY_RECALL_UNAVAILABLE = "__memory_recall_unavailable__"
 EVAL_BUCKET          = os.environ.get("EVAL_BUCKET", "")
 
 # Graph is compiled lazily — not at import time
@@ -126,6 +133,7 @@ def _build_rca_report(
     ctx: dict,
     obs_event: dict,
     evidence_ids: list,
+    evidence_store: dict | None = None,
 ) -> str:
     """Structured RCA report for management, incident tickets, and audit trails."""
     from datetime import datetime, timezone
@@ -193,12 +201,21 @@ def _build_rca_report(
         for ref in _re.findall(r"ev_\d+", trace_str):
             ev_descriptions.setdefault(ref, []).append(trace_str)
 
-    memory_ctx  = payload.get("memory_context", "") or ""
-    memory_note = (
-        f"Prior context recalled ({len(memory_ctx)} chars) — agent used past investigations"
-        if memory_ctx
-        else "No prior similar incidents found in Memory Bank"
-    )
+    memory_ctx = payload.get("memory_context", "") or ""
+    # Three distinct states, three distinct lines. "No prior similar incidents
+    # found" is a factual claim about the memory store and is only true when
+    # Memory Bank actually answered.
+    if memory_ctx == MEMORY_RECALL_UNAVAILABLE:
+        memory_note = (
+            "UNKNOWN — Memory Bank could not be reached, so prior incidents were "
+            "NOT checked (this is not the same as 'none found')"
+        )
+    elif memory_ctx:
+        memory_note = (
+            f"Prior context recalled ({len(memory_ctx)} chars) — agent used past investigations"
+        )
+    else:
+        memory_note = "No prior similar incidents found in Memory Bank"
 
     if confidence_band == "AUTO":
         review_note  = "AUTO — no human review required"
@@ -317,7 +334,14 @@ def _build_rca_report(
     # fallback is to say plainly this wasn't independently checked, gated on whether the
     # investigation actually reached a real conclusion (outcome confirmed/probable, backed
     # by real evidence) versus one that didn't (insufficient_evidence/unknown/conflicting).
-    if outcome in ("confirmed", "probable") and evidence_ids:
+    # 2026-08-27: `and evidence_ids` counted SLOTS. The comment above says this
+    # gate means "backed by real evidence", but a run where every tool call
+    # failed still had slots, so the report could claim the investigation
+    # reached a conclusion off the back of failure records. Gate on usable
+    # evidence, matching the stated intent.
+    _store = evidence_store or {}
+    usable_ev = [e for e in evidence_ids if (_store.get(e, {}) or {}).get("ok", True)]
+    if outcome in ("confirmed", "probable") and usable_ev:
         service_status = "Not independently checked — see evidence chain above for pod/service state"
         first_last_seen = "See k8s event timestamps in the evidence above, where collected"
         user_impact = "Not independently assessed — see evidence chain above"
@@ -628,7 +652,10 @@ def _finalize_investigation_result(result: dict, started_at: float, payload: dic
         "run_id":             result.get("run_id", ""),
         "summary":            summary,
         "executive_summary":  _build_executive_summary(summary, inv, ctx),
-        "rca_report":         _build_rca_report(payload, summary, inv, ctx, obs_event, evidence_ids),
+        "rca_report":         _build_rca_report(
+            payload, summary, inv, ctx, obs_event, evidence_ids,
+            result.get("evidence_store", {}) or {},
+        ),
         "working_theory":     result.get("working_theory", ""),
         "errors":             errors,
         "requires_human_review": summary.get("requires_human_review", True),
@@ -716,8 +743,35 @@ def investigate(payload: dict) -> dict:
         return _finalize_investigation_result(result, started_at, payload)
 
     except Exception as exc:
-        log.exception("investigation failed: %s", exc)
-        return {"error": str(exc), "status": "failed"}
+        # 2026-08-27: this returned ONLY {"error": ..., "status": "failed"} --
+        # no run_id, no cluster, no indication of how far the run got. Lived
+        # through exactly that on 2026-08-26: a crash returned
+        # {"error": "'NoneType' object has no attribute 'strip'", "status":
+        # "failed"} and identifying the run meant digging through GCS evidence
+        # and Cloud Logging by timestamp, because the response carried nothing to
+        # correlate on.
+        #
+        # locals() is used deliberately: the crash may have happened BEFORE
+        # `state` was assigned, and an error path must never raise a second
+        # error while reporting the first.
+        _partial = locals().get("state") or locals().get("final_state") or {}
+        _run_id = _partial.get("run_id", "") if isinstance(_partial, dict) else ""
+        log.exception(
+            "investigation FAILED run_id=%s cluster=%s namespace=%s pod=%s: %s",
+            _run_id or "(not yet assigned)", cluster, namespace, pod, exc,
+        )
+        return {
+            "error": str(exc),
+            "error_type": type(exc).__name__,
+            "status": "failed",
+            # Correlation handles, so a crashed run can be found in Cloud Logging
+            # and its partial evidence located in GCS without a timestamp hunt.
+            "run_id": _run_id,
+            "cluster": cluster,
+            "namespace": namespace,
+            "pod": pod,
+            "duration_s": round(time.time() - started_at, 2),
+        }
 
 
 def investigate_stream(payload: dict):
@@ -825,8 +879,35 @@ def investigate_stream(payload: dict):
         return _finalize_investigation_result(final_state, started_at, payload)
 
     except Exception as exc:
-        log.exception("investigation failed: %s", exc)
-        return {"error": str(exc), "status": "failed"}
+        # 2026-08-27: this returned ONLY {"error": ..., "status": "failed"} --
+        # no run_id, no cluster, no indication of how far the run got. Lived
+        # through exactly that on 2026-08-26: a crash returned
+        # {"error": "'NoneType' object has no attribute 'strip'", "status":
+        # "failed"} and identifying the run meant digging through GCS evidence
+        # and Cloud Logging by timestamp, because the response carried nothing to
+        # correlate on.
+        #
+        # locals() is used deliberately: the crash may have happened BEFORE
+        # `state` was assigned, and an error path must never raise a second
+        # error while reporting the first.
+        _partial = locals().get("state") or locals().get("final_state") or {}
+        _run_id = _partial.get("run_id", "") if isinstance(_partial, dict) else ""
+        log.exception(
+            "investigation FAILED run_id=%s cluster=%s namespace=%s pod=%s: %s",
+            _run_id or "(not yet assigned)", cluster, namespace, pod, exc,
+        )
+        return {
+            "error": str(exc),
+            "error_type": type(exc).__name__,
+            "status": "failed",
+            # Correlation handles, so a crashed run can be found in Cloud Logging
+            # and its partial evidence located in GCS without a timestamp hunt.
+            "run_id": _run_id,
+            "cluster": cluster,
+            "namespace": namespace,
+            "pod": pod,
+            "duration_s": round(time.time() - started_at, 2),
+        }
 
 
 class SREAgent:
@@ -1044,14 +1125,26 @@ class SREAgent:
         Also emits a structured recall event to Cloud Logging so recall frequency can be
         tracked per incident_type — high recall count = recurring issue needing a permanent fix.
         """
+        # 2026-08-27: this function had FOUR return paths and THREE of them
+        # returned "" -- not configured, genuinely no memories, and recall
+        # threw. The caller cannot tell them apart, so the report rendered all
+        # three as the positive claim "No prior similar incidents found in
+        # Memory Bank", and the RCA prompt was told "No past investigations on
+        # record." Both are factual assertions about the memory store. Only ONE
+        # of the three justifies them; the other two mean "we could not check".
+        #
+        # MEMORY_RECALL_UNAVAILABLE marks the two failure cases so the caller
+        # can say "could not be checked" instead of inventing a finding.
         if not cls._mb_client or not MEMORY_BANK_RESOURCE:
-            return ""
+            log.info("Memory Bank not configured — prior-incident recall unavailable")
+            return MEMORY_RECALL_UNAVAILABLE
         try:
             memories = list(cls._mb_client.agent_engines.memories.retrieve(
                 name=MEMORY_BANK_RESOURCE,
                 scope={"cluster": cluster, "namespace": namespace},
             ))
             if not memories:
+                # The one honest empty: Memory Bank answered, and had nothing.
                 return ""
 
             recalled = memories[:3]
@@ -1074,8 +1167,18 @@ class SREAgent:
 
             return "Past incidents on this cluster/namespace (validate during investigation):\n" + "\n".join(lines)
         except Exception as exc:
-            log.warning("Memory Bank recall failed (%s) — skipped", exc)
-            return ""
+            # Was: log.warning(... "skipped") and return "" -- indistinguishable
+            # from "Memory Bank answered and had nothing", which the report then
+            # stated as fact. ERROR level: a silently-degraded agent that claims
+            # no prior incidents exist is worse than one that says it could not
+            # check.
+            log.error(
+                "Memory Bank recall FAILED for cluster=%s namespace=%s (%s) -- "
+                "prior-incident context is UNAVAILABLE for this run; it must not "
+                "be reported as 'no prior incidents found'",
+                cluster, namespace, exc,
+            )
+            return MEMORY_RECALL_UNAVAILABLE
 
     @classmethod
     def _save_memory(cls, query: str, root_cause: str, cluster: str, namespace: str) -> None:
