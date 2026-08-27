@@ -51,11 +51,24 @@ def task_evaluator(state: AgentState) -> dict:
     completeness = _completeness_update(state)
 
     # Safety gate: never allow the loop to think it's done with zero evidence.
-    if not state.get("evidence_ids"):
+    # 2026-08-27: was `if not state.get("evidence_ids")`, which counted SLOTS.
+    # A failed tool call and a failed extraction each still append an ev_id, so
+    # on a run where everything failed this gate did not fire and the evaluator
+    # went on to ask the model "is this enough evidence?" about a set of failure
+    # records. See agent/state.py's usable_evidence_ids for the full list of
+    # call sites that had the same bug.
+    from agent.state import usable_evidence_ids
+    usable = usable_evidence_ids(state)
+    if not usable:
         tools_used = [h.get("tool") for h in state.get("tool_history", [])]
         gap = "no evidence extracted from tool output"
         if tools_used:
             gap = f"tool calls ran but no evidence was extracted: {', '.join(tools_used)}"
+        if state.get("evidence_ids"):
+            gap = (
+                f"all {len(state['evidence_ids'])} tool call(s)/extraction(s) failed — "
+                f"zero usable evidence: {', '.join(t for t in tools_used if t)}"
+            )
         log.warning("task_evaluator no evidence found; forcing enough_evidence=False")
         return {
             "evaluation_ids": [eval_id],
@@ -68,7 +81,7 @@ def task_evaluator(state: AgentState) -> dict:
         }
 
     # Force continue until minimum steps done
-    if step < min_steps and state["evidence_ids"]:
+    if step < min_steps and usable:
         log.info("task_evaluator forcing continue — %d/%d min steps", step, min_steps)
         return {
             "evaluation_ids": [eval_id],

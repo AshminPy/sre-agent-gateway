@@ -425,7 +425,13 @@ def rca_builder(state: AgentState) -> dict:
             theory=theory,
             memory_context=memory_ctx_for_prompt,
             evidence_digest=evidence_digest_str,
-            evidence_ids=json.dumps(evidence_ids),
+            # 2026-08-27: was json.dumps(evidence_ids) — the FULL list, which
+            # offered the model failed/unextractable evidence IDs as things it
+            # could cite. _ground_claim now scores such a citation 0.0, so the
+            # damage is contained, but the cleaner fix is not to offer them at
+            # all: the prompt says "Every claim MUST reference a specific
+            # evidence_id", and it should only ever be handed IDs that carry data.
+            evidence_ids=json.dumps(usable_evidence_ids),
             cluster=ctx.get("cluster_name", ""),
             region=ctx.get("cluster_region", ""),
             project=ctx.get("project_id", ""),

@@ -34,7 +34,11 @@ class Claim:
     supporting_evidence_ids: list = field(default_factory=list)
     contradicting_evidence_ids: list = field(default_factory=list)
     support_strength: float = 0.0
-    grounding_status: str = "ungrounded"  # grounded | weak_overlap | phantom_evidence | no_overlap | ungrounded
+    # grounded | weak_overlap | phantom_evidence | no_overlap | ungrounded
+    # | failed_evidence_only | empty_evidence | empty_claim   (added 2026-08-27)
+    # Defaults fail CLOSED (0.0 / "ungrounded") — a Claim that is never grounded
+    # contributes nothing, rather than starting from credit it has not earned.
+    grounding_status: str = "ungrounded"
 
     def to_dict(self) -> dict:
         return {

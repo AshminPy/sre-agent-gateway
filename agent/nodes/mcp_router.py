@@ -106,7 +106,12 @@ def mcp_router(state: AgentState) -> dict:
     pod             = ctx.get("pod", "")
     task_plan       = state["investigation"].get("task_plan", "")
     primary_gap     = state["investigation"].get("primary_gap", "")
-    evidence_count  = len(state.get("evidence_ids", []))
+    # 2026-08-27: was len(evidence_ids), which counts SLOTS. Failed calls and
+    # failed extractions fill slots, so this over-stated how much evidence the
+    # agent held -- and it goes straight into the router's prompt, telling the
+    # model it has evidence it does not have.
+    from agent.state import usable_evidence_ids
+    evidence_count  = len(usable_evidence_ids(state))
 
     # ── Phase 1: deterministic MCP source selection (no LLM tokens) ─
     # GKE clusters → gke_remote_mcp first. On-prem → k8s_mcp first.

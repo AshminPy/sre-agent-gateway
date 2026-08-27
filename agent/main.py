@@ -133,6 +133,7 @@ def _build_rca_report(
     ctx: dict,
     obs_event: dict,
     evidence_ids: list,
+    evidence_store: dict | None = None,
 ) -> str:
     """Structured RCA report for management, incident tickets, and audit trails."""
     from datetime import datetime, timezone
@@ -333,7 +334,14 @@ def _build_rca_report(
     # fallback is to say plainly this wasn't independently checked, gated on whether the
     # investigation actually reached a real conclusion (outcome confirmed/probable, backed
     # by real evidence) versus one that didn't (insufficient_evidence/unknown/conflicting).
-    if outcome in ("confirmed", "probable") and evidence_ids:
+    # 2026-08-27: `and evidence_ids` counted SLOTS. The comment above says this
+    # gate means "backed by real evidence", but a run where every tool call
+    # failed still had slots, so the report could claim the investigation
+    # reached a conclusion off the back of failure records. Gate on usable
+    # evidence, matching the stated intent.
+    _store = evidence_store or {}
+    usable_ev = [e for e in evidence_ids if (_store.get(e, {}) or {}).get("ok", True)]
+    if outcome in ("confirmed", "probable") and usable_ev:
         service_status = "Not independently checked — see evidence chain above for pod/service state"
         first_last_seen = "See k8s event timestamps in the evidence above, where collected"
         user_impact = "Not independently assessed — see evidence chain above"
@@ -644,7 +652,10 @@ def _finalize_investigation_result(result: dict, started_at: float, payload: dic
         "run_id":             result.get("run_id", ""),
         "summary":            summary,
         "executive_summary":  _build_executive_summary(summary, inv, ctx),
-        "rca_report":         _build_rca_report(payload, summary, inv, ctx, obs_event, evidence_ids),
+        "rca_report":         _build_rca_report(
+            payload, summary, inv, ctx, obs_event, evidence_ids,
+            result.get("evidence_store", {}) or {},
+        ),
         "working_theory":     result.get("working_theory", ""),
         "errors":             errors,
         "requires_human_review": summary.get("requires_human_review", True),

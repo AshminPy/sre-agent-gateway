@@ -137,3 +137,34 @@ def get_initial_state(incident_envelope: Dict[str, Any]) -> AgentState:
         "working_theory":     "",
         "final_summary":      None,
     }
+
+
+def usable_evidence_ids(state: dict) -> list:
+    """Evidence IDs that actually carry data — the ONLY correct way to ask
+    "does this investigation have evidence?".
+
+    2026-08-27. `evidence_ids` counts SLOTS, not evidence. evidence_extractor
+    appends an ev_id for a FAILED tool call and for a FAILED extraction too, so
+    `if state["evidence_ids"]` is true even when every single call failed and
+    nothing was retrieved. Several decision points were written that way and all
+    of them silently passed on a run with zero real evidence:
+
+        rca_builder      no-evidence safety gate  (would write an RCA from failures)
+        task_evaluator   zero-evidence safety gate (would ask "is this enough?")
+        task_evaluator   min-steps gate
+        mcp_router       evidence_count in the model's prompt (over-stated)
+        report renderer  Evidence section + impact-assessment gating
+
+    scorer.py already had the right idea for domain coverage (issue #91's
+    `if not ev.get("ok", True): continue`); this makes that one definition
+    reusable instead of re-derived, so the next new call site cannot get it
+    wrong by writing the obvious-but-incorrect `if evidence_ids:`.
+
+    An entry with no explicit `ok` is treated as usable, matching issue #91 --
+    absence of the flag means "written before the flag existed", not "failed".
+    """
+    store = state.get("evidence_store", {}) or {}
+    return [
+        ev_id for ev_id in (state.get("evidence_ids", []) or [])
+        if store.get(ev_id, {}).get("ok", True)
+    ]
