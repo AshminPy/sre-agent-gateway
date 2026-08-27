@@ -27,8 +27,14 @@ Be specific about what fact is missing and why it matters.
 Respond ONLY with valid JSON."""
 
 TASK_PLANNER_USER = """\
+Original incident report: {user_query}
 Incident type: {incident_type}
 Namespace: {namespace}  Pod: {pod}
+
+If Pod is blank, the incident report above may still name a specific resource
+(a Service, Deployment, or other named object) — read it before assuming the
+target is unknown. Do not plan a broad, unscoped investigation when a specific
+resource is already named in the report.
 
 Past investigation context from Memory Bank — read carefully before using:
 - This is a HINT only. The agent still runs a full live investigation regardless.
@@ -86,6 +92,14 @@ General tool guidance (NOT a fixed order):
 - Logs show config or image error → describe/get confirms resource state
 - All gaps filled → return done
 
+SCOPING — do this before picking arguments, every call:
+- If the original incident report or Pod names a specific resource, that
+  resource's name MUST go in the tool's name/pod_name argument. Never call a
+  broad, unscoped tool (e.g. events with no name) when a specific target is
+  already known — an unscoped call in a busy namespace returns evidence about
+  OTHER unrelated incidents, not this one, and the investigation must not
+  follow whatever looks loudest in that unrelated noise.
+
 HARD RULES:
 1. Collect at least 2 evidence items before returning done
    - If evidence_count < 2: always pick a tool, never return done
@@ -97,6 +111,7 @@ HARD RULES:
 Respond ONLY with valid JSON."""
 
 MCP_ROUTER_PHASE2_USER = """\
+Original incident report: {user_query}
 MCP source: {mcp_source}
 Incident type: {incident_type}
 Namespace: {namespace}  Pod: {pod}
