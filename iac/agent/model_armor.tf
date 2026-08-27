@@ -158,13 +158,58 @@ resource "google_model_armor_floorsetting" "mcp" {
   # (catches a short prompt, misses the same payload in a longer one) and has
   # not been block-tested specifically; SDP has not been block-tested at all.
   # Blocking is now live for every filter, not just the one tested.
+  #
+  # ── 2026-08-26: REVERTED TO INSPECT-ONLY. The caveat above came true. ──
+  #
+  # The pi_and_jailbreak filter false-positived twice on ordinary SRE content,
+  # both confirmed in SanitizeOperationLogEntry with every other filter
+  # returning NO_MATCH_FOUND:
+  #
+  #   21:13:14  SANITIZE_MODEL_RESPONSE  MATCH_FOUND  MEDIUM_AND_ABOVE
+  #       A describe_k8s_resource response -- an ordinary pod spec. The real
+  #       body was discarded and replaced with Model Armor's notice in-band
+  #       over HTTP 200. The agent then had no pod spec, and fabricated an
+  #       image name, an error string and a root cause. Run
+  #       run_20260826_211251_rlwe. See PR #199 for the code fix.
+  #
+  #   21:48:11  SANITIZE_USER_PROMPT     MATCH_FOUND  MEDIUM_AND_ABOVE
+  #       The agent's OWN static system prompt: "You are an SRE evidence
+  #       analyst. Extract the most investigation-relevant facts from tool
+  #       output. Focus on: failures, errors, restart counts, exit codes, OOM
+  #       kills, image pull errors, scheduling failures, warning events."
+  #       Nothing malicious in it. Blocking it left Gemini with no response
+  #       text and crashed the run.
+  #
+  # Google's own guidance is to start with inspect-only, read the logs, then
+  # enable blocking once the false-positive rate is known:
+  # https://docs.cloud.google.com/model-armor/configure-floor-settings
+  # We went straight to blocking on 2026-08-25 without that measurement step.
+  # This restores the missing step -- detection and Cloud Logging stay fully
+  # on, nothing is discarded or rewritten.
+  #
+  # BEFORE RE-ENABLING inspect_and_block, all three must hold:
+  #   1. A week of MATCH_FOUND entries reviewed with zero false positives on
+  #      real SRE traffic (k8s specs, events, logs, and the agent's own
+  #      prompts).
+  #   2. pi_and_jailbreak block-tested specifically, with a real payload.
+  #   3. SDP block-tested at all -- still never done.
   google_mcp_server_floor_setting {
-    inspect_and_block    = true
+    inspect_and_block    = false
     enable_cloud_logging = true
   }
 
+  # Same revert, same reason. This is the one that blocked the agent's own
+  # evidence-analyst system prompt at 21:48:11 and crashed the run -- the
+  # AI_PLATFORM integration covers the model's prompts and responses, so a
+  # false positive here is fatal rather than merely lossy.
+  #
+  # These two blocks are independent knobs and could be set differently, but
+  # both filters that misfired were pi_and_jailbreak at MEDIUM_AND_ABOVE, and
+  # both directions carry ordinary SRE text. Blocking one and not the other
+  # would only move the failure. Re-enable both together, under the same three
+  # conditions listed above.
   ai_platform_floor_setting {
-    inspect_and_block    = true
+    inspect_and_block    = false
     enable_cloud_logging = true
   }
 

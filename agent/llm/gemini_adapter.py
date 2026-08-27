@@ -191,6 +191,24 @@ class GeminiAdapter(LLMClient):
 
                 self._emit_gen_ai_span(usage, max_tokens, span_start_ns, span_end_ns)
 
+                # response.text is None when the model returned no text part at
+                # all. Real cause seen in production 2026-08-26: Model Armor's
+                # AI_PLATFORM floor setting was running inspect_and_block=true and
+                # its pi_and_jailbreak filter matched the agent's OWN static
+                # system prompt ("You are an SRE evidence analyst..."). The call
+                # was blocked, Gemini returned no text, and this line raised
+                # "'NoneType' object has no attribute 'strip'" -- an opaque
+                # AttributeError that says nothing about what actually happened.
+                # Fail with a message that names the likely cause instead.
+                if response.text is None:
+                    raise RuntimeError(
+                        "LLM returned no text. The call was most likely blocked before "
+                        "the model could answer -- check "
+                        "modelarmor.googleapis.com/sanitize_operations for a "
+                        "MATCH_FOUND entry at this timestamp. Raising instead of "
+                        "returning an empty string, so no downstream node can mistake "
+                        "a blocked call for a real answer."
+                    )
                 return response.text.strip(), usage
 
             except Exception as e:
