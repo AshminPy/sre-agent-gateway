@@ -32,6 +32,10 @@ def task_planner(state: AgentState) -> dict:
     gaps          = state["investigation"].get("evidence_gaps", [])
     theory        = state.get("working_theory", "none yet")
     memory_ctx    = state.get("incident_envelope", {}).get("memory_context", "")
+    # issue #207 follow-up: the original report is the only place a named target
+    # (e.g. a Service, when Pod is blank) survives past input_normalizer -- without
+    # it here, a blank Pod gives the planner nothing to scope the investigation to.
+    user_query    = state.get("incident_envelope", {}).get("user_query", "")
 
     # 2026-08-27: same fix as rca_builder -- a failed/unconfigured Memory Bank
     # recall arrives as the MEMORY_RECALL_UNAVAILABLE sentinel and must not be
@@ -51,6 +55,7 @@ def task_planner(state: AgentState) -> dict:
     result, usage = llm_json(
         TASK_PLANNER_SYSTEM,
         TASK_PLANNER_USER.format(
+            user_query=user_query or "not provided",
             incident_type=incident_type,
             namespace=namespace,
             pod=pod or "not specified",

@@ -106,6 +106,10 @@ def mcp_router(state: AgentState) -> dict:
     pod             = ctx.get("pod", "")
     task_plan       = state["investigation"].get("task_plan", "")
     primary_gap     = state["investigation"].get("primary_gap", "")
+    # issue #207: without the original report, a blank Pod gave this prompt nothing
+    # to scope tool arguments to -- it defaulted to an unscoped, namespace-wide call
+    # and picked up whatever looked loudest, not necessarily the actual target.
+    user_query      = state.get("incident_envelope", {}).get("user_query", "")
     # 2026-08-27: was len(evidence_ids), which counts SLOTS. Failed calls and
     # failed extractions fill slots, so this over-stated how much evidence the
     # agent held -- and it goes straight into the router's prompt, telling the
@@ -155,6 +159,7 @@ def mcp_router(state: AgentState) -> dict:
             tool_descriptions=get_tools_for_source(selected_mcp),
         ),
         MCP_ROUTER_PHASE2_USER.format(
+            user_query=user_query or "not provided",
             mcp_source=selected_mcp,
             incident_type=incident_type,
             namespace=namespace,
