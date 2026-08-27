@@ -54,12 +54,37 @@ def _ground_claim(claim: Claim, known_evidence_ids: set, evidence_store: dict) -
         claim.support_strength = 0.0
         return
 
+    # 2026-08-27: a FAILED tool call's evidence entry carries no data at all
+    # (evidence_extractor's error path writes ok=False, key_facts=[], and a
+    # "Tool failed: ..." summary). Citing one is citing nothing, so it must be
+    # treated like citing nothing -- not scored against the failure message's
+    # own wording. Before this, a claim citing only failed evidence scored
+    # no_overlap/0.1 purely by accident of that message's vocabulary, and would
+    # have scored higher had the wording happened to overlap the claim.
+    # Same `ok` filter scorer.py already applies for domain coverage (issue #91).
+    cited_usable = {eid for eid in cited if evidence_store.get(eid, {}).get("ok", True)}
+    if not cited_usable:
+        claim.grounding_status = "failed_evidence_only"
+        claim.support_strength = 0.0
+        return
+
     claim_words = _keywords(claim.text)
     facts_words: set = set()
-    for eid in cited:
+    for eid in cited_usable:
         ev = evidence_store.get(eid, {})
         facts_text = " ".join(ev.get("key_facts", []) + [ev.get("summary", "")])
         facts_words |= _keywords(facts_text)
+
+    # 2026-08-27: an evidence item that yields NO keywords cannot support anything.
+    # This used to fall through to the final `else` below and be scored
+    # "grounded" at full strength 1.0 -- the code contradicted its own comment
+    # ("no basis to fully credit either"). Verified: a claim citing an item with
+    # empty key_facts and empty summary returned grounded/1.0. That is the same
+    # absence-treated-as-success pattern as the Model Armor incident.
+    if not facts_words:
+        claim.grounding_status = "empty_evidence"
+        claim.support_strength = 0.0
+        return
 
     overlap = claim_words & facts_words
 
@@ -79,11 +104,14 @@ def _ground_claim(claim: Claim, known_evidence_ids: set, evidence_store: dict) -
         claim.grounding_status = "weak_overlap"
         claim.support_strength = 0.4
     else:
-        # Both keyword sets empty (e.g. very short claim/evidence text) -- no basis to
-        # penalize, but no basis to fully credit either; matches the prior behavior for
-        # this specific empty/empty edge case.
-        claim.grounding_status = "grounded"
-        claim.support_strength = 1.0
+        # Reachable only when the CLAIM yields no keywords (facts_words is
+        # guaranteed non-empty by the empty_evidence guard above) -- an empty or
+        # all-stopword claim text. 2026-08-27: this branch used to award
+        # "grounded" at full strength 1.0, directly contradicting its own comment
+        # ("no basis to fully credit either"). A claim that says nothing cannot
+        # be supported by evidence, so it gets no credit.
+        claim.grounding_status = "empty_claim"
+        claim.support_strength = 0.0
 
 
 def build_claims(

@@ -289,11 +289,28 @@ def test_root_cause_confidence_missing_required_evidence_caps_score():
 
 
 def test_root_cause_confidence_inference_claim_scores_lower_direct_support_than_observed_fact():
-    evidence_store = {"ev_001": make_evidence("ev_001", "describe_pod_detail", key_facts=["x"])}
-    fact_claim = build_claims({"claims": [{"text": "x", "claim_type": "observed_fact",
+    # 2026-08-27: fixture text changed from "x" to real wording. _keywords() only
+    # extracts words of 4+ letters, so "x" produced an EMPTY keyword set on both
+    # the claim and the evidence. That empty/empty case used to be scored
+    # "grounded" at full strength 1.0 -- the bug fixed in _ground_claim -- and
+    # this test depended on that generous default to give both claims non-zero
+    # support before comparing them. Contentless evidence now correctly scores
+    # 0.0, which made both sides 0.0 and the comparison meaningless.
+    #
+    # The property under test is unchanged: an observed_fact claim must score
+    # higher direct_support than a supported_inference claim. It now exercises
+    # that property with evidence that actually has content.
+    claim_text = "pod imagepull-pod entered ImagePullBackOff"
+    evidence_store = {
+        "ev_001": make_evidence(
+            "ev_001", "describe_pod_detail",
+            key_facts=["imagepull-pod ImagePullBackOff manifest not found"],
+        )
+    }
+    fact_claim = build_claims({"claims": [{"text": claim_text, "claim_type": "observed_fact",
                                              "supporting_evidence_ids": ["ev_001"]}]},
                                 ["ev_001"], evidence_store)
-    inference_claim = build_claims({"claims": [{"text": "x", "claim_type": "supported_inference",
+    inference_claim = build_claims({"claims": [{"text": claim_text, "claim_type": "supported_inference",
                                                   "supporting_evidence_ids": ["ev_001"]}]},
                                      ["ev_001"], evidence_store)
     fact_result = _rcc(fact_claim, evidence_store=evidence_store)

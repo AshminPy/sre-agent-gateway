@@ -61,6 +61,19 @@ CAPABILITY_STRUCTURED_OUTPUT = "structured_output"
 
 ALL_CAPABILITIES = frozenset({CAPABILITY_TOOL_CALLING, CAPABILITY_STRUCTURED_OUTPUT})
 
+# 2026-08-27: llm_json() returns {} when the model's response cannot be parsed
+# as JSON at all. That was indistinguishable from "the model legitimately
+# returned an empty object", so a parse failure was invisible: every caller
+# silently fell back to its own defaults and nothing was ever recorded in
+# state["errors"]. Adapters now set this key on that path instead of returning a
+# bare {}.
+#
+# Deliberately additive rather than a signature change: all six call sites read
+# specific keys with defaults (result.get("enough_evidence", False) and
+# friends), so they keep working unchanged while gaining the ability to detect
+# the failure. Callers that care use llm_json_failed() from agent.llm.
+LLM_JSON_PARSE_FAILED_KEY = "__llm_json_parse_failed__"
+
 
 class LLMClient(abc.ABC):
     """Provider adapter contract. One instance per configured LLM_PROFILE."""

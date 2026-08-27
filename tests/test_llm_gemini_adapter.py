@@ -12,6 +12,7 @@ Covers:
 """
 from types import SimpleNamespace
 
+from agent.llm import llm_json_failed
 from agent.llm.gemini_adapter import GeminiAdapter
 
 
@@ -196,11 +197,18 @@ def test_llm_json_no_json_found_logs_length_not_content(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING):
         result, _ = adapter.llm_json("sys", "user")
 
-    assert result == {}
+    # 2026-08-27: was a bare {}, which no caller could tell apart from a
+    # legitimately empty model result -- the parse failure was invisible. Now
+    # marked so it can be detected. The issue #76 privacy guarantees below are
+    # unchanged, and now also cover the marker's own text.
+    assert llm_json_failed(result), "parse failure must be detectable"
+    assert result.get("enough_evidence", False) is False, "callers keep their defaults"
     assert "SENSITIVE" not in caplog.text
     assert "hunter2" not in caplog.text
     assert "10.1.2.3" not in caplog.text
     assert "length=" in caplog.text
+    assert "SENSITIVE" not in llm_json_failed(result)
+    assert "hunter2" not in llm_json_failed(result)
 
 
 def test_llm_json_repair_failure_logs_length_not_content(monkeypatch, caplog):
@@ -218,7 +226,12 @@ def test_llm_json_repair_failure_logs_length_not_content(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING):
         result, _ = adapter.llm_json("sys", "user")
 
-    assert result == {}
+    # Same contract change as the test above; same privacy guarantees, now also
+    # asserted against the marker text (which carries the JSON parser's own
+    # message, never the model's content).
+    assert llm_json_failed(result), "parse failure must be detectable"
     assert "SENSITIVE" not in caplog.text
     assert "10.1.2.3" not in caplog.text
     assert "length=" in caplog.text
+    assert "SENSITIVE" not in llm_json_failed(result)
+    assert "10.1.2.3" not in llm_json_failed(result)
