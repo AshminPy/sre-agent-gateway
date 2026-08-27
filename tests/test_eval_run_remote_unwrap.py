@@ -26,7 +26,6 @@ wrapper), so final_state.get("final_summary", {}) is already the correct shape.
 """
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from agent.eval.run_eval import run_remote, score_case
 
