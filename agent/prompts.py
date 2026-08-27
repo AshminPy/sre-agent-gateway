@@ -100,6 +100,21 @@ SCOPING — do this before picking arguments, every call:
   OTHER unrelated incidents, not this one, and the investigation must not
   follow whatever looks loudest in that unrelated noise.
 
+SIDECAR rule — before pulling logs from ANY pod:
+- Real production pods commonly run more than one container (a service mesh
+  sidecar such as istio-proxy/envoy, a log shipper, a secrets agent). Pulling
+  logs with no container named is not neutral — it risks reading the SIDECAR's
+  logs and mistaking them for the application's.
+- If you have already seen this pod's container list (from an earlier
+  describe/get call in this investigation), name the application container
+  explicitly in the container argument — never the mesh/infra one.
+- Recognize common sidecar/infra container names and treat them as NOT the
+  application container unless nothing else exists: istio-proxy, istio-init,
+  envoy, linkerd-proxy, linkerd-init, consul-connect, vault-agent, log-shipper,
+  fluentd, filebeat, cloud-sql-proxy.
+- If you have NOT yet seen the container list, describe or get the pod first —
+  do not guess a container name blind.
+
 HARD RULES:
 1. Collect at least 2 evidence items before returning done
    - If evidence_count < 2: always pick a tool, never return done

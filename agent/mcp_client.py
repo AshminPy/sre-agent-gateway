@@ -323,6 +323,12 @@ def _build_gke_args(
             base["namespace"] = namespace
         if pod_name:
             base["name"] = pod_name        # API uses "name", not "podName"
+        # issue #211: container was never forwarded, even when the model supplied
+        # one -- on a multi-container pod (any Istio/Envoy/Linkerd-sidecar-injected
+        # workload) this silently lost the one piece of information that decides
+        # whether the logs pulled are the app's or the sidecar's.
+        if arguments.get("container"):
+            base["container"] = arguments["container"]
         if arguments.get("previous"):
             base["previous"] = True
         tail = arguments.get("tailLines", arguments.get("tail", 100))
@@ -860,7 +866,7 @@ def get_tools_for_source(mcp_source: str) -> str:
             "  list_k8s_events(namespace, name, resourceType='pod')\n"
             "  describe_k8s_resource(resourceType, name, namespace)\n"
             "  get_k8s_resource(resourceType, name, namespace)\n"
-            "  get_k8s_logs(namespace, name, previous=false, tail='100')\n"
+            "  get_k8s_logs(namespace, name, container=<see SIDECAR rule below>, previous=false, tail='100')\n"
             "  list_k8s_api_resources()   ← no args\n"
             "  get_k8s_cluster_info()     ← no args"
         )
@@ -870,8 +876,8 @@ def get_tools_for_source(mcp_source: str) -> str:
         "  Pod:\n"
         "    list_pods(namespace)\n"
         "    describe_pod_detail(namespace, pod_name)\n"
-        "    get_current_logs(namespace, pod_name)\n"
-        "    get_previous_logs(namespace, pod_name)       ← use when pod crashed\n"
+        "    get_current_logs(namespace, pod_name, container=<see SIDECAR rule below>)\n"
+        "    get_previous_logs(namespace, pod_name, container=<see SIDECAR rule below>)  ← use when pod crashed\n"
         "    list_events(namespace, pod_name)\n"
         "\n"
         "  Deployment / ReplicaSet:\n"
