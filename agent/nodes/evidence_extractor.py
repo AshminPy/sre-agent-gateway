@@ -13,6 +13,50 @@ from agent.otel import trace_node, log_node_tokens
 
 log = logging.getLogger("sre-agent.evidence_extractor")
 
+# Name-field keys the custom Kubernetes MCP's tools use (mcp/server.py's
+# @guarded(name_fields=...) decorators — verified exhaustively via grep against
+# mcp/server.py, not imported since mcp/ and agent/ are separate deployables).
+_K8S_MCP_NAME_FIELDS = (
+    "pod_name", "deployment_name", "replicaset_name",
+    "service_name", "job_name", "node_name", "name",
+)
+
+
+def _resource_id_from_call(args: dict, mcp_source: str, ctx: dict) -> str:
+    """Build resource_id from the REAL tool-call arguments, never LLM-written text.
+
+    issue #206: the evidence extractor's own LLM call used to write resource_id as
+    free text describing what the evidence was about. scorer.py's resource_identity_match
+    then did a plain substring check of the resolved namespace/pod against that text --
+    so a claim's evidence could be scored "different namespace/pod" purely because the
+    extractor phrased it differently, even when the evidence was 100% about the right
+    resource. Verified on a real ImagePullBackOff run: all 3 raw evidence items
+    (describe_k8s_resource, list_k8s_events, get_k8s_resource) explicitly named
+    test-incidents/imagepull-pod in their raw output, yet 2 of 3 were flagged as a
+    mismatch, capping root_cause_confidence's resource_identity_match at 0.0 on an
+    otherwise unambiguous case.
+
+    namespace/name key names verified against the real declared schema: toolspec.json
+    (gke_remote_mcp — all 5 tools use only namespace/name/parent/resourceType) and
+    mcp/server.py's @guarded(...) decorators (k8s_mcp — namespace plus one of the 7
+    name_fields above).
+    """
+    namespace = args.get("namespace", "")
+    name = ""
+    if mcp_source == "gke_remote_mcp":
+        name = args.get("name", "")
+    else:
+        for field in _K8S_MCP_NAME_FIELDS:
+            if args.get(field):
+                name = args[field]
+                break
+    # A namespace-wide call (e.g. list_k8s_events with no target resource) carries no
+    # explicit name — fall back to the investigation's resolved default, same convention
+    # already used by the extraction-failure path below.
+    name = name or ctx.get("pod", "")
+    namespace = namespace or ctx.get("namespace", "")
+    return f"{namespace}/{name}" if namespace or name else ""
+
 
 def _safe_text(value, limit: int = 500) -> str:
     text = str(value or "").replace("\n", " ").strip()
@@ -167,6 +211,12 @@ def evidence_extractor(state: AgentState) -> dict:
     else:
         extraction_failure = ""
 
+    # issue #206: resource_id is deterministic, built from the real tool-call arguments
+    # (state["tool_history"][-1]["args"], committed by tool_executor immediately before
+    # this node runs), never from the extractor LLM's own free-text description.
+    last_call = (state.get("tool_history") or [{}])[-1]
+    resource_id = _resource_id_from_call(last_call.get("args") or {}, mcp_source, ctx)
+
     ev_entry = {
         # ok=False when extraction failed, so every existing `ok` filter treats
         # this correctly: scorer's domain coverage (issue #91), claim grounding,
@@ -179,7 +229,7 @@ def evidence_extractor(state: AgentState) -> dict:
         "region": ctx.get("cluster_region", ""),
         "collected_at": collected_at,
         "resource_type": extracted.get("resource_type", "pod"),
-        "resource_id": extracted.get("resource_id", ""),
+        "resource_id": resource_id,
         "summary": _safe_text(extracted.get("summary", ""), 500),
         "key_facts": [_safe_text(f, 500) for f in extracted.get("key_facts", [])[:4]],
         "raw_ref": raw_ref,

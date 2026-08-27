@@ -111,3 +111,76 @@ def test_full_investigation_completeness_score_reflects_real_evidence_domains(mo
         f"got gaps={result['gaps']}"
     )
     assert result["band"] == "complete"
+
+
+def test_resource_id_comes_from_real_call_args_not_llm_free_text(monkeypatch):
+    """issue #206 regression: resource_id must be built from the real tool-call arguments,
+    not trusted from the extractor LLM's own description -- even when the LLM's text is
+    plausible-looking but doesn't literally contain the resolved namespace/pod, and even
+    when the LLM's text is outright WRONG."""
+    state = _state_with_tool_result("describe_k8s_resource")
+    state["tool_history"] = [{
+        "step": 0, "tool": "describe_k8s_resource", "ok": True, "mcp_source": "gke_remote_mcp",
+        "args": {"namespace": "test-incidents", "name": "imagepull-pod",
+                 "parent": "projects/p/locations/us-central1/clusters/c", "resourceType": "pod"},
+    }]
+
+    # The extractor LLM describes the SAME evidence in prose that never literally embeds
+    # "test-incidents" or "imagepull-pod" -- the exact failure mode observed on a real run
+    # (run_20260827_182635_yfcm), where this got the evidence scored a false mismatch.
+    _mock_io(monkeypatch, {
+        "resource_type": "pod",
+        "resource_id": "the container with the bad image",
+        "summary": "Container cannot pull its image", "key_facts": ["ImagePullBackOff"],
+    })
+
+    result = evidence_extractor_mod.evidence_extractor(state)
+    ev_entry = result["evidence_store"]["ev_001"]
+
+    assert ev_entry["resource_id"] == "test-incidents/imagepull-pod", (
+        "resource_id must come from the real tool-call args, ignoring the LLM's own "
+        f"(here misleading) description; got {ev_entry['resource_id']!r}"
+    )
+
+
+def test_resource_id_falls_back_to_resolved_context_when_call_has_no_explicit_target(monkeypatch):
+    """A namespace-wide call (e.g. list_k8s_events with no `name`) carries no explicit
+    target -- resource_id must fall back to the investigation's resolved namespace/pod,
+    not go blank."""
+    state = _state_with_tool_result("list_k8s_events")
+    state["tool_history"] = [{
+        "step": 0, "tool": "list_k8s_events", "ok": True, "mcp_source": "gke_remote_mcp",
+        "args": {"namespace": "test-incidents",
+                 "parent": "projects/p/locations/us-central1/clusters/c"},
+    }]
+    _mock_io(monkeypatch, {
+        "resource_type": "pod", "resource_id": "irrelevant model text",
+        "summary": "Events for the namespace", "key_facts": ["ImagePullBackOff event"],
+    })
+
+    result = evidence_extractor_mod.evidence_extractor(state)
+    ev_entry = result["evidence_store"]["ev_001"]
+
+    # state's resolved_context (from make_state) defaults pod="test-pod" — the fallback.
+    assert ev_entry["resource_id"] == "test-incidents/test-pod"
+
+
+def test_resource_id_uses_custom_mcp_name_field_for_the_called_tool(monkeypatch):
+    """Custom k8s MCP tools use per-tool name-field keys (pod_name, deployment_name, ...),
+    not gke_remote_mcp's uniform 'name' -- the deterministic builder must read the right
+    one for whichever tool actually ran."""
+    state = _state_with_tool_result("describe_pod_detail")
+    state["latest_tool_result"]["mcp_source"] = "k8s_mcp"
+    state["tool_history"] = [{
+        "step": 0, "tool": "describe_pod_detail", "ok": True, "mcp_source": "k8s_mcp",
+        "args": {"namespace": "test-incidents", "pod_name": "imagepull-pod"},
+    }]
+    _mock_io(monkeypatch, {
+        "resource_type": "pod", "resource_id": "ignored",
+        "summary": "Pod detail", "key_facts": ["ImagePullBackOff"],
+    })
+
+    result = evidence_extractor_mod.evidence_extractor(state)
+    ev_entry = result["evidence_store"]["ev_001"]
+
+    assert ev_entry["resource_id"] == "test-incidents/imagepull-pod"
