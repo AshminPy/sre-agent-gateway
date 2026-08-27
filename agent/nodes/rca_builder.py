@@ -403,13 +403,27 @@ def rca_builder(state: AgentState) -> dict:
 
     memory_ctx = state.get("incident_envelope", {}).get("memory_context", "")
 
+    # 2026-08-27: a failed/unconfigured Memory Bank recall used to arrive here as
+    # "" and be rendered to the model as "No past investigations on record." --
+    # an assertion that could lead it to reason "this is a novel incident" with
+    # nothing backing that. Tell the model the truth: unknown, not none.
+    # Local import beside its use (the auto-formatter strips distant imports).
+    from agent.main import MEMORY_RECALL_UNAVAILABLE
+    if memory_ctx == MEMORY_RECALL_UNAVAILABLE:
+        memory_ctx_for_prompt = (
+            "Prior investigations could NOT be checked — the memory store was "
+            "unreachable. Do not assume this incident is novel or recurring."
+        )
+    else:
+        memory_ctx_for_prompt = memory_ctx or "No past investigations on record."
+
     result, usage = llm_json(
         RCA_BUILDER_SYSTEM,
         RCA_BUILDER_USER.format(
             query=state["incident_envelope"].get("user_query", ""),
             incident_type=incident_type,
             theory=theory,
-            memory_context=memory_ctx or "No past investigations on record.",
+            memory_context=memory_ctx_for_prompt,
             evidence_digest=evidence_digest_str,
             evidence_ids=json.dumps(evidence_ids),
             cluster=ctx.get("cluster_name", ""),
