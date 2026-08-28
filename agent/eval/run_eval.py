@@ -62,10 +62,17 @@ def trajectory_in_order_match(predicted: list[str], expected: list[str]) -> bool
 
 
 def keyword_accuracy(root_cause: str, keywords: list[str]) -> float:
-    """Fraction of expected keywords found in the root cause string (case-insensitive)."""
+    """Fraction of expected keywords found in the root cause string (case-insensitive).
+
+    root_cause is str()-coerced first -- the deployed agent's likely_root_cause field is
+    sometimes a dict, not a string (same non-string-LLM-response case agent/main.py's
+    _extract_root_cause already guards against). Without this, a real remote-mode run
+    crashes the whole case with 'dict' object has no attribute 'lower', losing the run's
+    result entirely instead of just scoring it.
+    """
     if not keywords:
         return 1.0
-    root_lower = root_cause.lower()
+    root_lower = str(root_cause).lower()
     found = sum(1 for k in keywords if k.lower() in root_lower)
     return found / len(keywords)
 
@@ -87,7 +94,12 @@ def score_case(result: dict[str, Any], case: dict[str, Any]) -> dict[str, Any]:
     """
     summary = result.get("final_summary", result)
     predicted_tools = summary.get("tools_called", [])
-    root_cause = summary.get("likely_root_cause", "")
+    # str()-coerced here, once, at the source -- likely_root_cause is sometimes a dict
+    # (same non-string-LLM-response case agent/main.py's _extract_root_cause already
+    # guards against). Un-coerced, this crashes later at root_cause[:200] below with
+    # "unhashable type: 'slice'" -- the same failure class fixed in agent/main.py
+    # 2026-08-04, never ported to this file.
+    root_cause = str(summary.get("likely_root_cause", ""))
     confidence = summary.get("confidence_score", 0.0)
     band = summary.get("confidence_band", "escalate")
     outcome = summary.get("outcome", "")

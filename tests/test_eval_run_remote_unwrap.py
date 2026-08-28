@@ -115,3 +115,20 @@ def test_local_mode_shape_is_unaffected():
     already_correct = {"final_summary": REAL_AGENT_ENGINE_RESPONSE["summary"]}
     score = score_case(already_correct, CASE)
     assert score["passed"] is True
+
+
+def test_dict_shaped_likely_root_cause_does_not_crash_scoring():
+    """Reproduced live 2026-08-28: a real remote-mode eval run crashed 3 of 14 cases
+    with 'dict' object has no attribute 'lower', losing their results entirely,
+    because likely_root_cause was a dict, not a string -- the same non-string-LLM-
+    response case agent/main.py's _extract_root_cause already guards against, but
+    keyword_accuracy() in this file did not."""
+    dict_shaped = {
+        "final_summary": {
+            **REAL_AGENT_ENGINE_RESPONSE["summary"],
+            "likely_root_cause": {"reason": "ImagePullBackOff", "detail": "image not found"},
+        }
+    }
+    score = score_case(dict_shaped, CASE)
+    assert score["root_cause"] == str(dict_shaped["final_summary"]["likely_root_cause"])
+    assert 0.0 <= score["keyword_accuracy"] <= 1.0
