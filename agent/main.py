@@ -284,6 +284,23 @@ def _build_rca_report(
                 L.append(f"    [{eid}] (referenced in investigation)")
         L.append("")
 
+    # issue #206 follow-up: surface fact-vs-reasoning per claim in the human-readable
+    # report -- this data already exists (claim_type/grounding_status, computed
+    # deterministically by agent/confidence/claim_builder.py, never LLM self-reported)
+    # but previously only appeared in the raw JSON, not the report a human actually reads.
+    claims = summary.get("claims", []) or []
+    root_claims = [c for c in claims if c.get("claim_type") != "recommendation"]
+    if root_claims:
+        L.append("  Claim Breakdown (what was directly observed vs. reasoned):")
+        for c in root_claims:
+            claim_type = c.get("claim_type", "")
+            kind = "REASONING" if claim_type == "supported_inference" else "OBSERVED"
+            grounded = c.get("grounding_status") == "grounded"
+            trust = "verified" if grounded else "weak support"
+            text = str(c.get("text", ""))[:100]
+            L.append(f"    [{kind:<9}, {trust:<12}] {text}")
+        L.append("")
+
     if contributing_factors:
         L.append("  Contributing Factors:")
         for f in contributing_factors[:5]:

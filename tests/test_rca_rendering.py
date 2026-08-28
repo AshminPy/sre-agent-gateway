@@ -151,3 +151,32 @@ def test_impact_section_still_does_not_overclaim_even_with_a_confirmed_outcome()
     assert "DEGRADED" not in report
     assert "Dependent services may be affected" not in report
     assert "Not independently checked" in report
+
+
+def test_rca_report_labels_observed_facts_and_reasoning_separately():
+    """issue #206 follow-up: a human reading the plain-text report must be able to tell
+    which statements were directly observed vs. reasoned, without opening the raw JSON."""
+    summary = _summary(claims=[
+        {"text": "Pod imagepull-pod is in ImagePullBackOff.", "claim_type": "observed_fact",
+         "grounding_status": "grounded", "support_strength": 1.0},
+        {"text": "This is caused by the scheduler repeatedly failing to pull the image.",
+         "claim_type": "supported_inference", "grounding_status": "grounded", "support_strength": 1.0},
+        {"text": "Some other guess with weak backing.", "claim_type": "observed_fact",
+         "grounding_status": "weak_overlap", "support_strength": 0.4},
+        {"text": "Recommend editing the pod spec.", "claim_type": "recommendation",
+         "grounding_status": "grounded", "support_strength": 1.0},
+    ])
+    payload = {"cluster": "sre-test-cluster", "namespace": "test-incidents", "pod": "imagepull-pod",
+               "severity": "high"}
+    obs_event = {"run_id": "run_test", "cluster": "sre-test-cluster", "namespace": "test-incidents",
+                 "pod": "imagepull-pod", "tools_called": 2, "evidence_count": 1, "latency_ms": 1000,
+                 "tokens_total": 100, "estimated_cost_usd": 0.001}
+    report = _build_rca_report(payload, summary, {"confidence_band": "review"}, {}, obs_event, ["ev_003"])
+
+    assert "Claim Breakdown" in report
+    assert "[OBSERVED , verified    ] Pod imagepull-pod is in ImagePullBackOff." in report
+    assert "[REASONING, verified    ] This is caused by the scheduler" in report
+    assert "[OBSERVED , weak support] Some other guess with weak backing." in report
+    # The recommendation claim is not part of the root-cause reasoning trail -- must not
+    # appear in the breakdown at all, same filter score_root_cause_confidence itself uses.
+    assert "Recommend editing the pod spec" not in report
