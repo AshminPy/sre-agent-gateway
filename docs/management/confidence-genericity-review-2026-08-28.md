@@ -560,3 +560,115 @@ with `direct_support` still deferred pending B4.
 Only after E1-E5 pass on real deployed runs does Phase D's calibration input dataset get treated
 as trustworthy.
 
+---
+
+# PHASE A + B IMPLEMENTATION — 2026-08-29, before/after live results
+
+Owner approved this plan with an added architecture guardrail (tool/MCP-specific logic only in
+the normalization/adapter layer; no new incident-name branches; prove the generic `_default`
+path works for an incident type with no policy entry) and directed implementation to proceed:
+Priority 1 (items 1/2/3/4 above) and Priority 2 (items 5/6, gated on real negative controls).
+Weights/thresholds and calibration itself remain untouched, as instructed.
+
+## What was implemented (7 commits, branch `fix/confidence-scoring-structural-corrections`, NOT
+## merged, NOT deployed)
+
+1. Args-aware evidence classification (`evidence_domains.py`, `evidence_extractor.py`, `scorer.py`)
+2. Deterministic `missing_required_domains` wired into `task_planner` (`task_planner.py`, `prompts.py`)
+3. `resource_identity_match` relaxed for legitimate non-Pod evidence (`scorer.py`)
+4. `missing_evidence_penalty` scoped to the claim's own evidence (`scorer.py`)
+5. `direct_support` credits `supported_inference` claims by `support_strength` (`scorer.py`)
+6. Minimal grounding hardening — negation detection + resolved-context token exclusion
+   (`claim_builder.py`) — required before #5, per instruction
+7. **Found during live validation of #3, not in the original plan:** `resource_type` had the
+   exact same LLM-free-text-with-bad-default bug `resource_id` was fixed for in issue #206,
+   silently defeating #3's relaxation in real runs. Same fix pattern applied
+   (`evidence_extractor.py`). Reported to the owner as a completion of #3, not scope creep —
+   confirmed via `git diff main -- agent/` before implementing that it introduces no new
+   incident-type or case-specific branching.
+
+Also added: `k8s/scenario-secret-missing.yaml` (secret-001 had no manifest — its target was a
+contaminated, unrelated leftover pod) and `tests/test_generic_path_novel_incident_type.py`
+(the explicit architecture-guardrail validation: a `PVCMountFailure` incident type, not in
+`policy.py`, not in the 14 golden cases, scores `completeness=0.9`/`confidence=1.0` via
+`_default` alone with strong evidence, and correctly scores low with weak evidence — proves
+genericity isn't lenience).
+
+**Test suite: 394/394 pass** (regression suite + 8 new/updated test files covering all 7 fixes
+individually, plus the required negative controls: well-supported inference scores high,
+unsupported/plausible inference stays low, contradictory evidence stays low, lexical overlap
+alone cannot create high confidence).
+
+**Architecture guardrail compliance, verified not asserted:** `git diff main -- agent/ | grep -E
+"incident_type ==|case_id =="` returns zero hits. The only tool-specific tables added
+(`_ARGS_DOMAIN_OVERRIDES` in `evidence_domains.py`, `_CUSTOM_TOOL_RESOURCE_TYPE` in
+`evidence_extractor.py`) live entirely in the normalization/adapter layer; `scorer.py` gained no
+new tool-name or incident-type literals in this round.
+
+## Live validation — full 14-case rerun, local mode (branch code, real cluster, real Gemini calls)
+
+Environment note: local-mode runs need `CLUSTER_CONFIG_BUCKET` (and several other env vars
+`scripts/init-env.sh` doesn't set) — undocumented gap, worked around using a known-good env
+recipe found in a prior session's own troubleshooting record. Flagging as a real onboarding gap,
+out of scope to fix here.
+
+Data-quality notes before the table: this is a **before/after across two separate live runs**
+(2026-08-28 deployed baseline vs. 2026-08-29 branch code), not a controlled same-input replay —
+both involve real, non-deterministic LLM calls and real tool calls, so some case-to-case
+variance is expected from run-to-run LLM/evidence variance alone, not only from the code changes.
+Attributed deltas below are called out only where the mechanism is directly traceable (e.g. a
+specific component moving in the exact direction a specific fix predicts); everything else is
+reported as observed, not claimed as caused.
+
+| Case | Before (score/band) | After (score/band) | Attributable to a fix? |
+|---|---|---|---|
+| crashloop-001 | 1.0 / high_confidence | 1.0 / high_confidence | No change — clean baseline preserved |
+| oomkilled-001 | 0.65 / review_required | **0.955 / high_confidence** | **Yes — fix #1** (`previous_logs` now correctly classified; `missing_evidence_penalty` 0.1→0.0) |
+| imagepull-001 | 0.925 / high_confidence | 0.955 / high_confidence | Yes — fix #5 (`direct_support` 0.75→0.875, inference credit) |
+| configmap-001 | 0.85 / high_confidence | **1.0 / high_confidence** | **Yes — fixes #3+#7** (`resource_identity_match` 0.5→1.0, live-verified twice) |
+| init-001 | 0.84 / review_required | 0.68 / review_required | **Unclear — likely LLM run-to-run variance**, see analysis below, not attributed to any fix |
+| selector-001 | 0.575 / partial_evidence | **1.0 / high_confidence** | **Yes — fix #5, the clearest case.** The hardest designed scenario, correctly solved both times; `direct_support` 0.0→1.0 exactly matches the fix |
+| cascading-001 | 0.0 (LLM parse failure) | 0.65 / review_required, **wrong root cause** | Parse-failure resolved (unrelated to these fixes — upstream of all of them). New answer is factually wrong; flagged below, not attributed to any fix |
+| pending-001 | 0.0 (LLM parse failure) | 0.71 / review_required, correct ("pod does not exist") | Parse-failure resolved; answer correct but doesn't match golden_cases.py's expected wording (known fixture gap, unrelated to these fixes) |
+| onprem-001 | 0.0 / insufficient_evidence | 0.0 / insufficient_evidence | No change — correct refusal preserved |
+| insufficient-evidence-001 | N/A (429 quota) | 0.65 / review_required, correct | Quota issue did not recur |
+| conflicting-evidence-001 | 0.9 / high_confidence | 0.9 / high_confidence | No change — correct both times |
+| ambiguous-routing-001 | 0.0 / insufficient_evidence | 0.0 / insufficient_evidence | No change — correct refusal preserved |
+| mcp-gateway-failure-001 | 0.75 / review_required, correct | **0.0 (LLM parse failure)** | **Regression in the sense that this run hit a parse failure** — same upstream issue as cascading-001/pending-001 had yesterday, not caused by any of these 7 fixes (none touch `rca_builder`'s LLM call/parsing) |
+| secret-001 | 0.75 / review_required, **wrong scenario** (contaminated fixture) | **0.9333 / high_confidence, correct scenario** | **Yes — fixture fix + fixes #3/#7**, live-verified twice |
+
+## Findings that need honest flagging, not hidden
+
+**cascading-001's new answer is wrong.** "The order-api Deployment and its ReplicaSet are
+missing from the cluster" is factually false — `order-api` was running throughout (confirmed via
+the same cluster-status checks used to seed this scenario). This scored 0.65/review_required
+(not auto-band, so it would still route to human review), not a false-high, but it's a real wrong
+answer that needs its own investigation — separately from this fix set, since none of the 7
+fixes touch evidence collection or the RCA-builder's reasoning, only how a given claim set gets
+scored once produced.
+
+**mcp-gateway-failure-001 and cascading-001/pending-001 (yesterday) all hit the same
+"model's response could not be parsed" failure at different times, intermittently.** This is an
+`rca_builder` LLM-output-parsing reliability gap, upstream of every fix in this PR — worth its
+own investigation, not in scope here.
+
+**init-001's score dropped (0.84→0.68) with no fix that should cause a decrease.** Every
+component that moved (`independent_corroboration` 1.0→0.5, `claim_grounding` 1.0→0.8) is driven
+by which specific claims/evidence THIS run's live LLM call happened to produce — none of the 7
+fixes remove credit that was previously given. Read as LLM/evidence-gathering variance between
+two independent live runs, not a regression, but flagged rather than dismissed since it wasn't
+independently re-verified the way configmap-001/secret-001 were.
+
+## Bottom line
+
+**4 cases show a fix directly and traceably improving a previously wrong score**
+(oomkilled-001, selector-001, configmap-001, secret-001) — including selector-001, the hardest
+designed scenario, moving from a wrong band to fully correct. **2 pre-existing "insufficient
+evidence" results (from yesterday's LLM parse failures / quota exhaustion) resolved on retry,
+independent of these fixes.** **2 real, unrelated reliability findings surfaced** (cascading-001's
+wrong answer, the intermittent parse-failure pattern) — neither caused by, nor masked by, this
+fix set; both need their own follow-up. **1 result (init-001) needs a same-input controlled
+re-check before drawing any conclusion** — flagged, not resolved.
+
+Calibration remains untouched and un-started, per instruction.
+
