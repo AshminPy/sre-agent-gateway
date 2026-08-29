@@ -251,8 +251,6 @@ def test_contrast_if_the_claim_scope_were_honored_penalty_would_apply():
     This test calls no code under agent/ differently -- it recomputes the alternative by
     hand from the same real domain_map the scorer produced, to make the contrast concrete.
     """
-    from agent.confidence.evidence_domains import classify_tool
-
     state, claims, evidence_store, tool_history, resolved_context = _build_state_and_claim()
     claim = claims[0]
 
