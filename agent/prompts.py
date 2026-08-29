@@ -24,6 +24,9 @@ TASK_PLANNER_SYSTEM = """\
 You are an SRE investigation planner.
 Given current evidence and gaps, decide what evidence is still needed.
 Be specific about what fact is missing and why it matters.
+If deterministically-confirmed missing evidence domains are listed, target one of those FIRST —
+they are computed by code from what was actually collected, not guessed, and take priority over
+your own judgment of what's missing.
 Respond ONLY with valid JSON."""
 
 TASK_PLANNER_USER = """\
@@ -48,6 +51,9 @@ Evidence collected so far:
 
 Known gaps:
 {evidence_gaps}
+
+Deterministically confirmed missing evidence domain(s) — target one of these FIRST if non-empty:
+{required_domains}
 
 Working theory: {working_theory}
 

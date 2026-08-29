@@ -215,7 +215,8 @@ def evidence_extractor(state: AgentState) -> dict:
     # (state["tool_history"][-1]["args"], committed by tool_executor immediately before
     # this node runs), never from the extractor LLM's own free-text description.
     last_call = (state.get("tool_history") or [{}])[-1]
-    resource_id = _resource_id_from_call(last_call.get("args") or {}, mcp_source, ctx)
+    call_args = last_call.get("args") or {}
+    resource_id = _resource_id_from_call(call_args, mcp_source, ctx)
 
     ev_entry = {
         # ok=False when extraction failed, so every existing `ok` filter treats
@@ -230,6 +231,11 @@ def evidence_extractor(state: AgentState) -> dict:
         "collected_at": collected_at,
         "resource_type": extracted.get("resource_type", "pod"),
         "resource_id": resource_id,
+        # real tool-call args, same source as resource_id above -- lets scorer.py's
+        # classify_tool() distinguish e.g. get_k8s_logs(previous=true) from
+        # get_k8s_logs(previous=false), which the tool name alone cannot. See
+        # docs/management/confidence-genericity-review-2026-08-28.md #15.6.
+        "args": call_args,
         "summary": _safe_text(extracted.get("summary", ""), 500),
         "key_facts": [_safe_text(f, 500) for f in extracted.get("key_facts", [])[:4]],
         "raw_ref": raw_ref,

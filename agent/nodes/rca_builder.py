@@ -510,7 +510,7 @@ def rca_builder(state: AgentState) -> dict:
         result["alternative_hypotheses_considered"] = []
 
     # ── Build claims, hypotheses, contradictions — LLM proposes, code grounds/scores ──
-    claims          = build_claims(result, evidence_ids, evidence_store)
+    claims          = build_claims(result, evidence_ids, evidence_store, ctx)
     known_ids       = set(evidence_ids)
     hypotheses      = build_hypotheses(result, known_ids)
     contradictions  = detect_contradictions(claims, result, evidence_store, ctx)

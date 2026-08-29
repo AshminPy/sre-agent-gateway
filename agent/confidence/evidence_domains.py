@@ -55,15 +55,56 @@ RELATED_DOMAIN_GROUPS = (
     frozenset({EvidenceDomain.CURRENT_LOGS, EvidenceDomain.PREVIOUS_LOGS}),
 )
 
+# resourceType -> domain, for GKE Remote MCP's describe_k8s_resource/get_k8s_resource (both
+# normalize to the custom MCP's describe_pod_detail regardless of resourceType today -- see
+# docs/management/confidence-genericity-review-2026-08-28.md #15.6). Only resource types with an
+# unambiguous existing domain are listed; service/node/configmap/job are deliberately omitted --
+# no existing EvidenceDomain fits them without guessing, same open item as _TOOL_DOMAIN's
+# 21/27-UNKNOWN gap (report #2 row 1). Omitted types keep today's behavior (fall through to the
+# tool-name-only classification below).
+_RESOURCE_TYPE_DOMAIN = {
+    "pod": EvidenceDomain.KUBERNETES_STATUS,
+    "deployment": EvidenceDomain.WORKLOAD_CONFIG,
+    "replicaset": EvidenceDomain.WORKLOAD_CONFIG,
+    "statefulset": EvidenceDomain.WORKLOAD_CONFIG,
+    "daemonset": EvidenceDomain.WORKLOAD_CONFIG,
+}
 
-def classify_tool(tool_name: str) -> EvidenceDomain:
+# Tool name -> (arg name to inspect, {arg value: domain}). Only tools whose real semantic
+# meaning changes with a call argument need an entry here -- everything else is classified by
+# name alone, unchanged. Verified against real GKE Remote MCP schema + live production tool-call
+# data (report #15.6): get_k8s_logs's "previous" arg is a real bool, confirmed live
+# (args={'previous': True} in a real oomkilled-001 run); describe/get_k8s_resource's
+# "resourceType" is a real string arg, confirmed live (deployment/replicaset/service/configmap/
+# job all seen in production tool calls).
+_ARGS_DOMAIN_OVERRIDES = {
+    "get_k8s_logs": ("previous", {True: EvidenceDomain.PREVIOUS_LOGS}),
+    "describe_k8s_resource": ("resourceType", _RESOURCE_TYPE_DOMAIN),
+    "get_k8s_resource": ("resourceType", _RESOURCE_TYPE_DOMAIN),
+}
+
+
+def classify_tool(tool_name: str, args: dict | None = None) -> EvidenceDomain:
     """Classify a tool name (either MCP source) into an evidence domain.
+
+    `args` is optional (defaults to None/{}) so every existing no-args call site keeps working
+    unchanged. When the tool is one of _ARGS_DOMAIN_OVERRIDES's entries, the named arg's value
+    can shift the domain -- e.g. get_k8s_logs(previous=True) -> PREVIOUS_LOGS instead of the
+    tool-name-only CURRENT_LOGS every get_k8s_logs call used to collapse to (confirmed live bug,
+    docs/management/confidence-genericity-review-2026-08-28.md #15.6). Falls back to the
+    tool-name-only table below for every other tool, and for override tools whose arg value has
+    no listed mapping (e.g. previous=False, or an omitted resourceType).
 
     Unmapped tools return UNKNOWN — logged as a gap by the scorer, never silently dropped and
     never silently counted as a fresh independent domain.
     """
     if not tool_name:
         return EvidenceDomain.UNKNOWN
+    if args and tool_name in _ARGS_DOMAIN_OVERRIDES:
+        arg_name, value_map = _ARGS_DOMAIN_OVERRIDES[tool_name]
+        override = value_map.get(args.get(arg_name))
+        if override is not None:
+            return override
     canonical = tool_name if tool_name in _TOOL_DOMAIN else _map_to_custom_tool(tool_name)
     return _TOOL_DOMAIN.get(canonical or "", EvidenceDomain.UNKNOWN)
 

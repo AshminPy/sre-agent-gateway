@@ -36,7 +36,7 @@ def _evidence_domains_present(evidence_store: dict, tool_history: list) -> dict:
         if not ev.get("ok", True):
             continue
         tool = ev.get("tool") or tool_by_step.get(ev.get("step"))
-        domains[ev_id] = classify_tool(tool or "")
+        domains[ev_id] = classify_tool(tool or "", ev.get("args") or {})
     return domains
 
 
@@ -197,13 +197,38 @@ def score_root_cause_confidence(
             "reasons": ["No claims were made about the root cause"],
         }
 
-    # direct_support: fraction of root claims that are OBSERVED_FACT rather than inference/hyp.
+    # direct_support: how directly the root claims are backed by evidence.
     # issue #66: claim_type is the LLM's own self-assigned label (only enum-validated in
     # claim_builder.py, never checked against evidence content) -- a claim self-labeled
     # OBSERVED_FACT must ALSO be independently grounded (grounding_status == "grounded",
-    # set deterministically by _ground_claim) to count here. Otherwise the model could call
-    # anything an "observed fact" and get full direct_support credit for it regardless of
-    # whether the evidence actually supports it.
+    # set deterministically by _ground_claim) to count at full credit here. Otherwise the
+    # model could call anything an "observed fact" and get full direct_support credit for it
+    # regardless of whether the evidence actually supports it.
+    #
+    # 2026-08-29: SUPPORTED_INFERENCE claims used to earn ZERO credit here regardless of
+    # support_strength, even when fully grounded -- a hard-evidenced causal conclusion (the
+    # normal shape of a real root-cause claim: an inference OVER observed facts, not itself
+    # directly observable) could never contribute to the heaviest-weighted (0.30) component.
+    # Confirmed false-low on real live data (selector-001, 2026-08-27/28): the ONE correct
+    # causal claim for the hardest case in the golden set was typed supported_inference and
+    # scored 0/1 here, capping an otherwise-correct RCA at partial_evidence.
+    #
+    # Fix: an inference claim now contributes its own support_strength directly -- the SAME
+    # deterministic trust signal already used elsewhere (claim_grounding), not a new,
+    # separately-tuned multiplier. support_strength is 0.0 for phantom/ungrounded/
+    # contradicted/empty claims (see claim_builder.py's negation + contextual-generic
+    # hardening, same date), 0.1/0.4/1.0 otherwise -- so a weak or unsupported inference still
+    # contributes little to nothing; only a genuinely well-grounded one approaches full credit.
+    # OBSERVED_FACT claims are still privileged: they stay a binary 1.0/0.0 gate on
+    # independent grounding, never partial credit, since a claim asserted as directly
+    # observed either was verified against evidence or it wasn't.
+    def _claim_direct_support(c) -> float:
+        if c.claim_type == ClaimType.OBSERVED_FACT:
+            return 1.0 if c.grounding_status == "grounded" else 0.0
+        if c.claim_type == ClaimType.SUPPORTED_INFERENCE:
+            return c.support_strength
+        return 0.0  # HYPOTHESIS and anything else: no direct-support credit
+
     fact_claims = [
         c for c in root_claims
         if c.claim_type == ClaimType.OBSERVED_FACT and c.grounding_status == "grounded"
@@ -212,18 +237,26 @@ def score_root_cause_confidence(
         c for c in root_claims
         if c.claim_type == ClaimType.OBSERVED_FACT and c.grounding_status != "grounded"
     ]
-    direct_support = len(fact_claims) / len(root_claims)
+    inference_claims = [c for c in root_claims if c.claim_type == ClaimType.SUPPORTED_INFERENCE]
+
+    direct_support = sum(_claim_direct_support(c) for c in root_claims) / len(root_claims)
     components["direct_support"] = direct_support
     if direct_support < 1.0:
-        not_direct = len(root_claims) - len(fact_claims)
         reasons.append(
-            f"{not_direct}/{len(root_claims)} claim(s) are inference or hypothesis, "
-            "or a self-labeled observed fact not independently grounded in evidence"
+            f"{len(fact_claims)}/{len(root_claims)} claim(s) are directly-observed facts "
+            "grounded in evidence; inference claims contribute in proportion to how well "
+            "grounded their own supporting evidence is, not as full credit"
         )
     if mislabeled_facts:
         reasons.append(
             f"{len(mislabeled_facts)} claim(s) labeled 'observed_fact' by the model were not "
             "independently grounded -- treated as unverified, not direct support"
+        )
+    weak_inferences = [c for c in inference_claims if c.support_strength < 1.0]
+    if weak_inferences:
+        reasons.append(
+            f"{len(weak_inferences)} inference claim(s) only weakly or partially grounded "
+            "-- contributing less than full direct-support credit"
         )
 
     # independent_corroboration: distinct evidence DOMAINS behind the claims, domain-weighted
@@ -269,10 +302,25 @@ def score_root_cause_confidence(
             # neither the resolved namespace nor pod name appears in it) -- a legitimate
             # investigation touches evidence about the incident (events, node info) that may
             # not literally embed the pod name, and this must not penalize that.
+            #
+            # 2026-08-29, confirmed root cause via 2 live runs (configmap-001, init-001; see
+            # docs/management/confidence-genericity-review-2026-08-28.md #15.7): a ConfigMap or
+            # Service the pod genuinely depends on can never contain the pod's own name in its
+            # resource_id, so the pod-name check was falsely dinging the RCA's own key causal
+            # evidence. resource_type (stored by evidence_extractor.py, never read here before
+            # this fix) tells us when evidence is legitimately about a non-Pod resource -- the
+            # pod-name requirement only makes sense for evidence that IS about a Pod. Namespace
+            # containment still applies unconditionally; this does not weaken cross-namespace
+            # detection at all, only the pod-name requirement for non-Pod resource types.
             resource_id = ev.get("resource_id", "")
+            resource_type = ev.get("resource_type", "pod")
             if resource_id and (resolved_namespace or resolved_pod):
                 namespace_ok = not resolved_namespace or resolved_namespace in resource_id
-                pod_ok = not resolved_pod or resolved_pod in resource_id
+                pod_ok = (
+                    not resolved_pod
+                    or resource_type != "pod"
+                    or resolved_pod in resource_id
+                )
                 if not (namespace_ok and pod_ok):
                     namespace_pod_mismatches += 1
         resource_identity_match = 1.0 if not (mismatches or namespace_pod_mismatches) else max(
@@ -346,9 +394,18 @@ def score_root_cause_confidence(
     if active_alt:
         reasons.append(f"{len(active_alt)} unresolved competing hypothesis/hypotheses with evidence")
 
+    # 2026-08-29, confirmed false-high via a real counterexample (see
+    # tests/test_missing_evidence_claim_scoping.py and
+    # docs/management/confidence-genericity-review-2026-08-28.md #15.1): this used to be
+    # `set(domain_map.values())` -- ALL evidence collected anywhere in the investigation,
+    # regardless of whether the root-cause claim actually cites it. A required domain sitting
+    # unused elsewhere in evidence_store satisfied the requirement even when the claim itself
+    # was backed by only one, uncorroborated domain -- scoring 0.875/high_confidence instead of
+    # the 0.65/review_required its own evidence scoping justified. Now scoped to
+    # `supporting_domains` (already computed above for independent_corroboration), matching the
+    # pattern that component already used correctly.
     req = policy.evidence_requirement_for(incident_type)
-    domains_present = set(domain_map.values())
-    missing_required = set(req.required_now) - domains_present
+    missing_required = set(req.required_now) - supporting_domains
     missing_penalty = min(
         policy.missing_evidence_penalty_cap,
         len(missing_required) * policy.missing_evidence_penalty_per_domain,
