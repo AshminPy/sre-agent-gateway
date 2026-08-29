@@ -21,6 +21,47 @@ _K8S_MCP_NAME_FIELDS = (
     "service_name", "job_name", "node_name", "name",
 )
 
+# Custom K8s MCP tool name -> the resource kind it's about. The tool name itself already
+# encodes this deterministically (mcp/server.py's real tool set, verified against
+# agent/mcp_client.py's CUSTOM_K8S_TOOLS) -- no need to ask the LLM. Tools not listed here
+# (list_pods, describe_pod_detail, get_current_logs, get_previous_logs, list_events, ...) are
+# inherently pod-scoped, matching the "pod" default below.
+_CUSTOM_TOOL_RESOURCE_TYPE = {
+    "get_configmap": "configmap", "list_configmaps": "configmap",
+    "describe_deployment": "deployment", "list_deployments": "deployment",
+    "describe_service": "service", "list_services": "service",
+    "describe_replicaset": "replicaset", "list_replicasets": "replicaset",
+    "describe_statefulset": "statefulset", "list_statefulsets": "statefulset",
+    "describe_daemonset": "daemonset", "list_daemonsets": "daemonset",
+    "describe_node": "node", "list_nodes": "node",
+    "describe_job": "job", "list_jobs": "job",
+    "describe_hpa": "hpa", "list_hpas": "hpa",
+    "describe_pvc": "pvc", "list_pvcs": "pvc",
+}
+
+
+def _resource_type_from_call(args: dict, tool: str, mcp_source: str) -> str:
+    """Build resource_type from the REAL tool-call arguments/tool name, never LLM-written
+    text -- same fix class as issue #206's resource_id (_resource_id_from_call above).
+
+    2026-08-29, confirmed live during resource_identity_match validation (see
+    docs/management/confidence-genericity-review-2026-08-28.md #15.7's fix): the extractor
+    LLM's own free-text "resource_type" field defaulted to "pod" whenever the model didn't
+    explicitly name the kind, even for evidence that was unambiguously about a ConfigMap or
+    Secret (resource_id correctly showed "test-incidents/app-config", but resource_type still
+    said "pod"). This silently defeated the resource_identity_match fix that reads
+    resource_type to decide whether the pod-name containment check applies -- the relaxation
+    never fired because the wrong resource_type was fed into it.
+
+    GKE Remote MCP's describe_k8s_resource/get_k8s_resource carry resourceType directly in
+    their call args (toolspec.json). The custom K8s MCP encodes the resource kind in the tool
+    NAME itself (_CUSTOM_TOOL_RESOURCE_TYPE). Everything else (logs, events, pod status) is
+    inherently pod-scoped.
+    """
+    if mcp_source == "gke_remote_mcp" and args.get("resourceType"):
+        return str(args["resourceType"]).lower()
+    return _CUSTOM_TOOL_RESOURCE_TYPE.get(tool, "pod")
+
 
 def _resource_id_from_call(args: dict, mcp_source: str, ctx: dict) -> str:
     """Build resource_id from the REAL tool-call arguments, never LLM-written text.
@@ -213,10 +254,12 @@ def evidence_extractor(state: AgentState) -> dict:
 
     # issue #206: resource_id is deterministic, built from the real tool-call arguments
     # (state["tool_history"][-1]["args"], committed by tool_executor immediately before
-    # this node runs), never from the extractor LLM's own free-text description.
+    # this node runs), never from the extractor LLM's own free-text description. Same
+    # treatment now applies to resource_type -- see _resource_type_from_call's docstring.
     last_call = (state.get("tool_history") or [{}])[-1]
     call_args = last_call.get("args") or {}
     resource_id = _resource_id_from_call(call_args, mcp_source, ctx)
+    resource_type = _resource_type_from_call(call_args, tool, mcp_source)
 
     ev_entry = {
         # ok=False when extraction failed, so every existing `ok` filter treats
@@ -229,7 +272,7 @@ def evidence_extractor(state: AgentState) -> dict:
         "cluster": ctx.get("cluster_name", ""),
         "region": ctx.get("cluster_region", ""),
         "collected_at": collected_at,
-        "resource_type": extracted.get("resource_type", "pod"),
+        "resource_type": resource_type,
         "resource_id": resource_id,
         # real tool-call args, same source as resource_id above -- lets scorer.py's
         # classify_tool() distinguish e.g. get_k8s_logs(previous=true) from

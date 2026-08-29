@@ -184,3 +184,61 @@ def test_resource_id_uses_custom_mcp_name_field_for_the_called_tool(monkeypatch)
     ev_entry = result["evidence_store"]["ev_001"]
 
     assert ev_entry["resource_id"] == "test-incidents/imagepull-pod"
+
+
+def test_resource_type_comes_from_gke_remote_mcp_args_not_llm_free_text(monkeypatch):
+    """2026-08-29 regression, same class as issue #206's resource_id fix: confirmed live
+    during resource_identity_match validation -- evidence unambiguously about a ConfigMap
+    (resource_id correctly showed "test-incidents/app-config") still had resource_type
+    default to "pod" because the extractor LLM's own free-text output didn't name it,
+    silently defeating the resource_identity_match relaxation that reads this field."""
+    state = _state_with_tool_result("get_k8s_resource")
+    state["tool_history"] = [{
+        "step": 0, "tool": "get_k8s_resource", "ok": True, "mcp_source": "gke_remote_mcp",
+        "args": {"namespace": "test-incidents", "name": "app-config",
+                 "parent": "projects/p/locations/us-central1/clusters/c", "resourceType": "configmap"},
+    }]
+    # The extractor LLM's own output never mentions "configmap" at all -- exactly the real
+    # failure mode observed live.
+    _mock_io(monkeypatch, {
+        "resource_type": "pod",  # wrong, as extracted by the LLM -- must be overridden
+        "resource_id": "the missing config",
+        "summary": "ConfigMap not found", "key_facts": ["NotFound"],
+    })
+
+    result = evidence_extractor_mod.evidence_extractor(state)
+    ev_entry = result["evidence_store"]["ev_001"]
+
+    assert ev_entry["resource_type"] == "configmap"
+
+
+def test_resource_type_defaults_to_pod_when_gke_remote_call_has_no_resourcetype_arg(monkeypatch):
+    state = _state_with_tool_result("list_k8s_events")
+    state["tool_history"] = [{
+        "step": 0, "tool": "list_k8s_events", "ok": True, "mcp_source": "gke_remote_mcp",
+        "args": {"namespace": "test-incidents"},
+    }]
+    _mock_io(monkeypatch, {
+        "resource_type": "pod", "resource_id": "irrelevant",
+        "summary": "Events", "key_facts": ["Event"],
+    })
+    result = evidence_extractor_mod.evidence_extractor(state)
+    assert result["evidence_store"]["ev_001"]["resource_type"] == "pod"
+
+
+def test_resource_type_comes_from_custom_mcp_tool_name_not_llm_free_text(monkeypatch):
+    """Custom K8s MCP tools encode the resource kind in the TOOL NAME itself
+    (get_configmap, describe_deployment, ...) -- deterministic from the tool call, same
+    "never trust the LLM's own free text" principle as the GKE Remote MCP case above."""
+    state = _state_with_tool_result("describe_deployment")
+    state["latest_tool_result"]["mcp_source"] = "k8s_mcp"
+    state["tool_history"] = [{
+        "step": 0, "tool": "describe_deployment", "ok": True, "mcp_source": "k8s_mcp",
+        "args": {"namespace": "test-incidents", "deployment_name": "order-api"},
+    }]
+    _mock_io(monkeypatch, {
+        "resource_type": "pod",  # wrong, as extracted by the LLM
+        "resource_id": "ignored", "summary": "Deployment detail", "key_facts": ["Deployment ready"],
+    })
+    result = evidence_extractor_mod.evidence_extractor(state)
+    assert result["evidence_store"]["ev_001"]["resource_type"] == "deployment"
