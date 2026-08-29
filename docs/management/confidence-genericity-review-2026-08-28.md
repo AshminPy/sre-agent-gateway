@@ -94,10 +94,20 @@ gap from §2 row 1 is not just a static-analysis concern.
 
 ## 6. Root cause of false-HIGH scores
 
-**No structural false-high mechanism found**, in code or in the live data. `_default`'s fallback
+**CORRECTED 2026-08-28 (superseded by the corrections addendum, §15 below) — this conclusion
+was wrong.** A real structural false-high mechanism exists: `missing_evidence_penalty` and
+`required_evidence_coverage` are computed from evidence-store-wide domain presence
+(`domain_map.values()` / `_evidence_domains_present(...).values()`), never scoped to the
+claim's own `supporting_evidence_ids` the way `independent_corroboration` correctly is in the
+same function. See §15.1 for the full proof, real numbers, and a passing regression test.
+
+~~**No structural false-high mechanism found**, in code or in the live data. `_default`'s fallback
 is provably monotonic-lenient (proof in the incident-hardcoding audit: its `required_now` is a
 strict subset of every explicit entry, so it can only make coverage checks *easier*, never
-produce an unjustified score increase from a real gap).
+produce an unjustified score increase from a real gap).~~ *(The monotonic-leniency proof for
+`_default` itself still holds — `_default` cannot produce a false-high on its own. What was missed
+is that the missing-evidence check applies to EVERY incident type, not just `_default` cases, and
+it's unscoped regardless of which requirement set is active.)*
 
 One case needed a closer look: `secret-001` scored 0.75 (review, not auto) with a root cause
 ("`user-service-6c6568988c-52jbf` in CrashLoopBackOff, restarted 5×, exit code 1") that has
@@ -260,8 +270,293 @@ bugs):**
 
 ---
 
-**Repo state:** `main` @ `d799e38` at review start; one commit made during this review
-(`agent/eval/run_eval.py` fix, see §9) — not yet pushed/PR'd, pending your review of this document.
+**Repo state:** `main` @ `d799e38` at review start; the eval-harness fix (§9) merged via PR #217.
 **Live data sources:** `gs://sreagent-t2-demo-eval/runs/` (14 real remote-mode runs, 2026-08-28,
 run_ids `tcob/zout/qahn/rmlk/rtrb/sjzv/kacq/wjii/ibxu/gtxy/rwsa/rkbc/woda/zxbh`), 4-agent parallel
 workflow audit (tool/domain mapping, incident hardcoding, claim scoring, hardcoded conditionals).
+
+---
+
+# CORRECTIONS ADDENDUM — 2026-08-28 (second pass)
+
+Owner review of the above found 10 material gaps. Investigated with 7 parallel deep-dive audits,
+each required to run real code (not reason abstractly) and, where asked, add a real passing test
+proving current behavior. Two new test files were added — nothing under `agent/` was changed.
+No scoring weight, threshold, or the `direct_support` formula was touched, per instruction.
+
+## 15.1 Correction — a real false-high mechanism exists (item 1)
+
+**`missing_evidence_penalty` and `required_evidence_coverage` are not scoped to the claim they're
+supposedly gating.** `scorer.py:75` and `scorer.py:350` both build `domains_present` from **every
+successfully-collected evidence item in the whole investigation** —
+`set(_evidence_domains_present(evidence_store, tool_history).values())` — not from the root-cause
+claim's own `supporting_evidence_ids`. `independent_corroboration`, in the same function, does
+scope correctly (`scorer.py:229-242`, builds `supporting_ids` from the claims first). The three
+components sitting right next to it never reuse that scoping.
+
+**Proven with a real counterexample, run against the actual scorer** (new file
+`tests/test_missing_evidence_claim_scoping.py`, 4/4 passing):
+- Incident falls to `_default` (`required_now=(KUBERNETES_STATUS,)`)
+- `ev_001` = `KUBERNETES_STATUS`, about an unrelated pod, never cited by the claim
+- `ev_002` = `KUBERNETES_EVENTS`, about the real target, is the claim's only cited evidence
+- Real output: `score=0.875`, `band=high_confidence`, `missing_evidence_penalty=0.0` — the hard
+  cap (`max_score_missing_critical_evidence=0.65`) never engages because `missing_required` comes
+  back empty, even though the claim's actual supporting evidence is a single, uncorroborated
+  domain (`independent_corroboration=0.5`).
+- Counterfactual, same scenario, scoped like `independent_corroboration` already is: penalty
+  applies, hard cap engages, score caps at 0.65 (`review_required`) — a full band lower.
+
+**This is a 5th false-high mechanism, additive to the false-low ones in §3-5** — it does not
+apply only to `_default` cases; it applies to every incident type, since the scoping gap is in
+the shared missing-evidence logic itself, not in the `_default` table.
+
+Also found, same shape, inside `root_cause_confidence` specifically: `independent_corroboration`
+(claim-scoped, correct) and `missing_evidence_penalty` (store-wide, wrong) disagree with each
+other *within the same score* on the same investigation — confirmed by re-running the item-4
+default-semantics counterexample below.
+
+**Verification:** `pytest tests/test_missing_evidence_claim_scoping.py -v` → 4 passed. Full suite
+`pytest tests/ -q` → 364 passed, unchanged from baseline.
+
+## 15.2 Correction — collection time vs. incident time is a real, separate false-high gap (item 2)
+
+`agent/nodes/evidence_extractor.py:96` stamps `collected_at = time.time()` — unconditionally,
+collection time, never anything parsed from the underlying K8s object's own timestamp. The
+code's own comment admits this. `freshness` (`scorer.py:107-129`) and `time_correlation`
+(`scorer.py:290-319`) both only ever compare `collected_at` values against each other or against
+`now` — neither has any signal for how old the underlying incident/event actually is.
+
+**Confirmed with a real counterexample** (new file `tests/test_collection_time_vs_incident_time.py`,
+4/4 passing): a pod that "crashed 5 hours ago," investigated right now, scores `freshness=1.0`
+and `time_correlation=1.0` — identical to a genuinely fresh incident — purely because the tool
+calls happened just now. A control case in the same file confirms the component tracks
+*collection* recency, not incident recency, in both directions.
+
+**Classification: confirmed false-high integrity limitation.** Not expanded into a timestamp
+redesign per instruction — logged as a real, scoped backlog item (Phase B/C, see final plan).
+
+## 15.3 Correction — the deterministic-gap → planner disconnect is real (item 3)
+
+Traced end-to-end and reproduced with the real functions, not just read:
+- `task_evaluator.py:35` computes `completeness.missing_required_domains` (deterministic,
+  from `scorer.py:172`) and separately reads `evidence_gaps` from the LLM's own JSON output
+  (`task_evaluator.py:113`) — two independent fields in `investigation` state.
+- `loop_controller.py:175-188` forces a retry off the **deterministic** field only (this is
+  already-shipped, already-tested issue #69 behavior).
+- `task_planner.py:32` and its prompt (`prompts.py:49-50`) read **only** `evidence_gaps` (the LLM
+  field) — `missing_required_domains` never reaches the planner or its prompt at all (confirmed
+  by grep: the field appears in exactly 5 files, none of them `task_planner.py`).
+- Reproduced live: constructed an oomkilled-001-shaped state where the LLM's own `evidence_gaps`
+  was empty but the deterministic list said `["previous_logs"]`. `loop_controller` correctly
+  forced another iteration. The exact prompt block sent to the planner on that forced retry never
+  mentioned `previous_logs` or the deterministic list at all — the extra iteration ran with zero
+  information about what it was supposed to go collect. This is the mechanism behind the real
+  `oomkilled-001` outcome already documented in §3b.
+
+**Minimal fix (design only, not implemented) — respects the required layering:**
+1. `task_planner.py:32` — read `investigation["completeness"]["missing_required_domains"]`
+   (already present in state, no new field needed — `AgentState`'s merge semantics already
+   carry it forward).
+2. `prompts.py`'s `TASK_PLANNER_USER` — add one line: *"Deterministically confirmed missing
+   evidence domain(s) — target one of these FIRST if non-empty: {required_domains}"*.
+3. Nothing else changes. The scorer still only names the missing *domain*; the LLM planner still
+   picks the *tool*; the normalizer still maps results back to the domain, unchanged.
+
+## 15.4 Correction — incident-type canonicalization + `_default` semantics (items 4 & 5)
+
+**Canonicalization (item 4):** pulled all 132 real production runs from `gs://sreagent-t2-demo-eval/`
+— **zero casing/spelling variance observed**; every `incident_type` value was byte-exact to one
+of the 3 policy keys or the literal `"Unknown"`. The prompt hands the model a closed vocabulary
+(`prompts.py:10-20`), which is why it's clean today — but nothing *structurally* enforces it (no
+`response_schema`/enum constraint on the Gemini call). Recommended minimal design: a
+normalize-then-match fallback derived mechanically from the 3 existing keys
+(`lowercase + strip non-alphanumeric`, tried after the exact match, before `_default`) — verified
+against real variants (`"oomkilled"`, `"OOM Killed"`, `"OOMKILLED"` all correctly resolve;
+`"Latency"` and novel strings correctly still fall through). **No hand-built synonym table is
+justified by any evidence found** — add only if the new `_default`-fallthrough logging (already
+recommended, §9 item 3) ever actually observes real variance.
+
+**`_default` semantics, A vs B (item 5):** confirmed via `agent/graph.py`'s real node ordering
+that `investigation_completeness` runs *inside* the loop, before any `Claim` object exists —
+`root_cause_confidence` (claim-aware) runs once, after the loop, in `rca_builder.py`. So
+completeness is claim-agnostic **by pipeline position**, not by oversight — Design B is not
+achievable there without restructuring the graph, which is out of scope.
+
+Quantified the risk anyway with a real constructed case (3 evidence domains collected, only 1
+cited by the actual root-cause claim): Design A reports `required_evidence_coverage=1.0`,
+`gaps=[]` ("complete") for a claim whose real evidence coverage is 0% by claim-scoped accounting
+— a 100-point gap in one realistic scenario.
+
+**Recommendation — hybrid, not a pure pick:**
+- `investigation_completeness`'s `_default` floor stays **Design A** (claim-agnostic) — the
+  pipeline makes anything else impossible today. Fix the *framing*: document explicitly that
+  `"complete"` means "the agent looked at ≥2 kinds of evidence," never "the evidence supports the
+  answer."
+- `root_cause_confidence`'s `missing_evidence_penalty` should be changed to **Design B**
+  (claim-scoped) — reusing the `supporting_domains` set `independent_corroboration` already
+  builds, for internal consistency within one function. This is the SAME fix as §15.1 — items 1
+  and 5 converge on one fix, not two.
+
+## 15.5 Correction — `support_strength` is not currently trustworthy (item 6)
+
+**Important scope correction: this is not a hypothetical risk for a future change.**
+`support_strength` already drives a live score component today — `claim_grounding`
+(`scorer.py:321-323`, weighted 0.10, `policy.py:50`). Everything below is a defect in the current
+score, not just a risk gate for a not-yet-made `direct_support` change.
+
+Ran `_ground_claim()` (`claim_builder.py:41-114`) — pure lexical keyword-overlap, no negation, no
+entailment/contradiction check — against 5 real adversarial pairs, actual function output:
+
+| # | Scenario | Result | Verdict |
+|---|---|---|---|
+| 1 | Correct fact + invented mechanism | `grounded`, `1.0` | **fails** — fabrication scored full credit |
+| 2 | Evidence contradicts the claim | `grounded`, `1.0` | **fails** — negation not detected at all |
+| 3 | Topically unrelated evidence, shared namespace word | `grounded`, `1.0` | **fails** — coincidental token match |
+| 4 | Directly, genuinely well-supported (control) | `grounded`, `1.0` | correct |
+| 5 | True claim, paraphrased, low lexical overlap | `no_overlap`, `0.1` | **fails** — good paraphrasing punished |
+
+**Verdict: not safe to use as-is** — for the `claim_grounding` component it already feeds today,
+or as a future basis for `direct_support` credit. Widening `direct_support` to read
+`support_strength` (as originally proposed) would import this grounding defect directly into the
+heaviest-weighted component, trading the current false-low problem for a new false-high one.
+**`_ground_claim` needs its own fix first** (minimum: negation-aware matching + an
+entailment/contradiction signal, not raw token overlap) before any inference-credit weighting
+change is considered.
+
+## 15.6 Correction — `previous_logs` fix, schema verified, design finalized (item 7)
+
+Verified at 3 independent levels, not assumed: `agent/mcp_client.py:319-336`'s payload builder
+reads `arguments.get("previous")` (bool); the live prompt shown to the LLM documents
+`previous=false` as the arg; and the **real production tool call** for `oomkilled-001`
+(`gs://sreagent-t2-demo-eval/runs/run_20260828_153451_zout.json` + its Cloud Logging
+`tool_executor` line) shows `args={..., 'previous': True}` sent for real. Root cause confirmed:
+`_map_to_custom_tool()` (`mcp_client.py:363-369`) hardcodes `get_k8s_logs → get_current_logs`
+with no conditional at all. The custom K8s MCP side needs no fix — it already has two separate,
+correctly-mapped tool names for current/previous logs.
+
+`describe_k8s_resource`/`get_k8s_resource`'s `resourceType` arg is also confirmed live —
+production traffic in the last 2 days already sends `deployment`/`replicaset`/`service`/
+`configmap`/`job`, all forced to `KUBERNETES_STATUS` today. Fixing this fully requires
+`_TOOL_DOMAIN` entries that don't exist yet for those resource types (same gap as the original
+report's §2 row 1) — the design below resolves only the values with an unambiguous existing
+match (`deployment`/`replicaset`/`statefulset`/`daemonset` → `WORKLOAD_CONFIG`); `service`/`node`/
+`configmap`/`job` are deliberately left pending the table-completeness decision, not guessed.
+
+**Finalized minimal design (signatures only, not implemented):**
+```python
+# evidence_domains.py
+def classify_tool(tool_name: str, args: dict | None = None) -> EvidenceDomain: ...
+_ARGS_DOMAIN_OVERRIDES = {
+    "get_k8s_logs": ("previous", {True: EvidenceDomain.PREVIOUS_LOGS}, EvidenceDomain.CURRENT_LOGS),
+    "describe_k8s_resource": ("resourceType", _RESOURCE_TYPE_DOMAIN, EvidenceDomain.KUBERNETES_STATUS),
+    "get_k8s_resource": ("resourceType", _RESOURCE_TYPE_DOMAIN, EvidenceDomain.KUBERNETES_STATUS),
+}
+# evidence_extractor.py -- store args already in hand, mirrors the existing resource_id pattern:
+ev_entry["args"] = last_call.get("args") or {}
+# scorer.py:39 -- one-line call-site change:
+domains[ev_id] = classify_tool(tool or "", ev.get("args") or {})
+```
+Only 3 tools multiplex on args; every other tool's classification is byte-for-byte unchanged.
+Existing no-args call sites and `tests/test_evidence_domains.py:13`'s regression test keep passing
+unmodified since `args` defaults to `None`.
+
+## 15.7 Correction — resource_identity_match root-caused precisely (item 8)
+
+**Both `configmap-001` and `init-001`: verdict (c) — the scorer's containment check is too
+strict for legitimately-related non-Pod evidence, not (a)/(b)/(d).**
+
+Reconstructed and re-ran the real functions against the real live data for both cases:
+- `configmap-001`: flagged evidence is `get_k8s_resource(resourceType="configmap",
+  name="app-config")` → `resource_id="test-incidents/app-config"`, cited by the RCA's key causal
+  claim ("ConfigMap 'app-config' ... NotFound"). `resolved_context` pod is `"auth-service"`.
+  `"auth-service" in "test-incidents/app-config"` → `False` → flagged, even though the evidence
+  is exactly correct and directly causal.
+- `init-001`: same shape, `get_k8s_resource(resourceType="service", name="db-service")` →
+  `resource_id="test-incidents/db-service"`, resolved pod `"inventory-service"` — same false flag.
+
+Reran both reconstructions through the real `score_root_cause_confidence()` — reproduced the
+exact live scores (0.85, 0.84) and the exact gap message, confirming the reconstruction is
+accurate.
+
+**Root cause:** `evidence_extractor.py:231` already stores `resource_type` (e.g. `"configmap"`,
+`"service"`) on every evidence entry — `scorer.py` never reads it. The containment check applies
+the same "must contain the resolved pod's name" rule uniformly, even to evidence about a
+legitimately-related non-Pod dependency object that structurally can never embed the pod's name.
+Not a `_resource_id_from_call()` bug (ruled out — the values it computed were correct) and not
+unrelated evidence (ruled out — both are the RCA's actual key evidence).
+
+**Fix direction (not implemented, needs sign-off):** relax `pod_ok` to `True` when
+`ev.get("resource_type") != "pod"` and the namespace still matches — i.e. only require pod-name
+containment for evidence that is actually *about* a Pod.
+
+## 15.8 Live-data status (item 9)
+
+Restated plainly: **the 14-case dataset is not clean and must not be used for calibration.**
+`insufficient-evidence-001` hit a real 429 quota-exhaustion error (all 14 calls run back-to-back,
+no spacing). `cascading-001` and `pending-001` both hit a genuine LLM-response-parse failure
+("model's response could not be parsed"), unrelated to confidence scoring. `secret-001`'s target
+namespace had a contaminated fixture (a real, unrelated, already-broken pod from prior testing,
+not the intended missing-Secret scenario). All four need to be fixed/retried before any run of
+this dataset is used as a calibration input — tracked in the final plan's Phase C/D gating, not
+worked around here.
+
+---
+
+# FINAL IMPLEMENTATION PLAN
+
+Five phases. Nothing beyond Phase A is implemented without separate, explicit approval — this
+plan is the artifact being submitted for that approval, not a go-ahead to proceed.
+
+## Phase A — Confirmed correctness bugs (safe to implement now, narrowly scoped, regression-tested)
+
+| Item | Files | Tests | Expected behavior | Risk | Deploy required? |
+|---|---|---|---|---|---|
+| A1. `previous_logs`/`resourceType` classification (§15.6, report §3b/§7) | `agent/confidence/evidence_domains.py`, `agent/nodes/evidence_extractor.py`, `agent/confidence/scorer.py:39` | New: `classify_tool` args-aware cases in `tests/test_evidence_domains.py`; existing `tests/test_evidence_domains.py:13` must stay green | `get_k8s_logs(previous=true)`→`PREVIOUS_LOGS`; `describe/get_k8s_resource(resourceType=deployment/replicaset/statefulset/daemonset)`→`WORKLOAD_CONFIG`; all other tools unchanged | Low — additive, defaults preserve old behavior when `args` absent | Yes — this changes what a real deployed run scores; needs a live post-deploy check (same pattern as prior PRs: real `invoke_agent.py` run + Cloud Logging/GCS confirmation) |
+| A2. `ConfidencePolicy.validate()` cross-check | `agent/confidence/policy.py` | New: a synthetic policy fixture missing a producing tool must raise at `validate()` | Startup-time catch of a required domain with no way to ever be produced | Low — validation-only, no scoring change | No — pure startup guard |
+| A3. `_default` fallthrough + normalized-match logging (§15.4 Part A) | `agent/confidence/policy.py` | New: caplog test asserting `log.info` on normalized match, `log.warning` on true `_default` fallthrough | Visibility only — incident types that don't exact-match get one retry via normalize-then-match, then `_default` with a warning instead of silent | Low — logging + a narrow, provably-safe normalize step, no weight/threshold change | No — logging + non-scoring normalization |
+
+## Phase B — Genericity + integrity fixes (need explicit sign-off; each is a real scoring-behavior change)
+
+| Item | Files | Tests | Expected behavior | Risk | Deploy required? |
+|---|---|---|---|---|---|
+| B1. Scope `missing_evidence_penalty`/`required_evidence_coverage` to claim-cited domains (§15.1, §15.4 Part B — items 1 & 5 converge here) | `agent/confidence/scorer.py` (root_cause_confidence side only — completeness stays Design A per §15.4) | `tests/test_missing_evidence_claim_scoping.py` (already exists, currently proves the BUG — must be updated to prove the FIX once implemented); full regression suite | A claim whose cited evidence doesn't include a required domain now correctly loses `missing_evidence_penalty` credit and can hit the hard cap; a claim that DOES cite the required domain is unaffected | **Medium** — changes real scores for any case with an uncited-but-present required domain; needs the 14-case data (Phase D input) re-checked, not just golden cases | Yes |
+| B2. Relax `resource_identity_match`'s pod-only containment check for non-Pod evidence (§15.7) | `agent/confidence/scorer.py` (the containment check only) | New regression test using the real `configmap-001`/`init-001` reconstructions as fixtures; confirm both now score `resource_identity_match=1.0` | Legitimately-related non-Pod evidence (ConfigMap/Service/etc.) no longer falsely dinged; still catches genuinely wrong-pod evidence | Low-medium — narrow, but changes real scores for both live cases identified | Yes |
+| B3. Route deterministic `missing_required_domains` into `task_planner` (§15.3) | `agent/nodes/task_planner.py`, `agent/prompts.py` | New: assert the forced-retry prompt now contains the missing domain name, using the same synthetic state the investigation used | The forced extra iteration (issue #69) targets the actual gap instead of running blind | Low — additive prompt content, no scoring-math change; behavior change is in what the LLM planner is told, worth a live check since it changes real tool-selection on retries | Yes — live check that a forced retry actually requests the right tool |
+| B4. `_ground_claim` negation/contradiction awareness (§15.5) | `agent/confidence/claim_builder.py` | New adversarial-pair regression tests using the exact 5 cases from §15.5 as fixtures | Cases 1-3 (fabrication, contradiction, unrelated) stop scoring `grounded`/1.0; case 5 (true, paraphrased) stops scoring `no_overlap`/0.1 | **Medium-high** — touches the grounding mechanism feeding `claim_grounding` (already live-weighted 0.10) AND is the prerequisite the report's §9 item 5 (`direct_support`) explicitly needs before proceeding | Yes |
+
+**Not in Phase B, explicitly deferred:** `direct_support`'s claim-type gate (report §9 item 5) —
+blocked on B4 landing and being trusted first, per item 6's instruction. Timestamp integrity
+(§15.2) — logged as backlog, not a Phase B item, since a real fix needs raw-event timestamp
+parsing (a larger change, out of scope per instruction).
+
+## Phase C — Negative/control dataset additions (blocks Phase D)
+
+| Item | Files | Tests | Expected behavior | Risk | Deploy required? |
+|---|---|---|---|---|---|
+| C1. Fix `secret-001`'s contaminated fixture | new `k8s/scenario-secret-missing.yaml`, `agent/eval/golden_cases.py` (no change needed if manifest matches existing query) | Live cluster verification only (pod reaches ContainerCreating/missing-Secret state) | `secret-001` tests what it says it tests | Low | No (test infra only) |
+| C2. Retry `insufficient-evidence-001` in isolation (space out calls, avoid quota) | none | none | Clean, real result for this case | Low | No |
+| C3. Fix or re-run `cascading-001`/`pending-001` past their LLM-parse failure | none (investigate the parse failure separately if it recurs) | none | Clean, real result for both | Low — if it recurs under normal (non-back-to-back) load, that's a new, separate reliability finding, not a confidence-framework issue | No |
+| C4. Add ≥1 Group C case (plausible-but-wrong RCA) | `agent/eval/golden_cases.py`, a new k8s manifest if needed | none yet — this IS the test data | Confidence framework must score this LOW even though evidence looks superficially supportive | Medium effort, low risk | No |
+| C5. Add ≥1 Group D case (unsupported/hallucination-tempting) | `agent/eval/golden_cases.py`, sparse/ambiguous manifest | none yet | Confidence framework must score this VERY low, contradiction/grounding checks must catch it | Medium effort, low risk | No |
+
+## Phase D — Calibration (blocked on Phase B + Phase C both landing)
+
+Not started, not scoped in detail here — per instruction, do not implement or design the
+calibration methodology further until Phase A-C are approved and Phase B/C are actually landed.
+Placeholder only: re-run all 14 (+ new C4/C5 cases) via `run_eval.py --mode remote`, human-grade
+each result into groups A/B/C/D, then and only then discuss weight adjustment — using clean data,
+with `direct_support` still deferred pending B4.
+
+## Phase E — Deployment + exact live validation
+
+| Step | Exact command | Confirms |
+|---|---|---|
+| E1. Deploy | merge to `main` → `terraform-apply` CI auto-triggers | `gh run view <id> --json status,conclusion` = `success` |
+| E2. Live smoke test | `source scripts/init-env.sh && python invoke_agent.py --scenario oomkilled --verbose` | `previous_logs` now appears in `evidence_domains_present` for a real OOMKilled run (proves A1) |
+| E3. Live smoke test | `python invoke_agent.py --scenario configmap --verbose` (or equivalent) | `resource_identity_match=1.0` for the ConfigMap-NotFound evidence (proves B2) |
+| E4. Cloud Logging check | query `sre-agent-investigations`/`sre_agent_run` for the E2/E3 run_ids | `contradictions_count`, `missing_evidence_penalty`, band all match the new expected values, not the old buggy ones |
+| E5. Full regression | `pytest tests/ -q && ruff check agent/ agent/eval/` | 0 failures, lint clean |
+
+Only after E1-E5 pass on real deployed runs does Phase D's calibration input dataset get treated
+as trustworthy.
+
