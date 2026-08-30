@@ -38,6 +38,16 @@ current gaps in
 [`docs/management/risks-and-limitations.md`](docs/management/risks-and-limitations.md);
 task status in `docs/management/PROJECT_TRACKER.xlsx`.
 
+## 2026-08-30 — superseded as the operational status source
+
+This file is kept in place because 15+ live code/test comments cite its "Priority N"
+numbering as provenance (`grep -rn "PRODUCTION-LAUNCH-PLAN.md" agent/ tests/`) — moving it
+would break those citations. But its day-to-day status role has moved:
+**for "where are we now," read [`docs/management/CURRENT-STATE.md`](docs/management/CURRENT-STATE.md)
+instead.** This file's own content hasn't been updated since 2026-08-20 (1 commit, vs. 11 to
+the tracker in the same window) and should be read as historical framing for the Priority-N
+numbering, not current status.
+
 ## 2026-08-11 update — Phase 1/Phase 2 plan, management requirements (supersedes the 2026-08-09 section below as the current status source)
 
 **Correction from the first draft of this section (same day):** that draft classified #92 as

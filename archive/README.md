@@ -4,10 +4,14 @@ Everything in this folder is **closed, historical work** — kept for reference 
 audit trail, not for day-to-day use. If you're looking for the current state of the
 project, these are **not** the files to read:
 
-- Current ordered launch work → [`../PRODUCTION-LAUNCH-PLAN.md`](../PRODUCTION-LAUNCH-PLAN.md)
+- **Current operational state (start here)** → [`../docs/management/CURRENT-STATE.md`](../docs/management/CURRENT-STATE.md)
+- Detailed task-level tracker → [`../docs/management/PROJECT_TRACKER.xlsx`](../docs/management/PROJECT_TRACKER.xlsx) (actively updated; `PRODUCTION-LAUNCH-PLAN.md` below is not)
 - Deep per-item research (NOT a status doc) → [`../NEXTSTEPS.md`](../NEXTSTEPS.md)
 - Current architecture/operations knowledge base → [`../docs/README.md`](../docs/README.md)
 - Current implementation status (what's really done vs planned) → [`../docs/management/implemented-vs-planned-matrix.md`](../docs/management/implemented-vs-planned-matrix.md)
+- `../PRODUCTION-LAUNCH-PLAN.md` — kept in place (cited by 15+ live code/test comments as "Priority N"
+  provenance) but its day-to-day status role has moved to `CURRENT-STATE.md` and the tracker above;
+  1 commit since 2026-08-20 vs. 11 to the tracker in the same window — treat it as historical framing, not current status.
 
 ## Naming convention
 
@@ -45,4 +49,18 @@ correctly described the system as it was on their own dates — they are archive
 the system changed, not because they were wrong.
 
 Moved here 2026-08-09 as part of a repo-wide documentation currency review — see
-`../docs/DOCUMENTATION-VALIDATION-REPORT.md` for that review's full findings.
+`SUPERSEDED_2026-08-20_DOCUMENTATION-VALIDATION-REPORT.md` for that review's full findings.
+
+## Added 2026-08-30 (documentation consolidation)
+
+| File | What it was | Status | Superseded/replaced by |
+|---|---|---|---|
+| `SUPERSEDED_2026-08-20_DOCUMENTATION-VALIDATION-REPORT.md` | Self-labeled "HISTORICAL SNAPSHOT" doc-currency audit (2026-08-08/09 coverage) | Superseded — was already self-disclaiming, moved here to match the convention its own text describes | `../docs/management/CURRENT-STATE.md` |
+| `RESOLVED_2026-08-27_agent-integrity-review.md` | 16-gap agent-integrity RCA (PR #204) | Resolved — PASS, live-verified same session | `../docs/management/CURRENT-STATE.md` §10 |
+| `SUPERSEDED_2026-08-25_model-armor-management-report.md` | External-sharing Model Armor management report | Superseded — conclusion predates the 2026-08-26 revert to `inspect_only` | `../docs/management/CURRENT-STATE.md` §2, §8 |
+| `SUPERSEDED_2026-08-25_custom-mcp-model-armor-coverage.md` | Real-test finding: custom/fallback MCP traffic transits the gateway but isn't Model Armor-inspected | Superseded as a standalone doc — the finding itself is still ACTIVE and unresolved, now tracked in `CURRENT-STATE.md` §2/§9, not lost | `../docs/management/CURRENT-STATE.md` §2, §9 |
+
+Zero-reference status for all 4 confirmed by a full repo-wide reference sweep before moving
+(2026-08-30). All inbound links from other docs updated in the same pass; `PRODUCTION-LAUNCH-PLAN.md`
+and `floor-settings-production-plan-2026-08-25.md` were evaluated but deliberately NOT archived —
+both are cited by live code/Terraform comments, not just other docs.

@@ -58,7 +58,7 @@
 Several rows above honestly say **"none found."** This is not a documentation gap — it's a real,
 current test-coverage gap confirmed by direct grep against the repo (see the [Master Status
 Matrix](../management/implemented-vs-planned-matrix.md) and the [Documentation Validation
-Report](../DOCUMENTATION-VALIDATION-REPORT.md)'s 2026-08-09 pass). Only 3 of 9 LangGraph nodes
+Report](../../archive/SUPERSEDED_2026-08-20_DOCUMENTATION-VALIDATION-REPORT.md)'s 2026-08-09 pass). Only 3 of 9 LangGraph nodes
 (`context_resolver`, `mcp_router`, `rca_builder`) have direct test coverage; no test in the repo
 exercises the compiled full graph (`compile_graph()` / `graph.invoke()`). If you're picking up
 test-coverage work, `loop_controller`, `task_planner`, `evidence_extractor`, `task_evaluator`,

@@ -152,7 +152,7 @@ yet filed.
 **How to keep this table honest going forward:** update the relevant row immediately when a
 capability's real status changes — don't let this drift the way `evaluation.md`,
 `deployment.md`, and 3 other pages drifted between 2026-08-08 and 2026-08-09 (see
-[Documentation Validation Report](../DOCUMENTATION-VALIDATION-REPORT.md) for that specific
+[Documentation Validation Report](../../archive/SUPERSEDED_2026-08-20_DOCUMENTATION-VALIDATION-REPORT.md) for that specific
 gap list and what was fixed).
 
-**Related pages:** [Risks and Limitations](risks-and-limitations.md) · [Documentation Validation Report](../DOCUMENTATION-VALIDATION-REPORT.md) · [Executive FAQ](executive-faq.md)
+**Related pages:** [Risks and Limitations](risks-and-limitations.md) · [Documentation Validation Report](../../archive/SUPERSEDED_2026-08-20_DOCUMENTATION-VALIDATION-REPORT.md) · [Executive FAQ](executive-faq.md)

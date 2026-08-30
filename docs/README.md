@@ -2,7 +2,7 @@
 
 **Implementation Status:** This entire knowledge base documents the currently-deployed system in GCP project `sreagent-t2-demo`, built by direct inspection of the repository, Terraform, and live configuration — not from design documents or assumptions. Every page carries its own status header (Implementation Status, Last Verified, Source of Truth, Owner) and marks claims IMPLEMENTED / PARTIALLY IMPLEMENTED / PLANNED / DEPRECATED / UNKNOWN.
 
-**Last Verified:** 2026-08-20 (index and page count re-verified; individual pages carry their own dates — several were last verified 2026-08-08/09 and predate ~80 commits, so trust current code over any page that disagrees)
+**Last Verified:** 2026-08-30 (index re-verified; added CURRENT-STATE.md and 4 previously-unindexed 2026-08-23→08-28 reports; moved DOCUMENTATION-VALIDATION-REPORT.md to archive/. Individual pages carry their own dates — several were last verified 2026-08-08/09 and predate ~90 commits, so trust current code, or [Current State](management/CURRENT-STATE.md), over any page that disagrees)
 **Owner:** SRE Agent platform team
 
 ---
@@ -105,9 +105,14 @@
 
 | Page | Covers |
 |---|---|
+| [**Current State**](management/CURRENT-STATE.md) | **Start here for "where are we now" — the canonical operational source of truth** (2026-08-30): completed/in-progress/MUST FIX/BLOCKED/NICE TO HAVE, active security decisions, next deliverable. Links out to the pages below rather than duplicating them. |
 | [Implemented vs Planned Matrix](management/implemented-vs-planned-matrix.md) | **The current capability truth** — every capability, ✅/🟡/🔵/❌, with file:line or live-command evidence |
 | [Show Me the Implementation](management/show-me-the-implementation.md) | Management-facing "prove it" answers |
-| [Documentation Validation Report](DOCUMENTATION-VALIDATION-REPORT.md) | **Historical snapshot (2026-08-08/09)** — audit evidence, not current status |
+| [Documentation Validation Report](../archive/SUPERSEDED_2026-08-20_DOCUMENTATION-VALIDATION-REPORT.md) | **Historical snapshot (2026-08-08/09)** — audit evidence, not current status |
+| [Confidence/Genericity Review (2026-08-28)](management/confidence-genericity-review-2026-08-28.md) | 7 structural confidence-scoring fixes (PR #219) — before/after evidence + corrections addendum |
+| [Floor-Settings Production Plan (2026-08-25)](management/floor-settings-production-plan-2026-08-25.md) | Model Armor floor-setting history — **referenced by `iac/agent/model_armor.tf`, do not move** |
+| [Observability Architecture Review (2026-08-23)](management/observability-architecture-review-2026-08-23.md) | Phase-0 observability gap review |
+| [RCA — TF 1.4.7 + Network Grant Removal (2026-08-26)](management/rca-2026-08-26-tf147-and-network-grant-removal.md) | Status: PARTIAL — CI smoke test still red for an unrelated, pre-existing reason |
 | ADR-001 … ADR-012 | Architecture decision records — [001 two-project split](ADR-001-two-project-split.md) · [002 agent identity and gateway](ADR-002-agent-identity-and-gateway.md) · [003 LangGraph orchestration](ADR-003-langgraph-orchestration.md) · [004 MCP tool-access protocol](ADR-004-mcp-tool-access-protocol.md) · [005 read-only by design](ADR-005-read-only-by-design.md) · [006 evidence before RCA](ADR-006-evidence-before-rca.md) · [007 two confidence dimensions](ADR-007-two-confidence-dimensions.md) · [008 confidence not accuracy](ADR-008-confidence-not-accuracy.md) · [009 GCS durable evidence archive](ADR-009-gcs-durable-evidence-archive.md) · [010 human approval before trusted memory](ADR-010-human-approval-before-trusted-memory.md) · [011 Terraform-managed cluster registry](ADR-011-terraform-managed-cluster-registry.md) · [012 GKE Remote MCP vs custom MCP](ADR-012-gke-remote-mcp-vs-custom-mcp.md) |
 
 ### Promotion to the company repo
@@ -145,13 +150,13 @@
 10. Executive/management FAQ — ✅ [Executive FAQ](management/executive-faq.md)
 11. Run-team onboarding guide — ✅ [Run-Team Onboarding Guide](onboarding/run-team-guide.md)
 12. Glossary — ✅ [Glossary](onboarding/glossary.md)
-13. Mermaid architecture diagrams — ✅ embedded in [System Overview](architecture/system-overview.md), [LangGraph Workflow](architecture/langgraph-workflow.md), [Dynamic MCP Routing](architecture/dynamic-mcp-routing.md) — see the [Documentation Validation Report](DOCUMENTATION-VALIDATION-REPORT.md) for the full diagram count against the requested 18
+13. Mermaid architecture diagrams — ✅ embedded in [System Overview](architecture/system-overview.md), [LangGraph Workflow](architecture/langgraph-workflow.md), [Dynamic MCP Routing](architecture/dynamic-mcp-routing.md) — see the [Documentation Validation Report](../archive/SUPERSEDED_2026-08-20_DOCUMENTATION-VALIDATION-REPORT.md) for the full diagram count against the requested 18
 14. Component inventory — ✅ [Component Ownership](governance/ownership-raci.md)
 15. IAM/permission matrix — ✅ [Security Operations](governance/security.md)
 16. Metric/alert inventory — ✅ [Observability](operations/observability.md), [Alerting](operations/alerting.md)
 17. Failure-mode matrix — ✅ [Reliability and Failure Modes](governance/reliability.md)
-18. Current-vs-planned implementation matrix — ✅ every page's status header, consolidated in the [Documentation Validation Report](DOCUMENTATION-VALIDATION-REPORT.md)
+18. Current-vs-planned implementation matrix — ✅ every page's status header, consolidated in the [Documentation Validation Report](../archive/SUPERSEDED_2026-08-20_DOCUMENTATION-VALIDATION-REPORT.md)
 19. Known gaps — ✅ [Risks and Limitations](management/risks-and-limitations.md)
-20. Documentation coverage report — ✅ [Documentation Validation Report](DOCUMENTATION-VALIDATION-REPORT.md)
+20. Documentation coverage report — ✅ [Documentation Validation Report](../archive/SUPERSEDED_2026-08-20_DOCUMENTATION-VALIDATION-REPORT.md)
 
-**→ [Read the full Documentation Validation Report](DOCUMENTATION-VALIDATION-REPORT.md)**
+**→ [Read the full Documentation Validation Report](../archive/SUPERSEDED_2026-08-20_DOCUMENTATION-VALIDATION-REPORT.md)**
