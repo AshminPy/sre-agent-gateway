@@ -185,9 +185,18 @@ scoped roles.
 ```bash
 cd ../..
 make register-endpoints    # register Google-API + MCP hosts in Agent Registry
-make attach-gateway        # bind the reasoning engine to the gateway (REST PATCH)
 ```
 
+> **Updated 2026-08-30, verified against current CI/Terraform:** `make attach-gateway` is
+> **no longer a required step.** Since 2026-08-10 (PR #93), the gateway binding
+> (`agentGatewayConfig`) is managed natively by Terraform itself
+> (`iac/agent/agent_engine.tf`'s `dynamic "agent_gateway_config"` block) — a normal
+> `terraform apply` keeps it in place, verified live for both a fresh binding and a
+> source-only update. `scripts/attach_gateway_to_engine.sh` (and `make attach-gateway`) still
+> exist as a manual **emergency rollback tool only** — run it by hand only if a real
+> deployment needs to fall back to the old out-of-band PATCH path. CI (`terraform-apply.yml`)
+> does not invoke it automatically.
+>
 > The gateway's data plane provisions asynchronously on Google's side and may
 > take a while before traffic flows — see
 > [docs/ADR-002](docs/ADR-002-agent-identity-and-gateway.md). For a deploy that
@@ -229,6 +238,12 @@ make validate   # terraform validate both stacks
 
 ### Gateway binding fails with `error.code: 3`
 
+> **2026-08-30 note:** this whole section describes the manual `attach_gateway_to_engine.sh`
+> path, which is now an **emergency rollback tool only** (see Step 3 above) — Terraform
+> manages the binding natively since 2026-08-10 (PR #93). Points 1 and 3 below still apply if
+> you ever need the manual script. Point 2 is now historical: it describes the pre-PR-#93
+> failure mode and does not apply to a normal `terraform apply` today.
+
 If `make attach-gateway` (or `scripts/attach_gateway_to_engine.sh` directly)
 fails with `{"code": 3, "message": "The Reasoning Engine failed to be
 updated."}`, work through these in order — this exact sequence resolved a
@@ -241,10 +256,11 @@ real, multi-day production incident (full writeup: [`archive/RESOLVED_2026-07-17
    submitted together, in one atomic `PATCH`. Two sequential calls (even
    seconds apart) do not work. If you've modified the script, verify this
    didn't regress.
-2. **Re-run after every `terraform apply` that touches the engine.**
-   Terraform doesn't manage `agentGatewayConfig` (not yet exposed by the
-   provider), so any apply on the engine resource silently wipes the
-   binding. Always re-run the attach script immediately after.
+2. **(Historical, pre-2026-08-10) Re-run after every `terraform apply` that touched the
+   engine.** Terraform did not manage `agentGatewayConfig` at the time this RCA was written.
+   Since PR #93, Terraform manages the binding natively and a normal apply keeps it in place
+   — this step no longer applies to the standard path, only to manual use of the emergency
+   script.
 3. **Check the script's own pre-flight diagnostics.** It fetches and
    prints the live engine and gateway state, checks required APIs,
    endpoint registration, and IAM service agents before attempting the

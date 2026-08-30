@@ -213,7 +213,7 @@ already documents as the pattern, without an explicit, recorded justification.
 
 Update the relevant page(s) under `docs/` in *this* repo to reflect the change —
 following the standard this knowledge base already holds itself to (see
-[Documentation Validation Report](../DOCUMENTATION-VALIDATION-REPORT.md)): every
+[Documentation Validation Report](../../archive/SUPERSEDED_2026-08-20_DOCUMENTATION-VALIDATION-REPORT.md)): every
 substantive claim needs a `file:line` citation, and if the change affects a status label,
 update [Implemented vs Planned](../management/implemented-vs-planned-matrix.md) in the
 same change, not as a follow-up. Do not promote a code change to the company repo while
@@ -330,7 +330,7 @@ its own non-prod deployment — same principle as Step 4, applied to the new env
 A clean `terraform apply` does not prove the gateway binding or the live GKE connection
 actually works (this repo's own history includes a case where the bind reported
 `done=true` while the runtime connection was still broken — see
-[Documentation Validation Report](../DOCUMENTATION-VALIDATION-REPORT.md)).
+[Documentation Validation Report](../../archive/SUPERSEDED_2026-08-20_DOCUMENTATION-VALIDATION-REPORT.md)).
 
 ### Step 17 — RCA / eval comparison against this repo's baseline
 

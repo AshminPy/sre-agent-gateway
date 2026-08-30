@@ -76,6 +76,20 @@ Alert thresholds exist as operational tripwires; no published service-level comm
 
 ---
 
+## 17. Custom/fallback MCP traffic is not Model Armor-inspected (2026-08-25 finding, added 2026-08-30)
+
+**Confirmed by a real live test:** custom/fallback MCP traffic DOES transit the Agent Gateway
+(corrects an earlier assumption that it bypassed the gateway) — TLS-intercepted, IAP-governed,
+correctly parsed as an MCP `tools/call`. But Model Armor's floor-setting API only accepts
+`AI_PLATFORM`/`GOOGLE_MCP_SERVER` as integrated services — there is no custom-MCP option, so
+this traffic is never inspected. Scoped fix identified but not built: wire the existing,
+currently-unused app-level `_sanitize()` client into `agent/nodes/tool_executor.py`'s
+`call_tool()` — protocol-agnostic, would cover custom MCP and any future MCP source with zero
+per-server config. Full original evidence:
+`archive/SUPERSEDED_2026-08-25_custom-mcp-model-armor-coverage.md`.
+
+---
+
 None of the above are described elsewhere in this knowledge base as fully solved — every relevant page cross-references back to this list. Treat this page as the canonical "what's actually still open" summary.
 
-**Related pages:** [Executive FAQ](executive-faq.md) · [Security Operations](../governance/security.md) · [Documentation Validation Report](../README.md#documentation-validation-report)
+**Related pages:** [Current State](CURRENT-STATE.md) · [Executive FAQ](executive-faq.md) · [Security Operations](../governance/security.md) · [Documentation Validation Report](../../archive/SUPERSEDED_2026-08-20_DOCUMENTATION-VALIDATION-REPORT.md)

@@ -873,4 +873,4 @@ python -c "from agent.mcp_client import MCP_REGISTRY; print(list(MCP_REGISTRY.ke
 
 **Related pages:** [Implemented vs Planned — Master Status Matrix](implemented-vs-planned-matrix.md)
 · [Risks and Limitations](risks-and-limitations.md) · [Executive FAQ](executive-faq.md) ·
-[Documentation Validation Report](../DOCUMENTATION-VALIDATION-REPORT.md)
+[Documentation Validation Report](../../archive/SUPERSEDED_2026-08-20_DOCUMENTATION-VALIDATION-REPORT.md)
