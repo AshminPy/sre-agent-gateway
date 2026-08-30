@@ -30,6 +30,16 @@ def task_planner(state: AgentState) -> dict:
     namespace     = ctx.get("namespace", "test-incidents")
     pod           = ctx.get("pod", "")
     gaps          = state["investigation"].get("evidence_gaps", [])
+    # 2026-08-29: loop_controller forces a retry off this deterministic list
+    # (completeness.missing_required_domains, computed by score_investigation_completeness --
+    # never the LLM) but this node used to only ever see `evidence_gaps` above, the LLM's own
+    # free-text field, which carries no guarantee of naming the same domain. Confirmed live gap
+    # -- see docs/management/confidence-genericity-review-2026-08-28.md #15.3. This does not
+    # make the planner (or the scorer) pick a tool -- it only names the missing semantic
+    # domain; the LLM below still decides which available tool can satisfy it.
+    required_domains = state["investigation"].get("completeness", {}).get(
+        "missing_required_domains", []
+    )
     theory        = state.get("working_theory", "none yet")
     memory_ctx    = state.get("incident_envelope", {}).get("memory_context", "")
     # issue #207 follow-up: the original report is the only place a named target
@@ -62,6 +72,7 @@ def task_planner(state: AgentState) -> dict:
             memory_context=memory_ctx_for_prompt,
             evidence_digest=_evidence_digest(state),
             evidence_gaps="\n".join(gaps) if gaps else "none identified yet",
+            required_domains=", ".join(required_domains) if required_domains else "none",
             working_theory=theory,
         ),
         max_tokens=300,

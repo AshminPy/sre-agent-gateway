@@ -288,23 +288,59 @@ def test_root_cause_confidence_missing_required_evidence_caps_score():
     assert result["components"]["missing_evidence_penalty"] > 0
 
 
-def test_root_cause_confidence_inference_claim_scores_lower_direct_support_than_observed_fact():
-    # 2026-08-27: fixture text changed from "x" to real wording. _keywords() only
-    # extracts words of 4+ letters, so "x" produced an EMPTY keyword set on both
-    # the claim and the evidence. That empty/empty case used to be scored
-    # "grounded" at full strength 1.0 -- the bug fixed in _ground_claim -- and
-    # this test depended on that generous default to give both claims non-zero
-    # support before comparing them. Contentless evidence now correctly scores
-    # 0.0, which made both sides 0.0 and the comparison meaningless.
+def test_root_cause_confidence_weakly_grounded_inference_scores_lower_than_observed_fact():
+    # 2026-08-29: this test used to assert a FULLY-grounded inference must ALWAYS score lower
+    # direct_support than a fully-grounded fact, purely because of its claim_type label. That
+    # was the exact false-low bug fixed the same day (docs/management/
+    # confidence-genericity-review-2026-08-28.md #15.5 -> direct_support formula change,
+    # scorer.py): a real production case (selector-001) had its ONE correct, fully-grounded
+    # causal claim -- necessarily typed supported_inference, since a root cause is an
+    # inference over observed facts -- scored 0/1 direct_support, capping an objectively
+    # correct RCA at partial_evidence.
     #
-    # The property under test is unchanged: an observed_fact claim must score
-    # higher direct_support than a supported_inference claim. It now exercises
-    # that property with evidence that actually has content.
-    claim_text = "pod imagepull-pod entered ImagePullBackOff"
-    evidence_store = {
+    # The property that's still real and still worth guarding: a claim's claim_type is not
+    # what should differ here, GROUNDING STRENGTH should. An inference claim with only
+    # WEAK evidence overlap must still score lower than a fully-grounded fact -- it's the
+    # weak grounding that should cost it, not the "inference" label by itself. This test now
+    # exercises exactly that: same text, but the inference case's evidence only weakly
+    # overlaps (generic vocabulary only), so its support_strength is 0.4, not 1.0.
+    fact_text = "pod imagepull-pod entered ImagePullBackOff"
+    fact_evidence = {
         "ev_001": make_evidence(
             "ev_001", "describe_pod_detail",
             key_facts=["imagepull-pod ImagePullBackOff manifest not found"],
+        )
+    }
+    fact_claim = build_claims({"claims": [{"text": fact_text, "claim_type": "observed_fact",
+                                             "supporting_evidence_ids": ["ev_001"]}]},
+                                ["ev_001"], fact_evidence)
+
+    weak_text = "the deployment rollout strategy caused this pod failure"
+    weak_evidence = {
+        "ev_001": make_evidence(
+            "ev_001", "describe_pod_detail",
+            key_facts=["pod status failed"],  # only generic overlap ("pod", "failed")
+        )
+    }
+    inference_claim = build_claims({"claims": [{"text": weak_text, "claim_type": "supported_inference",
+                                                  "supporting_evidence_ids": ["ev_001"]}]},
+                                     ["ev_001"], weak_evidence)
+
+    fact_result = _rcc(fact_claim, evidence_store=fact_evidence)
+    inference_result = _rcc(inference_claim, evidence_store=weak_evidence)
+    assert fact_result["components"]["direct_support"] > inference_result["components"]["direct_support"]
+
+
+def test_root_cause_confidence_fully_grounded_inference_now_earns_full_direct_support_credit():
+    """The actual fix, proven directly: when an inference claim's own evidence is JUST as
+    specifically grounded as a fact claim's, it now earns the SAME direct_support credit --
+    not automatically zero, not automatically discounted, because claim_type is a label, not
+    a measure of evidence strength. Mirrors the real selector-001 case."""
+    claim_text = "the Service selector mismatch is causing zero endpoints for this pod"
+    evidence_store = {
+        "ev_001": make_evidence(
+            "ev_001", "describe_pod_detail",
+            key_facts=["Service selector app=notification-service does not match pod label app=notification"],
         )
     }
     fact_claim = build_claims({"claims": [{"text": claim_text, "claim_type": "observed_fact",
@@ -315,7 +351,8 @@ def test_root_cause_confidence_inference_claim_scores_lower_direct_support_than_
                                      ["ev_001"], evidence_store)
     fact_result = _rcc(fact_claim, evidence_store=evidence_store)
     inference_result = _rcc(inference_claim, evidence_store=evidence_store)
-    assert fact_result["components"]["direct_support"] > inference_result["components"]["direct_support"]
+    assert fact_result["components"]["direct_support"] == 1.0
+    assert inference_result["components"]["direct_support"] == 1.0
 
 
 def test_root_cause_confidence_mislabeled_observed_fact_does_not_get_direct_support_credit():

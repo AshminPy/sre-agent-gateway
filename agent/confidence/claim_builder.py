@@ -33,12 +33,63 @@ _DOMAIN_GENERIC = {
 
 _VALID_CLAIM_TYPES = {t.value for t in ClaimType}
 
+# 2026-08-29: negation-aware grounding, minimal scope -- see
+# docs/management/confidence-genericity-review-2026-08-28.md #15.5. A real live example was
+# constructed there: evidence "restart count: 0, no CrashLoopBackOff detected" against a claim
+# "the pod is in CrashLoopBackOff, restarted repeatedly" shared the token "crashloopbackoff" and
+# scored grounded/1.0 -- the overlap check had no way to know the evidence was DENYING what the
+# claim asserts, not confirming it. This does not attempt general negation/entailment handling
+# (that's the semantic-grounding redesign explicitly out of scope) -- only the narrow, common
+# SRE-evidence shape of "the tool reported the state did NOT occur."
+_NEGATION_MARKERS = {
+    "no", "not", "never", "none", "without", "isnt", "doesnt", "wasnt",
+    "hasnt", "cannot", "cant", "didnt", "nor",
+}
+
 
 def _keywords(text: str) -> set:
     return {w for w in re.findall(r"[a-z]{4,}", text.lower())} - _CITATION_STOP
 
 
-def _ground_claim(claim: Claim, known_evidence_ids: set, evidence_store: dict) -> None:
+def _negated_keywords(text: str, window: int = 4) -> set:
+    """Keywords appearing within `window` tokens after a negation marker -- the text is
+    denying these, not asserting them, so they must not count as positive overlap."""
+    tokens = re.findall(r"[a-z']+", text.lower())
+    negated: set = set()
+    for i, tok in enumerate(tokens):
+        if re.sub(r"'", "", tok) in _NEGATION_MARKERS:
+            for t in tokens[i + 1: i + 1 + window]:
+                w = re.sub(r"[^a-z]", "", t)
+                if len(w) >= 4:
+                    negated.add(w)
+    return negated
+
+
+def _contextual_generic_keywords(resolved_context: dict | None) -> set:
+    """Keywords derived from the investigation's OWN resolved namespace/pod/cluster.
+
+    2026-08-29, docs/management/confidence-genericity-review-2026-08-28.md #15.5: every piece
+    of evidence in an investigation trivially shares the resolved namespace/pod/cluster name --
+    sharing it is not evidence of TOPICAL relevance to a specific claim. Real example: a claim
+    about a Service selector mismatch and evidence about an unrelated ConfigMap scored
+    grounded/1.0 purely because both mentioned the shared namespace "test-incidents". Excluded
+    the same way _DOMAIN_GENERIC excludes generic K8s vocabulary -- these are generic to THIS
+    investigation, not evidence of anything specific to the claim.
+    """
+    if not resolved_context:
+        return set()
+    words: set = set()
+    for key in ("namespace", "pod", "cluster_name", "cluster"):
+        val = resolved_context.get(key)
+        if val:
+            words |= _keywords(str(val))
+    return words
+
+
+def _ground_claim(
+    claim: Claim, known_evidence_ids: set, evidence_store: dict,
+    resolved_context: dict | None = None,
+) -> None:
     """Sets claim.grounding_status and claim.support_strength in place — deterministic."""
     cited = set(claim.supporting_evidence_ids)
     phantoms = cited - known_evidence_ids
@@ -70,10 +121,12 @@ def _ground_claim(claim: Claim, known_evidence_ids: set, evidence_store: dict) -
 
     claim_words = _keywords(claim.text)
     facts_words: set = set()
+    facts_text_all = ""
     for eid in cited_usable:
         ev = evidence_store.get(eid, {})
         facts_text = " ".join(ev.get("key_facts", []) + [ev.get("summary", "")])
         facts_words |= _keywords(facts_text)
+        facts_text_all += " " + facts_text
 
     # 2026-08-27: an evidence item that yields NO keywords cannot support anything.
     # This used to fall through to the final `else` below and be scored
@@ -88,6 +141,18 @@ def _ground_claim(claim: Claim, known_evidence_ids: set, evidence_store: dict) -
 
     overlap = claim_words & facts_words
 
+    # 2026-08-29: a shared word the evidence explicitly NEGATES is not support -- it's the
+    # evidence denying the claim. Checked before the no_overlap/grounded branches below so a
+    # fully-negated overlap is distinguished from silence (no_overlap) and from real support
+    # (grounded/weak_overlap). See docs/management/confidence-genericity-review-2026-08-28.md
+    # #15.5.
+    negated = _negated_keywords(facts_text_all) & overlap
+    if negated and negated == overlap:
+        claim.grounding_status = "contradicted"
+        claim.support_strength = 0.0
+        return
+    overlap -= negated
+
     if claim_words and facts_words and not overlap:
         claim.grounding_status = "no_overlap"
         claim.support_strength = 0.1
@@ -97,7 +162,13 @@ def _ground_claim(claim: Claim, known_evidence_ids: set, evidence_store: dict) -
     # nothing more specific) is materially weaker support than overlap that includes a
     # specific identifier/detail (an error code, a named resource, a distinguishing term)
     # -- full credit used to be granted for either case identically.
-    if overlap and (overlap - _DOMAIN_GENERIC):
+    #
+    # 2026-08-29: also excludes tokens from the investigation's OWN resolved namespace/pod/
+    # cluster (_contextual_generic_keywords) -- every piece of evidence in an investigation
+    # trivially shares those, so sharing them alone is not evidence of topical relevance to
+    # THIS claim. See docs/management/confidence-genericity-review-2026-08-28.md #15.5.
+    contextual_generic = _contextual_generic_keywords(resolved_context)
+    if overlap and (overlap - _DOMAIN_GENERIC - contextual_generic):
         claim.grounding_status = "grounded"
         claim.support_strength = 1.0
     elif overlap:
@@ -116,6 +187,7 @@ def _ground_claim(claim: Claim, known_evidence_ids: set, evidence_store: dict) -
 
 def build_claims(
     rca_result: dict, evidence_ids: list, evidence_store: dict,
+    resolved_context: dict | None = None,
 ) -> list:
     """rca_result is the LLM's proposed JSON (extended RCA_BUILDER_USER schema — see
     agent/prompts.py). A MISSING 'claims' key falls back to a single claim built from the
@@ -123,6 +195,11 @@ def build_claims(
     EXPLICITLY EMPTY 'claims' list (e.g. the no-evidence safety path in rca_builder.py) is
     respected as zero claims, not silently reinterpreted via the legacy fallback — the caller
     meant "no claims," not "old response shape."
+
+    resolved_context is optional (defaults to None, same as every existing caller before
+    2026-08-29) -- passed through to _ground_claim so its namespace/pod/cluster tokens are
+    excluded from counting as meaningful overlap (see _contextual_generic_keywords). Omitting
+    it just means that specific exclusion doesn't apply -- no other behavior changes.
     """
     known_ids = set(evidence_ids)
     raw_claims = rca_result.get("claims")
@@ -149,7 +226,7 @@ def build_claims(
                     e for e in rc.get("contradicting_evidence_ids", []) if isinstance(e, str)
                 ],
             )
-            _ground_claim(claim, known_ids, evidence_store)
+            _ground_claim(claim, known_ids, evidence_store, resolved_context)
             claims.append(claim)
     else:
         # Legacy fallback: no structured claims from the model — build exactly one claim from
@@ -163,7 +240,7 @@ def build_claims(
             claim_type=ClaimType.SUPPORTED_INFERENCE,
             supporting_evidence_ids=sorted(cited),
         )
-        _ground_claim(claim, known_ids, evidence_store)
+        _ground_claim(claim, known_ids, evidence_store, resolved_context)
         claims.append(claim)
 
     return claims

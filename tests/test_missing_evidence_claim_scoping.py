@@ -1,27 +1,25 @@
-"""Proof, not a fix: missing-evidence checks are keyed on ALL evidence collected for the
-whole investigation, not on the specific evidence that actually supports the root-cause
-claim being scored.
+"""Proof of a fixed bug: missing-evidence checks used to be keyed on ALL evidence collected
+for the whole investigation, not on the specific evidence that actually supports the
+root-cause claim being scored.
 
-Requested as a follow-up correction to docs/management/confidence-genericity-review-2026-08-28.md
-(that report did not cover this gap). Scope: agent/confidence/scorer.py only, both call
-sites that build `domains_present` from the full domain_map instead of from a claim's own
-`supporting_evidence_ids`:
+Originally written as a follow-up correction to
+docs/management/confidence-genericity-review-2026-08-28.md (that report's first pass did not
+cover this gap). Confirmed as a real false-high mechanism (report §15.1) and fixed 2026-08-29:
 
-  - score_investigation_completeness(): scorer.py:75
-        domains_present = set(_evidence_domains_present(evidence_store, tool_history).values())
-  - score_root_cause_confidence():      scorer.py:350
-        domains_present = set(domain_map.values())
+  - score_investigation_completeness(): scorer.py:75 -- UNCHANGED, deliberately. This
+        component has no claim argument at all (it runs before claims exist in the
+        pipeline -- see report §15.4's pipeline-ordering finding), so "coverage" stays
+        investigation-wide by construction. See test_completeness_required_evidence_
+        coverage_ignores_claim_scope below -- still-current, intentional behavior.
+  - score_root_cause_confidence():      scorer.py -- FIXED. `missing_required` is now
+        computed from `supporting_domains` (the claim's own cited evidence, already built
+        for independent_corroboration) instead of the whole evidence_store's domain_map.
 
-Contrast: independent_corroboration (scorer.py:231-236, same function) gets this right —
-it scopes to `supporting_ids = {eid for c in root_claims for eid in c.supporting_evidence_ids}`
-before mapping to domains. The missing-evidence check three components below it does not
-reuse that scoped set; it recomputes `domains_present` from `domain_map` (the whole
-evidence_store), so a required domain satisfied by ANY tool call in the investigation —
-even one the claim never cites — clears `required_now`, zeroes `missing_evidence_penalty`,
-and avoids the `max_score_missing_critical_evidence` hard cap (scorer.py:368-369).
+Contrast: independent_corroboration (same function) already scoped correctly to
+`supporting_ids = {eid for c in root_claims for eid in c.supporting_evidence_ids}` before
+mapping to domains. The missing-evidence check now reuses that exact same scoped set.
 
-This file changes nothing under agent/ — it is a deterministic reproduction, run against
-the real functions, of behavior that is already live today.
+This file changes nothing under agent/ itself -- it exercises the real, now-fixed functions.
 """
 from __future__ import annotations
 
@@ -148,8 +146,10 @@ def test_completeness_required_evidence_coverage_ignores_claim_scope():
     assert not any("Missing required evidence domain" in g for g in result["gaps"])
 
 
-def test_root_cause_confidence_missing_evidence_penalty_is_zero_despite_unscoped_claim():
-    """The actual counterexample. Q1-Q4 from the review request, proven with real numbers."""
+def test_root_cause_confidence_missing_evidence_penalty_is_correctly_scoped_to_the_claim():
+    """The fix, proven with real numbers. Before 2026-08-29 this test proved the opposite
+    (penalty=0.0, score=0.875/high_confidence) -- see git history for the original
+    counterexample this replaces."""
     state, claims, evidence_store, tool_history, resolved_context = _build_state_and_claim()
 
     result = score_root_cause_confidence(
@@ -163,7 +163,7 @@ def test_root_cause_confidence_missing_evidence_penalty_is_zero_despite_unscoped
         policy=POLICY,
     )
 
-    print("\n--- score_root_cause_confidence() real output ---")
+    print("\n--- score_root_cause_confidence() real output (post-fix) ---")
     print(f"score = {result['score']}  band = {result['band']}")
     print(f"components = {result['components']}")
     print(f"reasons = {result['reasons']}")
@@ -176,71 +176,36 @@ def test_root_cause_confidence_missing_evidence_penalty_is_zero_despite_unscoped
     assert claims[0].supporting_evidence_ids == ["ev_002"]
 
     # Every OTHER component is at (or near) its ceiling, by construction -- so the only
-    # thing that can explain a high final score here is the missing-evidence checks
-    # under test, not the already-documented direct_support gate (§3a) or a lucky
+    # thing that can explain the final score here is the missing-evidence check under
+    # test, not the already-documented direct_support gate (§3a) or a lucky
     # resource-identity/time-correlation roll.
     assert result["components"]["direct_support"] == 1.0
     assert result["components"]["resource_identity_match"] == 1.0
     assert result["components"]["time_correlation"] == 1.0
     assert result["components"]["claim_grounding"] == 1.0
-    # independent_corroboration correctly scopes to what THIS claim cites (scorer.py:
-    # 231-236) -- one domain (KUBERNETES_EVENTS) -- so it is NOT at ceiling. This is the
-    # correct, scoped behavior the missing-evidence checks below do not share.
+    # independent_corroboration correctly scopes to what THIS claim cites -- one domain
+    # (KUBERNETES_EVENTS) -- so it is NOT at ceiling.
     assert result["components"]["independent_corroboration"] == 0.5
 
-    # Q1: does required_now get satisfied even though the claim never cites that evidence?
     # required_now for "_default" is (KUBERNETES_STATUS,) -- policy.py:106-113 (confirmed
-    # by test_contrast_... below: INCIDENT_TYPE falls through to "_default"). The claim's
-    # own supporting domain is only KUBERNETES_EVENTS (asserted above). Yet scorer.py:350
-    # (`domains_present = set(domain_map.values())`) pulls from the WHOLE domain_map --
-    # both ev_001 (KUBERNETES_STATUS, cited by NOTHING here) and ev_002 -- so
-    # KUBERNETES_STATUS reads as present and required_now is seen as fully satisfied.
-    # Q2: is missing_evidence_penalty == 0 in this case?
-    assert result["components"]["missing_evidence_penalty"] == 0.0
+    # by test_contrast_... below). The claim's own supporting domain is only
+    # KUBERNETES_EVENTS. Post-fix, missing_required is computed from the claim's own
+    # supporting_domains, not the whole evidence_store -- ev_001 (KUBERNETES_STATUS,
+    # cited by NOTHING here) no longer counts, so KUBERNETES_STATUS correctly reads as
+    # missing for THIS claim.
+    assert result["components"]["missing_evidence_penalty"] == 0.10
+    assert any("Missing required evidence" in r for r in result["reasons"])
 
-    # Q3: does the hard cap (max_score_missing_critical_evidence == 0.65, scorer.py:368-369)
-    # get avoided? Real weighted base score here is 0.875 (0.30 + 0.125 + 0.20 + 0.15 +
-    # 0.10), no contradiction/alt-hypothesis penalties apply, and no cap engages --
-    # the actual score clears 0.65 outright, landing in the TOP band.
-    assert result["score"] == 0.875
-    assert result["score"] > POLICY.max_score_missing_critical_evidence
-    assert result["band"] == "high_confidence"
-
-    # Q4: is this an unjustifiably high score for a claim actually backed by just one
-    # (weighted-0.5, uncorroborated) domain? Prove it by recomputing what the score WOULD
-    # be if the missing-evidence check reused independent_corroboration's own scoping
-    # (supporting_ids -> domains, matching scorer.py:231-236's pattern) instead of the
-    # whole-investigation domain_map. No agent/ code is changed to do this -- it's the
-    # same arithmetic scorer.py already performs, applied to the correctly-scoped set.
-    claim_supporting_domains = {
-        EvidenceDomain.KUBERNETES_EVENTS  # only domain claims[0] actually cites
-    }
-    correctly_scoped_missing = set(POLICY.evidence_requirements["_default"].required_now) \
-        - claim_supporting_domains
-    assert correctly_scoped_missing == {EvidenceDomain.KUBERNETES_STATUS}
-    correctly_scoped_penalty = min(
-        POLICY.missing_evidence_penalty_cap,
-        len(correctly_scoped_missing) * POLICY.missing_evidence_penalty_per_domain,
-    )
-    correctly_scoped_score = result["score"] - result["components"]["missing_evidence_penalty"] \
-        + correctly_scoped_penalty
-    # ...and the hard cap WOULD engage, since correctly_scoped_missing is non-empty:
-    correctly_scoped_score = min(correctly_scoped_score, POLICY.max_score_missing_critical_evidence)
-
-    assert correctly_scoped_penalty == 0.10
-    assert round(correctly_scoped_score, 4) == 0.65
+    # The hard cap (max_score_missing_critical_evidence == 0.65) now correctly engages --
+    # a claim backed by one uncorroborated domain cannot reach the top band regardless of
+    # how high its other components are.
+    assert result["score"] == POLICY.max_score_missing_critical_evidence
+    assert result["band"] == "review_required"
 
     print(
-        f"\nAs actually scored today: {result['score']} ({result['band']}) "
-        f"vs. claim-scoped hypothetical: {round(correctly_scoped_score, 4)} "
-        "(would cap at review_required's threshold, one full band lower) "
-        f"-- band_thresholds={POLICY.band_thresholds}"
+        f"\nFixed: {result['score']} ({result['band']}) -- correctly capped at "
+        f"review_required, not the pre-fix 0.875/high_confidence."
     )
-    # One full band's worth of unjustified score, purely from evidence the claim itself
-    # never cites: high_confidence (>=0.85, no human review) vs. review_required (0.65).
-    assert result["score"] >= POLICY.band_thresholds["auto"]
-    assert round(correctly_scoped_score, 4) < POLICY.band_thresholds["review"] + 1e-9
-    assert round(correctly_scoped_score, 4) == POLICY.band_thresholds["review"]
 
 
 def test_contrast_if_the_claim_scope_were_honored_penalty_would_apply():
