@@ -137,12 +137,6 @@ def test_generic_path_produces_a_sensible_low_score_for_a_weakly_evidenced_novel
         ],
     }
     claims = build_claims(rca_result, evidence_ids, evidence_store, resolved_context)
-    state = {
-        "resolved_context": resolved_context,
-        "investigation": {"started_at": 999.0, "current_step": 1, "max_steps": 5},
-        "evidence_store": evidence_store,
-        "tool_history": tool_history,
-    }
     confidence = score_root_cause_confidence(
         claims=claims, contradictions=[], hypotheses=[],
         evidence_store=evidence_store, tool_history=tool_history,
