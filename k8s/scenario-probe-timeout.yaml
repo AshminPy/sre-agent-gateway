@@ -1,0 +1,96 @@
+# SCENARIO: Liveness probe too aggressive for a slow-starting container
+# (golden_cases.py probe-timeout-001, Group C -- "tempting but wrong" trap)
+#
+# What's happening:
+#   checkout-api opens port 8080 immediately, but any request made before a
+#   ~15s warm-up completes is deliberately held open (not refused, not
+#   errored) until the warm-up finishes. Its livenessProbe uses
+#   initialDelaySeconds=2 / timeoutSeconds=1 -- far too aggressive for that
+#   warm-up window -- so real probes genuinely time out client-side while
+#   waiting for headers. periodSeconds=3 (tighter than the 10s default) is
+#   set here so three consecutive REAL failures land inside the 15s warm-up
+#   window; with the 10s default only two failures would land before the
+#   container finished warming up and started answering, which would reset
+#   kubelet's failure count and never actually kill it. This does not change
+#   the trap's ground truth (a probe-triggered kill, not an app crash) --
+#   it only ensures the real kubelet timing reliably reproduces it.
+#
+# What agent must find:
+#   1. list_k8s_events: kubelet's own text -- "Liveness probe failed: Get
+#      http://<pod-ip>:8080/healthz: context deadline exceeded" followed by
+#      "Killing container checkout-api: failed liveness probe".
+#   2. describe_k8s_resource: livenessProbe.initialDelaySeconds=2,
+#      timeoutSeconds=1 -- provably too aggressive for the warm-up.
+#      lastState.terminated.reason == "Error" (kubelet-initiated kill), NOT
+#      OOMKilled and not an app-thrown exit.
+#   3. get_k8s_logs: clean up to the kill -- no exception, no stack trace --
+#      because the app never got far enough to log anything abnormal.
+#   4. Root cause: the probe config kills a healthy-but-slow container before
+#      it finishes starting -- NOT an application bug.
+#
+apiVersion: v1
+kind: Pod
+metadata:
+  name: checkout-api
+  namespace: test-incidents
+  labels:
+    incident-type: ProbeTimeout
+    app: checkout-api
+  annotations:
+    incident-description: "liveness probe too aggressive for ~15s warm-up -- kubelet kills a healthy-but-slow container"
+spec:
+  restartPolicy: Always
+  containers:
+    - name: checkout-api
+      image: python:3.11-slim
+      command: ["python", "-c"]
+      args:
+        - |
+          import http.server
+          import socketserver
+          import time
+
+          START = time.time()
+          WARMUP_SECONDS = 15
+
+          class Handler(http.server.BaseHTTPRequestHandler):
+              def do_GET(self):
+                  elapsed = time.time() - START
+                  if elapsed < WARMUP_SECONDS:
+                      remaining = WARMUP_SECONDS - elapsed
+                      print(f"checkout-api: still warming up ({elapsed:.1f}s elapsed) -- "
+                            f"holding response to {self.path} for {remaining:.1f}s more", flush=True)
+                      time.sleep(remaining + 0.5)
+                  if self.path == "/healthz":
+                      self.send_response(200)
+                      self.end_headers()
+                      self.wfile.write(b"ok")
+                  else:
+                      self.send_response(404)
+                      self.end_headers()
+
+              def log_message(self, fmt, *args):
+                  print("checkout-api: %s - %s" % (self.address_string(), fmt % args), flush=True)
+
+          print("checkout-api starting -- port 8080 opens immediately, "
+                "but the app needs ~15s before it actually answers (JVM-style warm-up)", flush=True)
+          socketserver.ThreadingTCPServer.allow_reuse_address = True
+          server = socketserver.ThreadingTCPServer(("0.0.0.0", 8080), Handler)
+          server.serve_forever()
+      ports:
+        - containerPort: 8080
+      livenessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080
+        initialDelaySeconds: 2
+        timeoutSeconds: 1
+        periodSeconds: 3
+        failureThreshold: 3
+      resources:
+        requests:
+          memory: "64Mi"
+          cpu: "100m"
+        limits:
+          memory: "256Mi"
+          cpu: "300m"

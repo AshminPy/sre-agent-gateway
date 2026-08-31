@@ -1,0 +1,78 @@
+# SCENARIO: Healthy control fixture -- no findable cause exists
+# (golden_cases.py intermittent-001, Group D -- "clean evidence, no signal" trap)
+#
+# What's happening:
+#   checkout-frontend is a plain, stable, always-up HTTP server. There is no
+#   incident condition to reproduce here on purpose -- the golden case's whole
+#   point is that a real investigation finds Running / 0 restarts / no events
+#   / clean 200-status logs, and the correct agent outcome is
+#   insufficient_evidence/unknown (recognizing the limit), never a fabricated
+#   "probably GC pause" style guess. Do not add any failure behavior to this
+#   fixture -- boring-on-purpose is the ground truth.
+#
+# What agent must find:
+#   1. get_k8s_resource: Running, 0 restarts, memory/CPU well inside limits.
+#   2. list_k8s_events: nothing in the incident window.
+#   3. get_k8s_logs: clean 200-status lines, no errors/timeouts/warnings.
+#   4. Root cause: none findable with the tools available -- correct answer is
+#      insufficient_evidence/unknown, not a specific-mechanism guess.
+#
+apiVersion: v1
+kind: Pod
+metadata:
+  name: checkout-frontend
+  namespace: test-incidents
+  labels:
+    incident-type: HealthyControl
+    app: checkout-frontend
+  annotations:
+    incident-description: "healthy control -- boring on purpose, no findable cause exists"
+spec:
+  restartPolicy: Always
+  containers:
+    - name: checkout-frontend
+      image: python:3.11-slim
+      command: ["python", "-c"]
+      args:
+        - |
+          import http.server
+          import socketserver
+
+          class Handler(http.server.BaseHTTPRequestHandler):
+              def do_GET(self):
+                  self.send_response(200)
+                  self.end_headers()
+                  self.wfile.write(b"ok")
+
+              def log_message(self, fmt, *args):
+                  print("checkout-frontend: %s - %s" % (self.address_string(), fmt % args), flush=True)
+
+          print("checkout-frontend starting -- healthy, boring, stable", flush=True)
+          socketserver.ThreadingTCPServer.allow_reuse_address = True
+          server = socketserver.ThreadingTCPServer(("0.0.0.0", 8080), Handler)
+          server.serve_forever()
+      ports:
+        - containerPort: 8080
+      readinessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080
+        # initialDelaySeconds set generous (not tight like probe-timeout-001's
+        # deliberate trap) -- this fixture must never produce even a transient
+        # startup probe-failure event, since the golden case's ground truth is
+        # "list_k8s_events has nothing in the incident window."
+        initialDelaySeconds: 10
+        periodSeconds: 10
+      livenessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080
+        initialDelaySeconds: 15
+        periodSeconds: 10
+      resources:
+        requests:
+          memory: "32Mi"
+          cpu: "50m"
+        limits:
+          memory: "64Mi"
+          cpu: "100m"
