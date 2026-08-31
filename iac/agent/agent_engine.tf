@@ -99,11 +99,36 @@ locals {
       # turn as a broken-stream TaskGroup/TimeoutError.
       ADK_ENABLE_MCP_GRACEFUL_ERROR_HANDLING = "true"
     },
-    # ── App-level Model Armor: gateway-OFF only ─────────────────────────────
-    # Under the gateway the Model Armor CONTENT_AUTHZ extension inspects egress,
-    # so app-level sanitize would be a redundant second (gateway-routed) call.
-    # The codelab agent does not set it under the gateway; agent code skips it.
-    var.enable_agent_gateway ? {} : {
+    # ── App-level Model Armor: always on (issue #203) ───────────────────────
+    # Previously gated to gateway-OFF only, on the theory that "under the
+    # gateway the Model Armor CONTENT_AUTHZ extension inspects egress, so
+    # app-level sanitize would be a redundant second call." That premise is
+    # false: agent_gateway.tf's own header says the gateway does NOT inspect
+    # content via Model Armor -- "no working Terraform path exists to wire
+    # CONTENT_AUTHZ to this gateway" -- and the only authz extension that
+    # exists on it is the IAP one (agent_gateway.tf's google_network_services_
+    # authz_extension.iap), which is header/attribute-based authorization, not
+    # content inspection. So gating this off the gateway left every
+    # SREAgent._sanitize() caller silently disabled in every real deployment
+    # (the gateway defaults on) -- including agent/mcp_client.py's custom-MCP
+    # response sanitize (PR #223), which has no other coverage at all: the
+    # project-level floor setting (google_model_armor_floorsetting.mcp below)
+    # only supports integrated_services = ["GOOGLE_MCP_SERVER", "AI_PLATFORM"]
+    # and never can cover a custom Cloud Run MCP target.
+    #
+    # Always setting the template here does not introduce a NEW double-
+    # inspection risk for the other two _sanitize() callers either
+    # (agent/main.py's query()-input and output-summary sanitize): the floor
+    # setting's AI_PLATFORM/GOOGLE_MCP_SERVER integrations inspect Gemini-call
+    # and GKE-Remote-MCP traffic directly, not the agent's own pre-assembly
+    # user-query field or its downstream-constructed RCA summary object --
+    # confirmed in issue #203's investigation ("floor settings ... cover
+    # AI_PLATFORM and GOOGLE_MCP_SERVER traffic -- not the agent's final
+    # summary"). The one real overlap (GKE Remote MCP tool responses, which
+    # the floor setting's GOOGLE_MCP_SERVER integration does inspect 1:1) is
+    # already excluded in code, not infra -- see agent/mcp_client.py's
+    # `if not is_gke_remote:` guard around _sanitize_custom_mcp_response.
+    {
       MODEL_ARMOR_TEMPLATE = google_model_armor_template.sre_agent_request.name
     },
     # Point the fallback MCP at the custom Cloud Run service when enabled.
