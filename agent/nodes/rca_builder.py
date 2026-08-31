@@ -436,7 +436,23 @@ def rca_builder(state: AgentState) -> dict:
             region=ctx.get("cluster_region", ""),
             project=ctx.get("project_id", ""),
         ),
-        max_tokens=1536,
+        # 2026-08-31: was 1536. Raised as part of root-causing the intermittent
+        # "model's response could not be parsed" failure (cascading-001,
+        # pending-001, mcp-gateway-failure-001 -- see docs/management/
+        # confidence-genericity-review-2026-08-28.md). rca_builder's output schema
+        # (RCA_BUILDER_USER) is the most verbose of any llm_json() call in this
+        # codebase -- claims[], alternative_hypotheses_considered[], reasoning_trace[],
+        # suggested_remediation[], each an array of multi-field objects -- and 1536
+        # was the tightest budget relative to that shape of any node (compare
+        # evidence_extractor=700, task_evaluator=400, task_planner/mcp_router=300 --
+        # all far simpler schemas). A truncated response can never be repaired by
+        # llm_json()'s brace-matching (a cut-off string/object is missing information,
+        # not malformed text), so under-budgeting here was a guaranteed parse failure
+        # for any multi-hop case with more than a few claims. agent/llm/gemini_adapter.py's
+        # llm_json() now also detects and retries once on an actual MAX_TOKENS
+        # truncation (belt-and-suspenders); this raise is the primary fix, since it
+        # removes the truncation for the normal case instead of relying on the retry.
+        max_tokens=3072,
     )
     log_node_tokens("rca_builder", state["run_id"], inv.get("current_step", 0), usage)
 

@@ -639,25 +639,64 @@ reported as observed, not claimed as caused.
 
 ## Findings that need honest flagging, not hidden
 
-**cascading-001's new answer is wrong.** "The order-api Deployment and its ReplicaSet are
-missing from the cluster" is factually false — `order-api` was running throughout (confirmed via
-the same cluster-status checks used to seed this scenario). This scored 0.65/review_required
-(not auto-band, so it would still route to human review), not a false-high, but it's a real wrong
-answer that needs its own investigation — separately from this fix set, since none of the 7
-fixes touch evidence collection or the RCA-builder's reasoning, only how a given claim set gets
-scored once produced.
+**cascading-001's new answer is wrong — FIXED 2026-08-31.** "The order-api Deployment and its
+ReplicaSet are missing from the cluster" is factually false — `order-api` was running throughout
+(confirmed via the same cluster-status checks used to seed this scenario). This scored
+0.65/review_required (not auto-band, so it would still route to human review), not a false-high,
+but it was a real wrong answer.
+
+Root cause, found by tracing the evidence chain rather than the LLM prompt: it was NOT in the
+RCA-builder's reasoning as originally suspected — it was in `agent/mcp_client.py`'s `call_tool()`,
+upstream of `rca_builder` entirely. `describe_k8s_resource`/`get_k8s_resource` are the two GKE
+Remote MCP tools whose `name` field is REQUIRED (`toolspec.json`); when the agent (or its planner)
+looked up `order-api`'s Deployment/ReplicaSet by a guessed name — pods and ReplicaSets always carry
+a random hash suffix no caller can know in advance — the server correctly returned `NotFound`, but
+`call_tool()` had no handling for that shape on these two tools and returned it as `ok: True` real
+content. That NotFound text then flowed into `evidence_extractor` and became "evidence" the
+RCA-builder LLM cited as proof the resource didn't exist. This is the exact same failure SHAPE as
+issue #70 (`list_k8s_events` NotFound, fixed 2026-08-09) — issue #70's fix only covered
+`list_k8s_events` (the one tool whose name/namespace filters are both optional, so it can retry
+unscoped); `describe_k8s_resource`/`get_k8s_resource` were never given the same treatment.
+
+Fix: both tools now return `ok: False` (`NAME_SCOPED_NOT_FOUND`) on a NotFound result, same
+treatment as the existing `isError`/Model-Armor-block branches in the same function, so a wrong
+name-guess can no longer by itself ground a "resource is missing" claim. `agent/mcp_client.py`,
++4 new regression tests in `tests/test_mcp_client_describe_get_not_found.py`. Full suite:
+398/398 pass (394 baseline + 4 new) after this fix alone.
 
 **mcp-gateway-failure-001 and cascading-001/pending-001 (yesterday) all hit the same
-"model's response could not be parsed" failure at different times, intermittently.** This is an
-`rca_builder` LLM-output-parsing reliability gap, upstream of every fix in this PR — worth its
-own investigation, not in scope here.
+"model's response could not be parsed" failure at different times, intermittently — FIXED
+2026-08-31 (most probable root cause; not live-confirmed).** `agent/llm/gemini_adapter.py`'s
+`llm_json()` could not tell a response cut off by `max_output_tokens` apart from a genuinely
+malformed one — a truncated JSON object (unterminated string / unbalanced braces) is missing
+information the brace-repair pass can never reconstruct, so any truncation was a guaranteed parse
+failure with zero signal as to why. Fix: `llm_json()` now reads the provider's own `finish_reason`
+(`FinishReason.MAX_TOKENS`, not an inference from the broken text) and retries once with a larger
+budget specifically when that's the diagnosed cause; `rca_builder`'s `max_tokens` raised 1536→3072
+(its output schema — `claims[]`, `alternative_hypotheses_considered[]`, `reasoning_trace[]`,
+`suggested_remediation[]` — is the most verbose `llm_json()` call in the codebase, and had the
+tightest budget of any node). `agent/llm/gemini_adapter.py`, `agent/nodes/rca_builder.py`, +7 new
+tests in `tests/test_llm_gemini_adapter.py`. Full suite: 405/405 pass after both fixes.
 
-**init-001's score dropped (0.84→0.68) with no fix that should cause a decrease.** Every
-component that moved (`independent_corroboration` 1.0→0.5, `claim_grounding` 1.0→0.8) is driven
-by which specific claims/evidence THIS run's live LLM call happened to produce — none of the 7
-fixes remove credit that was previously given. Read as LLM/evidence-gathering variance between
-two independent live runs, not a regression, but flagged rather than dismissed since it wasn't
-independently re-verified the way configmap-001/secret-001 were.
+Evidence for the root cause: (1) the brace-repair logic is mathematically unable to fix a
+truncated response — this is not a hypothesis, it follows directly from what information a
+truncated string is missing; (2) only the higher-complexity multi-hop cases ever hit this, never
+the simpler single-cause cases (crashloop-001, oomkilled-001, imagepull-001, configmap-001), which
+is the pattern you'd expect from an output-length problem and not from a random API glitch or a
+persistent regex bug (which would fail deterministically every run). **Caveat, stated plainly:**
+this could not be live-confirmed against a real Gemini call — no live GCP calls were in scope for
+this fix, and the original failures predate `finish_reason` being logged at all, so there is no
+historical log to check either. If this recurs post-fix, Cloud Logging now carries `finish_reason`
+on every call, which will confirm or rule this out directly on the next occurrence.
+
+**init-001's score dropped (0.84→0.68) with no fix that should cause a decrease — still open,
+out of scope for this fix.** Every component that moved (`independent_corroboration` 1.0→0.5,
+`claim_grounding` 1.0→0.8) is driven by which specific claims/evidence THIS run's live LLM call
+happened to produce — none of the 7 fixes remove credit that was previously given. Read as
+LLM/evidence-gathering variance between two independent live runs, not a regression, but flagged
+rather than dismissed since it wasn't independently re-verified the way configmap-001/secret-001
+were. This is a scoring-logic question, not an RCA-correctness or parse-reliability bug — needs a
+same-input controlled re-check, separately scoped.
 
 ## Bottom line
 
@@ -665,10 +704,18 @@ independently re-verified the way configmap-001/secret-001 were.
 (oomkilled-001, selector-001, configmap-001, secret-001) — including selector-001, the hardest
 designed scenario, moving from a wrong band to fully correct. **2 pre-existing "insufficient
 evidence" results (from yesterday's LLM parse failures / quota exhaustion) resolved on retry,
-independent of these fixes.** **2 real, unrelated reliability findings surfaced** (cascading-001's
-wrong answer, the intermittent parse-failure pattern) — neither caused by, nor masked by, this
-fix set; both need their own follow-up. **1 result (init-001) needs a same-input controlled
-re-check before drawing any conclusion** — flagged, not resolved.
+independent of these fixes.** **2 of the 2 real, unrelated reliability findings that surfaced are
+now FIXED as of 2026-08-31** (cascading-001's wrong answer — root-caused to `mcp_client.py`, not
+`rca_builder`; the intermittent parse-failure pattern — root-caused to undetected `MAX_TOKENS`
+truncation in `gemini_adapter.py`'s `llm_json()`), see the findings above for evidence, caveats,
+and file-level changes. **1 result (init-001) needs a same-input controlled re-check before
+drawing any conclusion** — still flagged, not resolved, out of scope for this fix.
 
-Calibration remains untouched and un-started, per instruction.
+**Calibration remains BLOCKED, not run.** Verified 2026-08-31: `agent/eval/golden_cases.py` still
+has exactly the original 14 cases and zero Group C/D cases (per §13 above). Running calibration
+against this dataset would violate this document's own instruction ("the 14-case dataset is not
+clean and must not be used for calibration") — so no calibration pass was attempted. The two
+parse-failure cases that blocked calibration (cascading-001, pending-001) are now fixed, but the
+dataset itself still needs at least 1-2 Group C cases and 1 Group D case added (§13) before a real
+calibration pass can run. That is dataset-authoring work, not a bug fix, and is out of scope here.
 
