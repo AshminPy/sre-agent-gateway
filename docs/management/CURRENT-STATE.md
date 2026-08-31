@@ -111,10 +111,49 @@ Improvements that must not block completion:
 ## 9. Known limitations
 
 Canonical ranked list: [Risks and Limitations](risks-and-limitations.md). Notable additions
-from this consolidation pass: custom/fallback MCP traffic is not Model Armor-inspected (§2);
-3 unresolved loose ends from PR #219's own report — a wrong RCA answer on `cascading-001`, an
-intermittent LLM-response-parse failure hitting different cases across runs, and one unclear
-score change (`init-001`) needing a same-input controlled re-check.
+from this consolidation pass: custom/fallback MCP traffic is not Model Armor-inspected (§2).
+
+**2026-08-31 update — 2 of PR #219's 3 unresolved loose ends fixed, 1 still open:**
+- **`cascading-001`'s wrong RCA — FIXED.** Root cause: `agent/mcp_client.py`'s `call_tool()`
+  treated a name-scoped `NotFound` response from `describe_k8s_resource`/`get_k8s_resource`
+  as real evidence (`ok: True`) — same failure SHAPE issue #70 already fixed for
+  `list_k8s_events`, just on the two GKE Remote MCP tools whose `name` field is required and
+  therefore can't be retried unscoped. A guessed/wrong resource name (Deployments' pods and
+  ReplicaSets carry a random hash suffix no caller can know in advance) 404'd, and that
+  NotFound text became "evidence" the RCA-builder LLM cited as proof `order-api` didn't
+  exist — when it was running the whole time. Fix: both tools now return `ok: False` on a
+  NotFound result, same treatment as the existing `isError`/Model Armor-block branches, so a
+  wrong name-guess can no longer by itself ground a "resource is missing" claim. See
+  `docs/management/confidence-genericity-review-2026-08-28.md` for the full writeup.
+- **Intermittent LLM-response-parse failure — FIXED (most probable root cause; not
+  live-confirmed, see caveat below).** `agent/llm/gemini_adapter.py`'s `llm_json()` could not
+  tell a response truncated by `max_output_tokens` apart from a genuinely malformed one — a
+  truncated JSON object (unterminated string/unbalanced braces) can never be repaired by the
+  brace-matching logic, so any truncation was a guaranteed parse failure with no signal as to
+  why. Fix: `llm_json()` now reads the provider's own `finish_reason` and (a) retries once
+  with a larger token budget specifically when `finish_reason=MAX_TOKENS`, and (b) raised
+  `rca_builder`'s `max_tokens` 1536→3072 (its output schema is the most verbose `llm_json()`
+  call in the codebase — the tightest budget on the biggest schema). **Caveat:** this could
+  not be live-confirmed against a real Gemini call (no live GCP calls in scope for this fix)
+  — the evidence is: (1) the brace-repair logic is mathematically unable to fix a truncated
+  response, so if truncation ever happens it is a 100% guaranteed failure; (2) only the
+  higher-complexity multi-hop cases (`cascading-001`, `pending-001`, `mcp-gateway-failure-001`)
+  ever hit this, never the simpler single-cause cases, consistent with an output-length
+  problem rather than a random API glitch. If this recurs post-fix, Cloud Logging now carries
+  `finish_reason` on every call, which will confirm or rule this out directly.
+- **`init-001`'s unclear score change (0.84→0.68) — still open**, needs a same-input
+  controlled re-check per PR #219's own report; out of scope for this fix (scoring-logic
+  question, not an RCA-correctness or parse-reliability bug).
+
+**Calibration — BLOCKED, unchanged.** `agent/eval/golden_cases.py` still has all 14 original
+cases and zero Group C/D cases (verified 2026-08-31: `grep -c '"id":'` → 14, same as before).
+Per `confidence-genericity-review-2026-08-28.md` §13, calibration needs at minimum: 1-2 Group C
+cases (evidence that plausibly points to the wrong culprit — e.g. a cascading-failure-shaped
+scenario where naive investigation finds the downstream symptom and a correct agent must trace
+to the real upstream cause) and 1 Group D case (evidence sparse/ambiguous enough to tempt a
+fabricated-sounding causal chain, to test whether contradiction/grounding checks catch it). Not
+created here — that is new dataset-authoring work, not a bug fix, and remains a separate,
+explicitly scoped follow-up.
 
 ## 10. Validation / evidence links
 

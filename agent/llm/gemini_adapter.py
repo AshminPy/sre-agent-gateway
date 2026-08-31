@@ -28,6 +28,48 @@ from agent.llm.base import (
 log = logging.getLogger("sre-agent.llm.gemini")
 
 
+def _finish_reason_name(response) -> str:
+    """response.candidates[0].finish_reason as a plain string, or "" if unavailable.
+
+    Never raises -- candidates can legitimately be empty/absent (e.g. the
+    response.text is None / blocked-call path above already handles that
+    case separately). This is a read-only diagnostic accessor only.
+    """
+    try:
+        candidates = getattr(response, "candidates", None)
+        if not candidates:
+            return ""
+        reason = getattr(candidates[0], "finish_reason", None)
+        return reason.name if hasattr(reason, "name") else str(reason or "")
+    except Exception:
+        return ""
+
+
+def _is_truncated(response) -> bool:
+    """True when Gemini stopped generating because it hit max_output_tokens --
+    the provider's own explicit signal (FinishReason.MAX_TOKENS), not an
+    inference from the malformed text itself.
+
+    2026-08-31: added to root-cause the intermittent "model's response could
+    not be parsed" failure (cascading-001, pending-001, mcp-gateway-failure-001
+    -- see docs/management/confidence-genericity-review-2026-08-28.md). Before
+    this, a truncated response (cut off mid-string/mid-object) and a genuinely
+    malformed one were indistinguishable -- both just failed
+    json.loads()/the brace-repair pass below, which CANNOT recover an
+    unterminated string or unbalanced braces (that isn't a parser
+    shortcoming, it's not enough information to reconstruct). Only the
+    higher-complexity multi-hop cases (more claims/hypotheses -> longer JSON)
+    ever hit this, never the simple single-cause cases -- consistent with an
+    output-length problem, not a random API/format glitch.
+    """
+    return _finish_reason_name(response) == "MAX_TOKENS"
+
+
+# Hard ceiling for the one-shot truncation retry below -- never grows without
+# bound even if a caller passes an unusually large max_tokens already.
+_TRUNCATION_RETRY_MAX_TOKENS = 8192
+
+
 class GeminiAdapter(LLMClient):
     """Vertex AI Gemini adapter. Model is fixed per instance (one adapter = one
     resolved LLM_PROFILE for the process lifetime — matches Agent Engine's
@@ -151,9 +193,18 @@ class GeminiAdapter(LLMClient):
         except Exception:
             pass
 
-    def llm(self, system: str, user: str, *, max_tokens: int = 1024) -> tuple[str, LLMUsage]:
+    def _call_model(self, prompt: str, max_tokens: int):
+        """One logical call to Gemini, with the existing 429 retry loop.
+
+        Returns (response, usage) -- the RAW response object, not just its text --
+        so callers that need more than the text (llm_json(), below, needs
+        response.candidates[0].finish_reason to tell a truncated response apart
+        from a genuinely malformed one) don't have to re-implement this retry
+        loop. llm() and llm_json() both go through this single call site now;
+        behavior for llm() is unchanged (same retry loop, same blocked-response
+        check, same usage accounting), just relocated.
+        """
         client = self._get_client()
-        prompt = f"{system}\n\n{user}"
 
         for attempt in range(3):
             try:
@@ -183,10 +234,10 @@ class GeminiAdapter(LLMClient):
 
                 log.debug(
                     "gemini call input=%d cached_input=%d output=%d reasoning=%d "
-                    "tool=%d total=%d cost=$%.6f",
+                    "tool=%d total=%d cost=$%.6f finish_reason=%s",
                     usage["input_tokens"], usage["cached_input_tokens"], usage["output_tokens"],
                     usage["reasoning_tokens"], usage["tool_tokens"], usage["total_tokens"],
-                    usage["cost_usd"],
+                    usage["cost_usd"], _finish_reason_name(response),
                 )
 
                 self._emit_gen_ai_span(usage, max_tokens, span_start_ns, span_end_ns)
@@ -209,7 +260,7 @@ class GeminiAdapter(LLMClient):
                         "returning an empty string, so no downstream node can mistake "
                         "a blocked call for a real answer."
                     )
-                return response.text.strip(), usage
+                return response, usage
 
             except Exception as e:
                 if "429" in str(e) and attempt < 2:
@@ -220,6 +271,10 @@ class GeminiAdapter(LLMClient):
                     raise
 
         raise RuntimeError("Max retries exceeded")
+
+    def llm(self, system: str, user: str, *, max_tokens: int = 1024) -> tuple[str, LLMUsage]:
+        response, usage = self._call_model(f"{system}\n\n{user}", max_tokens)
+        return response.text.strip(), usage
 
     def _extract_usage(self, response, duration_s: float) -> LLMUsage:
         """Maps Gemini's raw usage_metadata onto the normalized LLMUsage schema.
@@ -264,42 +319,27 @@ class GeminiAdapter(LLMClient):
             duration_s=duration_s,
         )
 
-    def llm_json(self, system: str, user: str, *, max_tokens: int = 1024) -> tuple[dict, LLMUsage]:
-        text, usage = self.llm(
-            system + "\n\nRespond ONLY with valid JSON. No markdown fences, no preamble.",
-            user,
-            max_tokens=max_tokens,
-        )
+    @staticmethod
+    def _extract_json_object(text: str):
+        """Best-effort JSON-object extraction from a model response.
 
+        Returns (parsed_dict_or_None, failure_reason_or_""). Never raises --
+        every failure path returns a short, content-free reason string instead
+        (issue #76: never log/carry the model's actual raw text on a failure
+        path, only length/position metadata).
+        """
         text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.MULTILINE)
         text = re.sub(r"\s*```\s*$", "", text, flags=re.MULTILINE)
         text = text.strip()
 
         try:
-            return json.loads(text), usage
+            return json.loads(text), ""
         except json.JSONDecodeError:
             pass
 
         start = text.find("{")
         if start == -1:
-            # issue #76: was logging up to 200 chars of the model's raw response text
-            # (built from real k8s evidence) into Cloud Logging on this failure path --
-            # same content-capture concern as the Trace flag above, different system.
-            # Length-only is still useful for diagnosing "empty response" vs "malformed
-            # response" without capturing the actual content.
-            #
-            # 2026-08-27: this returned a bare {}, which no caller could tell apart
-            # from a legitimately empty result -- the failure was completely silent.
-            # Imported locally, immediately beside its use, because the repo's
-            # auto-formatter strips a top-level import whose usage lands in a later
-            # edit.
-            from agent.llm.base import LLM_JSON_PARSE_FAILED_KEY
-            log.error(
-                "llm_json: no JSON object found in model response (length=%d) -- "
-                "returning a marked-failed result so callers can detect this",
-                len(text),
-            )
-            return {LLM_JSON_PARSE_FAILED_KEY: "no JSON object in model response"}, usage
+            return None, f"no JSON object in model response (length={len(text)})"
 
         depth, end = 0, start
         for i in range(start, len(text)):
@@ -316,21 +356,96 @@ class GeminiAdapter(LLMClient):
         candidate = re.sub(r",\s*]", "]", candidate)
 
         try:
-            return json.loads(candidate), usage
+            return json.loads(candidate), ""
         except json.JSONDecodeError as exc:
-            # issue #76: same fix as above -- length + parser error position, not the
-            # actual candidate text.
-            # 2026-08-27: same silent-{} problem as the branch above; marked so the
-            # failure is detectable. Local import for the same formatter reason.
-            from agent.llm.base import LLM_JSON_PARSE_FAILED_KEY
-            log.error(
-                "llm_json: JSON repair failed (candidate length=%d, error at pos %d): %s "
-                "-- returning a marked-failed result so callers can detect this",
-                len(candidate), getattr(exc, "pos", -1), exc.msg,
+            return None, (
+                f"malformed JSON from model (candidate length={len(candidate)}, "
+                f"error at pos {getattr(exc, 'pos', -1)}): {exc.msg}"
             )
-            return {
-                LLM_JSON_PARSE_FAILED_KEY: f"malformed JSON from model: {exc.msg}"
-            }, usage
+
+    def llm_json(self, system: str, user: str, *, max_tokens: int = 1024) -> tuple[dict, LLMUsage]:
+        """Calls Gemini and parses the response as JSON.
+
+        2026-08-31: previously called self.llm() and only ever saw the extracted
+        text, never the raw response -- so a response CUT OFF by max_output_tokens
+        (finish_reason=MAX_TOKENS) and a genuinely malformed one were indistinguishable.
+        Neither json.loads() nor the brace-repair pass in _extract_json_object() CAN
+        recover a truncated response (an unterminated string or unbalanced braces is
+        missing information, not a formatting quirk) -- so every truncation was
+        guaranteed to surface as an opaque "malformed JSON from model" failure with no
+        way to tell it apart from a real model-output bug. Root-caused against
+        cascading-001/pending-001/mcp-gateway-failure-001's intermittent
+        "model's response could not be parsed" failures (docs/management/
+        confidence-genericity-review-2026-08-28.md): only the higher-complexity,
+        multi-claim cases ever hit this, never the simple single-cause ones --
+        consistent with an output-length problem, not a random glitch.
+        """
+        system_json = system + "\n\nRespond ONLY with valid JSON. No markdown fences, no preamble."
+        response, usage = self._call_model(f"{system_json}\n\n{user}", max_tokens)
+
+        parsed, failure_reason = self._extract_json_object(response.text.strip())
+
+        if parsed is None and _is_truncated(response) and max_tokens < _TRUNCATION_RETRY_MAX_TOKENS:
+            # Root cause is now POSITIVELY IDENTIFIED (the provider's own
+            # finish_reason, not an inference from the malformed text) -- this is a
+            # targeted retry tied to a diagnosed condition, not a blind
+            # retry-on-any-failure. One attempt only, with a materially larger
+            # budget (never just +1 token), capped by _TRUNCATION_RETRY_MAX_TOKENS
+            # so a pathological prompt can't runaway the cost.
+            retry_max_tokens = min(max_tokens * 2, _TRUNCATION_RETRY_MAX_TOKENS)
+            log.warning(
+                "llm_json: response truncated (finish_reason=MAX_TOKENS) at "
+                "max_tokens=%d before a JSON object could be parsed -- retrying once "
+                "with max_tokens=%d",
+                max_tokens, retry_max_tokens,
+            )
+            retry_response, retry_usage = self._call_model(f"{system_json}\n\n{user}", retry_max_tokens)
+            retry_parsed, retry_failure_reason = self._extract_json_object(retry_response.text.strip())
+
+            # Both calls' costs/tokens are real spend for this one llm_json() call --
+            # summed field-by-field (never re-derived) so the caller's cost/token
+            # accounting reflects both attempts, not just whichever ran last.
+            usage = LLMUsage(
+                input_tokens=usage["input_tokens"] + retry_usage["input_tokens"],
+                cached_input_tokens=usage["cached_input_tokens"] + retry_usage["cached_input_tokens"],
+                output_tokens=usage["output_tokens"] + retry_usage["output_tokens"],
+                reasoning_tokens=usage["reasoning_tokens"] + retry_usage["reasoning_tokens"],
+                tool_tokens=usage["tool_tokens"] + retry_usage["tool_tokens"],
+                total_tokens=usage["total_tokens"] + retry_usage["total_tokens"],
+                billable_output_tokens=usage["billable_output_tokens"] + retry_usage["billable_output_tokens"],
+                cost_usd=round(usage["cost_usd"] + retry_usage["cost_usd"], 6),
+                provider=retry_usage["provider"],
+                model=retry_usage["model"],
+                duration_s=usage["duration_s"] + retry_usage["duration_s"],
+            )
+
+            if retry_parsed is not None:
+                log.info("llm_json: truncation retry succeeded (max_tokens=%d)", retry_max_tokens)
+                return retry_parsed, usage
+
+            response, parsed, failure_reason = retry_response, retry_parsed, (
+                f"{retry_failure_reason} (after a truncation retry at max_tokens={retry_max_tokens} "
+                f"-- still truncated: {_is_truncated(retry_response)})"
+            )
+
+        if parsed is not None:
+            return parsed, usage
+
+        # issue #76: log only length/position metadata, never the model's raw text --
+        # same content-capture concern as the Trace flag elsewhere in this file.
+        # 2026-08-27: this used to return a bare {}, which no caller could tell apart
+        # from a legitimately empty result -- the failure was completely silent.
+        # Local import beside its use, same reason as elsewhere in this file: the
+        # repo's auto-formatter strips a top-level import whose usage lands later.
+        from agent.llm.base import LLM_JSON_PARSE_FAILED_KEY
+        truncated = _is_truncated(response)
+        log.error(
+            "llm_json: %s -- truncated=%s -- returning a marked-failed result so "
+            "callers can detect this",
+            failure_reason, truncated,
+        )
+        reason = failure_reason + (" (truncated: finish_reason=MAX_TOKENS)" if truncated else "")
+        return {LLM_JSON_PARSE_FAILED_KEY: reason}, usage
 
     def get_session_usage(self) -> dict:
         return {

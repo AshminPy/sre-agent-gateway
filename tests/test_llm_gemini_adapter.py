@@ -182,18 +182,48 @@ def test_investigate_resets_the_shared_adapter_session_before_each_run(monkeypat
     assert usage["session_tokens_total"] == 0
 
 
+def _fake_usage():
+    return {
+        "input_tokens": 1, "cached_input_tokens": 0, "output_tokens": 1,
+        "reasoning_tokens": 0, "tool_tokens": 0, "total_tokens": 2,
+        "billable_output_tokens": 1, "cost_usd": 0.0, "provider": "gemini",
+        "model": "gemini-2.5-flash", "duration_s": 0.01,
+    }
+
+
+def _fake_model_response(text: str, finish_reason: str | None = "STOP"):
+    """Mimics enough of google.genai's GenerateContentResponse shape for
+    llm_json()/_finish_reason_name()/_is_truncated(): a `.text` attribute and a
+    `.candidates[0].finish_reason` with a real enum-like `.name`."""
+    candidates = (
+        [SimpleNamespace(finish_reason=SimpleNamespace(name=finish_reason))]
+        if finish_reason is not None else []
+    )
+    return SimpleNamespace(text=text, candidates=candidates)
+
+
+def _patch_call_model(monkeypatch, adapter, responses):
+    """responses: list of (fake_response, usage) tuples, returned in order --
+    one per _call_model() invocation. Proves how many real 'calls' llm_json()
+    made without needing the real Gemini client."""
+    queue = list(responses)
+
+    def fake_call_model(prompt, max_tokens):
+        return queue.pop(0)
+
+    monkeypatch.setattr(adapter, "_call_model", fake_call_model)
+    return queue
+
+
 def test_llm_json_no_json_found_logs_length_not_content(monkeypatch, caplog):
     # issue #76: this failure path used to log up to 200 chars of the model's raw
     # response text (built from real k8s evidence) -- must log only metadata now.
     import logging
     adapter = GeminiAdapter(model="gemini-2.5-flash")
     secret_text = "SENSITIVE pod log content: password=hunter2, db_host=10.1.2.3"
-    monkeypatch.setattr(adapter, "llm", lambda *a, **k: (secret_text, {
-        "input_tokens": 1, "cached_input_tokens": 0, "output_tokens": 1,
-        "reasoning_tokens": 0, "tool_tokens": 0, "total_tokens": 2,
-        "billable_output_tokens": 1, "cost_usd": 0.0, "provider": "gemini",
-        "model": "gemini-2.5-flash", "duration_s": 0.01,
-    }))
+    _patch_call_model(monkeypatch, adapter, [
+        (_fake_model_response(secret_text), _fake_usage()),
+    ])
     with caplog.at_level(logging.WARNING):
         result, _ = adapter.llm_json("sys", "user")
 
@@ -215,14 +245,13 @@ def test_llm_json_repair_failure_logs_length_not_content(monkeypatch, caplog):
     import logging
     adapter = GeminiAdapter(model="gemini-2.5-flash")
     # Starts with "{" so it reaches the repair path, but is unparseable JSON even
-    # after repair -- and contains content that must never reach the log.
+    # after repair -- and contains content that must never reach the log. finish_reason
+    # is STOP (not MAX_TOKENS) so this is a genuinely malformed response, not a
+    # truncated one -- must NOT trigger the truncation retry.
     secret_text = '{"note": "SENSITIVE db_host=10.1.2.3 unterminated'
-    monkeypatch.setattr(adapter, "llm", lambda *a, **k: (secret_text, {
-        "input_tokens": 1, "cached_input_tokens": 0, "output_tokens": 1,
-        "reasoning_tokens": 0, "tool_tokens": 0, "total_tokens": 2,
-        "billable_output_tokens": 1, "cost_usd": 0.0, "provider": "gemini",
-        "model": "gemini-2.5-flash", "duration_s": 0.01,
-    }))
+    queue = _patch_call_model(monkeypatch, adapter, [
+        (_fake_model_response(secret_text, finish_reason="STOP"), _fake_usage()),
+    ])
     with caplog.at_level(logging.WARNING):
         result, _ = adapter.llm_json("sys", "user")
 
@@ -235,3 +264,92 @@ def test_llm_json_repair_failure_logs_length_not_content(monkeypatch, caplog):
     assert "length=" in caplog.text
     assert "SENSITIVE" not in llm_json_failed(result)
     assert "10.1.2.3" not in llm_json_failed(result)
+    assert "truncated" not in llm_json_failed(result).lower()
+    assert queue == [], "a genuinely malformed (non-truncated) response must not retry"
+
+
+# ── cascading-001 parse-failure root cause: MAX_TOKENS truncation (2026-08-31) ──
+
+def test_finish_reason_name_reads_the_real_enum():
+    from agent.llm.gemini_adapter import _finish_reason_name
+    response = _fake_model_response("{}", finish_reason="MAX_TOKENS")
+    assert _finish_reason_name(response) == "MAX_TOKENS"
+
+
+def test_finish_reason_name_empty_when_no_candidates():
+    from agent.llm.gemini_adapter import _finish_reason_name
+    response = _fake_model_response("{}", finish_reason=None)
+    assert _finish_reason_name(response) == ""
+
+
+def test_is_truncated_true_only_for_max_tokens():
+    from agent.llm.gemini_adapter import _is_truncated
+    assert _is_truncated(_fake_model_response("{}", finish_reason="MAX_TOKENS")) is True
+    assert _is_truncated(_fake_model_response("{}", finish_reason="STOP")) is False
+    assert _is_truncated(_fake_model_response("{}", finish_reason="SAFETY")) is False
+
+
+def test_llm_json_retries_once_on_max_tokens_truncation_and_succeeds(monkeypatch, caplog):
+    """The exact mechanism behind cascading-001/pending-001/mcp-gateway-failure-001's
+    intermittent parse failures: a response cut off mid-JSON by max_output_tokens,
+    positively identified via finish_reason=MAX_TOKENS (not inferred from the broken
+    text), retried once with a larger budget."""
+    import logging
+    adapter = GeminiAdapter(model="gemini-2.5-flash")
+    truncated_text = '{"likely_root_cause": "order-db OOMKilled", "claims": [{"tex'  # cut mid-field
+    full_text = '{"likely_root_cause": "order-db OOMKilled", "claims": []}'
+    queue = _patch_call_model(monkeypatch, adapter, [
+        (_fake_model_response(truncated_text, finish_reason="MAX_TOKENS"), _fake_usage()),
+        (_fake_model_response(full_text, finish_reason="STOP"), _fake_usage()),
+    ])
+    with caplog.at_level(logging.WARNING):
+        result, usage = adapter.llm_json("sys", "user", max_tokens=1536)
+
+    assert not llm_json_failed(result), "the retry must produce a real, usable result"
+    assert result == {"likely_root_cause": "order-db OOMKilled", "claims": []}
+    assert queue == [], "exactly two _call_model calls -- original + one retry, no more"
+    assert "truncat" in caplog.text.lower()
+    # Usage from BOTH attempts must be counted -- both are real spend.
+    assert usage["total_tokens"] == 4
+
+
+def test_llm_json_truncation_retry_still_fails_reports_truncated(monkeypatch):
+    """If even the larger retry budget still truncates, report it as truncated
+    (not a generic "malformed JSON") so the real cause is visible in logs/evidence_gaps
+    instead of looking like an unrelated model-output bug."""
+    adapter = GeminiAdapter(model="gemini-2.5-flash")
+    still_truncated = '{"likely_root_cause": "still cut of'
+    queue = _patch_call_model(monkeypatch, adapter, [
+        (_fake_model_response(still_truncated, finish_reason="MAX_TOKENS"), _fake_usage()),
+        (_fake_model_response(still_truncated, finish_reason="MAX_TOKENS"), _fake_usage()),
+    ])
+    result, _ = adapter.llm_json("sys", "user", max_tokens=1536)
+
+    assert llm_json_failed(result)
+    assert "truncated" in llm_json_failed(result).lower()
+    assert queue == [], "must not retry a second time"
+
+
+def test_llm_json_does_not_retry_past_the_truncation_retry_ceiling(monkeypatch):
+    """A caller that already passed a max_tokens at/above the retry ceiling must not
+    trigger an (even larger) retry -- _TRUNCATION_RETRY_MAX_TOKENS is a hard cap."""
+    from agent.llm.gemini_adapter import _TRUNCATION_RETRY_MAX_TOKENS
+    adapter = GeminiAdapter(model="gemini-2.5-flash")
+    truncated_text = '{"a": "b'
+    queue = _patch_call_model(monkeypatch, adapter, [
+        (_fake_model_response(truncated_text, finish_reason="MAX_TOKENS"), _fake_usage()),
+    ])
+    result, _ = adapter.llm_json("sys", "user", max_tokens=_TRUNCATION_RETRY_MAX_TOKENS)
+
+    assert llm_json_failed(result)
+    assert queue == [], "already at the ceiling -- must not attempt a retry at all"
+
+
+def test_llm_json_real_content_on_first_try_never_retries(monkeypatch):
+    adapter = GeminiAdapter(model="gemini-2.5-flash")
+    queue = _patch_call_model(monkeypatch, adapter, [
+        (_fake_model_response('{"ok": true}', finish_reason="STOP"), _fake_usage()),
+    ])
+    result, _ = adapter.llm_json("sys", "user")
+    assert result == {"ok": True}
+    assert queue == []

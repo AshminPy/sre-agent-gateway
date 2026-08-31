@@ -690,6 +690,54 @@ def call_tool(
                 broadened["broadened_after_not_found"] = pod_name
                 return broadened
 
+            # cascading-001 root cause (2026-08-31): describe_k8s_resource and
+            # get_k8s_resource are the two GKE Remote MCP tools whose `name` field is
+            # REQUIRED (toolspec.json) -- unlike list_k8s_events above, there is no
+            # unscoped/broadened retry available for them (_build_gke_args has no path
+            # that drops `name` for either tool). A NotFound response here is therefore
+            # NOT proof the resource doesn't exist, for exactly the same reason issue
+            # #70 documented for list_k8s_events: the caller-supplied name can be a
+            # guess that doesn't match the real generated name (a Deployment's pods and
+            # ReplicaSet both carry a random hash suffix no caller can know in advance).
+            #
+            # Confirmed root cause of cascading-001's wrong RCA ("The order-api
+            # Deployment and its ReplicaSet are missing from the cluster") --
+            # order-api was running the entire time; a guessed exact name 404'd on
+            # describe_k8s_resource/get_k8s_resource, and because this branch didn't
+            # exist, that NotFound text fell through to `ok: True` below and became
+            # "evidence" the RCA-builder LLM cited as proof of absence. Marking it
+            # ok=False (same treatment as the isError branch above) keeps it out of
+            # rca_builder's usable_evidence_ids, so a wrong name-guess can no longer by
+            # itself ground a "resource is missing" claim -- while list_k8s_events
+            # (which DOES retry broadened) or a correctly-named lookup can still ground
+            # a real one.
+            if (
+                is_gke_remote
+                and tool_name in ("describe_k8s_resource", "get_k8s_resource")
+                and _is_not_found_result(content)
+            ):
+                looked_up_name = args.get("name", "")
+                log.warning(
+                    "call_tool: NAME_SCOPED_NOT_FOUND tool=%s name=%s mcp_source=%s "
+                    "cluster=%s -- NotFound on a required-name lookup is not proof the "
+                    "resource doesn't exist (the name may be a guess); no broadened "
+                    "retry exists for this tool. Treating as a failed call so it cannot "
+                    "be cited as evidence of absence.",
+                    tool_name, looked_up_name, mcp_source, cluster_name,
+                )
+                return {
+                    "ok": False,
+                    "error": (
+                        f"NAME_SCOPED_NOT_FOUND: server returned NotFound for "
+                        f"{tool_name}(name={looked_up_name!r}). This does not prove the "
+                        "resource doesn't exist -- the name may not match the real "
+                        "generated name (pods/ReplicaSets carry a random suffix). "
+                        "Confirm via list_k8s_events (unscoped) or a corrected name "
+                        "before concluding absence."
+                    ),
+                    "tool": tool_name, "mcp_source": mcp_source, "duration_s": duration,
+                }
+
             # Custom/fallback MCP (k8s_mcp) has no infra-level Model Armor coverage --
             # see _sanitize_custom_mcp_response's docstring/comment. GKE Remote MCP is
             # deliberately excluded here: it is already covered by the native floor
