@@ -408,6 +408,47 @@ def _is_model_armor_blocked_result(content: Any) -> bool:
     return all(marker in lowered for marker in MODEL_ARMOR_BLOCK_MARKERS)
 
 
+# docs/management/CURRENT-STATE.md: "custom/fallback MCP traffic is not Model
+# Armor-inspected". Confirmed root cause -- iac/agent/model_armor.tf's
+# google_model_armor_floorsetting.mcp only supports integrated_services =
+# ["GOOGLE_MCP_SERVER", "AI_PLATFORM"] (the Model Armor API's own schema has no
+# "custom Cloud Run MCP" option), so the GKE Remote MCP path is covered by that
+# project-level floor setting but the custom/self-hosted k8s_mcp path never was
+# and never can be, at the infra layer. This closes the gap at the app layer
+# instead, reusing the exact same sanitize helper (SREAgent._sanitize) that
+# agent/main.py already uses for query()'s input/output sanitize calls -- same
+# Model Armor template, same client, no new API surface.
+#
+# Response-only, deliberately: this mirrors what the GKE Remote floor setting
+# itself already demonstrably inspects (_is_model_armor_blocked_result above
+# was written against a real RESPONSE-side block). Local import to match this
+# module's existing avoidance of importing agent.main at call_tool() import
+# time -- agent.main has no module-level dependency back on agent.mcp_client,
+# so this is not a real cycle, just kept lazy for consistency with main.py's
+# own "no module-level code that can fail" policy.
+def _sanitize_custom_mcp_response(
+    content: Any, tool_name: str, mcp_source: str, cluster_name: str,
+) -> Optional[str]:
+    """Runs the custom-MCP response through Model Armor. Returns an error string
+    if Model Armor flagged it (caller should fail the call), or None if clean."""
+    from agent.main import SREAgent
+
+    text = content if isinstance(content, str) else json.dumps(content)
+    _sanitized, blocked = SREAgent._sanitize(text, is_output=True)
+    if not blocked:
+        return None
+    log.error(
+        "call_tool: MODEL_ARMOR_BLOCKED (custom MCP) tool=%s mcp_source=%s cluster=%s -- "
+        "app-layer sanitize flagged the response; treating as a failed call so no "
+        "evidence is written and completeness scoring reflects the gap.",
+        tool_name, mcp_source, cluster_name,
+    )
+    return (
+        "MODEL_ARMOR_BLOCKED: custom-MCP response failed Model Armor sanitize "
+        "inspection; the requested data was withheld"
+    )
+
+
 def _try_custom_mcp_fallback(
     is_gke_remote: bool,
     cluster_info: dict,
@@ -648,6 +689,24 @@ def call_tool(
                 )
                 broadened["broadened_after_not_found"] = pod_name
                 return broadened
+
+            # Custom/fallback MCP (k8s_mcp) has no infra-level Model Armor coverage --
+            # see _sanitize_custom_mcp_response's docstring/comment. GKE Remote MCP is
+            # deliberately excluded here: it is already covered by the native floor
+            # setting (google_model_armor_floorsetting.mcp, GOOGLE_MCP_SERVER), and
+            # running this too would double-inspect the same response.
+            if not is_gke_remote:
+                armor_error = _sanitize_custom_mcp_response(
+                    content, tool_name, mcp_source, cluster_name,
+                )
+                if armor_error is not None:
+                    return {
+                        "ok": False,
+                        "error": armor_error,
+                        "blocked": True,
+                        "blocked_by": "model_armor",
+                        "tool": tool_name, "mcp_source": mcp_source, "duration_s": duration,
+                    }
 
             # A Model Armor block is a FAILED call, not a successful one. The real
             # payload is gone; only the block notice came back. Returning ok=True
