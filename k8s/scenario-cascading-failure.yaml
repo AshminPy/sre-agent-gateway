@@ -1,16 +1,30 @@
 # SCENARIO: Cascading failure — upstream OOM kills downstream service
 #
 # What's happening:
-#   "order-db" pod: OOMKilled (memory limit 32Mi, but allocates 64Mi)
-#   "order-api" pods: CrashLoopBackOff — crash on startup because DB is unreachable
-#   Naive investigation finds order-api crashing → wrong conclusion: "fix the API"
-#   Real root cause: order-db is OOMKilled → needs higher memory limit
+#   "order-db" pod: OOMKilled for real (32Mi limit, container allocates well past
+#   that) -- lastState.terminated.reason will genuinely be OOMKilled.
+#   "order-api" pod: itself stays healthy/Running (0 crashes, never exits) --
+#   per PR #225's fix, a NotFound on a guessed pod name must never look like
+#   "resource doesn't exist", so this pod exists under the literal name the
+#   incident query uses ("order-api") and is never itself the thing that's down.
+#   Its logs continuously show real connection-refused/timeout errors reaching
+#   order-db, because order-db is frequently down (OOM-restart looping) -- this
+#   is genuine socket-level failure against a flapping backend, not a fabricated
+#   log line.
+#
+# Naive investigation: sees CrashLoopBackOff mentioned in the user's report,
+# assumes order-api itself is crashing -> wrong conclusion ("fix the API").
+# Real root cause: order-db is OOMKilled -> order-api's connection errors are
+# a symptom, not the cause.
 #
 # What agent must find:
-#   1. order-api pods in CrashLoopBackOff with logs "DB connection refused"
-#   2. order-db pod in OOMKilled / CrashLoopBackOff
-#   3. order-db restart count high, last state: OOMKilled
-#   4. Root cause: order-db needs more memory → order-api will recover automatically
+#   1. order-api pod: Running, 0 restarts -- NOT itself crashing.
+#   2. order-api logs: repeated "cannot connect to order-db" / connection
+#      refused / timeout entries.
+#   3. order-db pod: restarting repeatedly, lastState.terminated.reason ==
+#      OOMKilled.
+#   4. Root cause: order-db needs more memory -- order-api will recover on
+#      its own once order-db stops OOMing.
 #
 apiVersion: v1
 kind: Pod
@@ -22,7 +36,7 @@ metadata:
     app: order-db
     role: database
   annotations:
-    incident-description: "OOMKilled — root cause of order-api cascade"
+    incident-description: "OOMKilled -- root cause of order-api's connection failures"
 spec:
   restartPolicy: Always
   containers:
@@ -32,25 +46,25 @@ spec:
       args:
         - |
           import time
-          import sys
 
-          print("order-db starting — allocating cache...")
-          # Allocate memory until OOM kill
+          print("order-db starting -- allocating cache...", flush=True)
+          # Allocate memory fast enough to guarantee a real OOM kill well
+          # before the 32Mi limit's request path could ever be mistaken for
+          # a slow leak.
           data = []
           chunk_size = 1024 * 1024  # 1MB
           allocated_mb = 0
           while True:
               data.append(b"x" * chunk_size)
               allocated_mb += 1
-              if allocated_mb % 5 == 0:
-                  print(f"order-db: cache at {allocated_mb}MB")
+              print(f"order-db: cache at {allocated_mb}MB", flush=True)
               time.sleep(0.05)
       resources:
         requests:
           memory: "32Mi"
           cpu: "50m"
         limits:
-          memory: "32Mi"    # Very tight — will OOMKill fast
+          memory: "32Mi"    # Tight on purpose -- guarantees a real OOM kill
           cpu: "100m"
 ---
 apiVersion: v1
@@ -65,52 +79,49 @@ spec:
     - port: 5432
       targetPort: 5432
 ---
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: v1
+kind: Pod
 metadata:
   name: order-api
   namespace: test-incidents
   labels:
     incident-type: CascadingFailure
+    app: order-api
+    role: api
   annotations:
-    incident-description: "crashes on startup because order-db is unavailable (OOMKilled)"
+    incident-description: "healthy itself -- logs show real connection failures to order-db, which is OOMKilled"
 spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: order-api
-  template:
-    metadata:
-      labels:
-        app: order-api
-        role: api
-    spec:
-      containers:
-        - name: order-api
-          image: python:3.11-slim
-          command: ["python", "-c"]
-          args:
-            - |
-              import socket
-              import sys
-              import time
+  restartPolicy: Always
+  containers:
+    - name: order-api
+      image: python:3.11-slim
+      command: ["python", "-c"]
+      args:
+        - |
+          import socket
+          import time
 
-              print("order-api starting...")
-              time.sleep(2)  # brief startup delay
+          print("order-api starting...", flush=True)
 
-              # Try to connect to DB (will fail because order-db is OOMKilled)
+          # Never exits -- this pod stays healthy/Running regardless of
+          # whether order-db is reachable. Every cycle makes a REAL socket
+          # connection attempt against the order-db Service; the failures
+          # logged below are genuine connect() errors, not fabricated text --
+          # they happen because order-db is frequently down from its own
+          # real OOM-restart loop.
+          while True:
               try:
                   sock = socket.create_connection(("order-db", 5432), timeout=3)
                   sock.close()
-                  print("Connected to order-db successfully")
+                  print("order-api: connected to order-db successfully", flush=True)
               except Exception as e:
-                  print(f"FATAL: Cannot connect to order-db: {e}", file=sys.stderr)
-                  print("order-api cannot start without database connection", file=sys.stderr)
-                  sys.exit(1)
-          resources:
-            requests:
-              memory: "64Mi"
-              cpu: "100m"
-            limits:
-              memory: "128Mi"
-              cpu: "200m"
+                  print(f"order-api: ERROR cannot connect to order-db: {e}", flush=True)
+                  print("order-api: payment order processing is degraded without a DB connection", flush=True)
+              time.sleep(3)
+      resources:
+        requests:
+          memory: "64Mi"
+          cpu: "100m"
+        limits:
+          memory: "128Mi"
+          cpu: "200m"
