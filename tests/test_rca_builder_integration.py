@@ -2,7 +2,10 @@
 backward compatibility and the full old-vs-new field set, without a real Gemini call.
 """
 import agent.nodes.rca_builder as rca_builder_mod
-from tests.conftest import make_evidence, make_state, make_tool_history_entry
+from tests.conftest import (
+    make_evidence, make_state, make_tool_history_entry,
+    mock_verifier, mock_verifier_evidence,
+)
 
 
 def _mock_llm_json(monkeypatch, response: dict, usage: dict | None = None):
@@ -108,13 +111,15 @@ def test_strong_evidence_produces_higher_confidence_than_weak_evidence(monkeypat
     ]
     strong_state = _base_state(strong_evidence, strong_history)
     _mock_llm_json(monkeypatch, {
-        "likely_root_cause": "OOMKilled, exit 137 (ev_001, ev_002)",
+        "primary_causal_claim_index": 1,
         "claims": [{"text": "OOMKilled, exit 137", "claim_type": "observed_fact",
                      "supporting_evidence_ids": ["ev_001", "ev_002"]}],
         "alternative_hypotheses_considered": [],
         "evidence_chain": ["ev_001", "ev_002"], "evidence_gaps": [],
         "reasoning_trace": [], "suggested_remediation": [], "sources_skipped": [],
     })
+    mock_verifier(monkeypatch)
+    mock_verifier_evidence(monkeypatch)
     strong_result = rca_builder_mod.rca_builder(strong_state)["final_summary"]
 
     weak_evidence = {"ev_001": make_evidence("ev_001", "get_current_logs", key_facts=["some log line"])}

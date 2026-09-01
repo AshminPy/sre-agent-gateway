@@ -14,10 +14,12 @@ from agent.confidence.models import (
 from agent.confidence.scorer import (
     score_investigation_completeness, score_root_cause_confidence, derive_outcome,
 )
+from agent.confidence.verifier import VerifierResult, verify_primary_claim
 
 __all__ = [
     "POLICY", "ConfidencePolicy",
     "EvidenceDomain", "classify_tool",
     "Claim", "ClaimType", "Contradiction", "Hypothesis", "InvestigationOutcome",
     "score_investigation_completeness", "score_root_cause_confidence", "derive_outcome",
+    "VerifierResult", "verify_primary_claim",
 ]
