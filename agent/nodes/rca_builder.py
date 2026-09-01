@@ -571,7 +571,7 @@ def rca_builder(state: AgentState) -> dict:
     from agent.confidence.claim_builder import select_primary_causal_claim
     from agent.confidence.verifier import verify_primary_claim
 
-    primary_claim = select_primary_causal_claim(claims, result)
+    primary_claim = select_primary_causal_claim(claims, result, evidence_store)
     verifier_result = None
     # Separate from `inv` on purpose: accumulate_usage() returns a dict containing ONLY
     # the 8 token/cost fields (not a copy of `inv` with those fields updated) — reassigning
@@ -583,12 +583,20 @@ def rca_builder(state: AgentState) -> dict:
 
     if primary_claim is None:
         # Explicit, not a fallthrough (point 2, final review round): null/invalid index,
-        # or a resolved claim with no usable evidence, is itself the answer — the verifier
-        # is never called, there is nothing to verify.
-        result["likely_root_cause"] = (
-            result.get("likely_root_cause")
-            or "No specific root cause was established from the available evidence."
-        )
+        # a resolved claim with no usable evidence, or a claim citing missing/failed
+        # evidence (correction round 2, point 4), is itself the answer — the verifier is
+        # never called, there is nothing to verify.
+        #
+        # Safety fix (correction round 2, point 4): only preserve an EXISTING
+        # result["likely_root_cause"] here when it was written by our own earlier
+        # deterministic code (the no_evidence / llm_failure paths above, both
+        # code-authored, never model-authored). In the normal flow the model's own
+        # free-text likely_root_cause field no longer exists in the prompt schema at
+        # all, but a model can still emit stray/unexpected JSON keys — this must never
+        # be trusted and displayed as the root cause while the outcome is
+        # INSUFFICIENT_EVIDENCE, since it could assert a specific, unverified cause.
+        if not (no_evidence or llm_failure):
+            result["likely_root_cause"] = "No specific root cause was established from the available evidence."
     else:
         # Minimal explicit incident-time context (point 5, final review round) — only
         # fields that actually exist, never the full resolved_context/AgentState.

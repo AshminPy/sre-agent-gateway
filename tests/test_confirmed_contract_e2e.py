@@ -84,13 +84,40 @@ def test_a_correct_claim_with_strong_evidence_reaches_confirmed(monkeypatch):
         "evidence_gaps": [], "reasoning_trace": [], "suggested_remediation": ["Raise the memory limit."],
         "sources_skipped": [],
     })
-    mock_verifier(monkeypatch)
+    # temporal_relevance must be explicitly "relevant" to reach CONFIRMED (2026-09-01
+    # review, correction round 2) -- mock_verifier()'s own default is "unknown" (the
+    # safer default), so a CONFIRMED-proving test must opt in explicitly, never rely on
+    # the default silently being good enough.
+    mock_verifier(monkeypatch, temporal_relevance="relevant")
     mock_verifier_evidence(monkeypatch)
 
     result = rca_builder_mod.rca_builder(state)["final_summary"]
     assert result["outcome"] == "confirmed"
     assert result["requires_human_review"] is False
     assert result["likely_root_cause"] == "Container OOMKilled, exit code 137, memory limit exceeded"
+
+
+def test_a2_temporal_unknown_never_reaches_confirmed_even_with_every_other_gate_perfect(monkeypatch):
+    """2026-09-01 review, correction round 2, point 1: temporal_relevance="unknown" must
+    cap at PROBABLE -- it is not a pass-by-default. Every other gate here is identical to
+    test_a's CONFIRMED case except temporal_relevance, which is left at mock_verifier()'s
+    own default ("unknown") rather than overridden."""
+    _quiet_observability_log(monkeypatch)
+    state, _ = _state_with_strong_evidence()
+    _mock_rca_llm(monkeypatch, {
+        "primary_causal_claim_index": 1,
+        "claims": [{"text": "Container OOMKilled, exit code 137, memory limit exceeded",
+                     "claim_type": "observed_fact", "supporting_evidence_ids": ["ev_001", "ev_002"]}],
+        "alternative_hypotheses_considered": [], "evidence_chain": ["ev_001", "ev_002", "ev_003"],
+        "evidence_gaps": [], "reasoning_trace": [], "suggested_remediation": ["Raise the memory limit."],
+        "sources_skipped": [],
+    })
+    mock_verifier(monkeypatch)  # temporal_relevance defaults to "unknown" -- not overridden
+    mock_verifier_evidence(monkeypatch)
+
+    result = rca_builder_mod.rca_builder(state)["final_summary"]
+    assert result["outcome"] == "probable"
+    assert result["outcome"] != "confirmed"
 
 
 # ── B. Supported but incomplete causal claim -> PROBABLE/POSSIBLE ──────────────
@@ -323,6 +350,93 @@ def test_h_deterministic_resource_mismatch_reaches_conflicting_evidence(monkeypa
     result = rca_builder_mod.rca_builder(state)["final_summary"]
     assert result["outcome"] == "conflicting_evidence"
     assert any(c["kind"] == "wrong_resource" for c in result["contradictions"])
+
+
+# ── Correction round 2, point 3: failed/phantom cited evidence -> INSUFFICIENT_EVIDENCE ──
+
+def test_primary_claim_citing_failed_evidence_never_calls_verifier_and_is_insufficient_evidence(monkeypatch):
+    """A failed tool call still gets a raw_ref (GCS-written error record, technically
+    readable) -- this proves the end-to-end pipeline refuses it BEFORE the verifier is
+    ever invoked, not merely that derive_outcome() would reject a bad VerifierResult."""
+    _quiet_observability_log(monkeypatch)
+    evidence_store = {
+        "ev_001": make_evidence("ev_001", "describe_pod_detail", key_facts=[], ok=False),
+        "ev_002": make_evidence("ev_002", "list_events", key_facts=["OOMKilled"], ok=True),
+    }
+    tool_history = [make_tool_history_entry(0, "describe_pod_detail", ok=False), make_tool_history_entry(1, "list_events")]
+    state = make_state("OOMKilled", evidence_store, tool_history)
+    state["run_id"] = "run_test_failed_evidence"
+    state["incident_id"] = "inc_test_failed_evidence"
+    state["incident_envelope"] = {"user_query": "pod is OOMKilled", "memory_context": ""}
+    state["sources_skipped"] = []
+    state["investigation"]["completeness"] = score_investigation_completeness(state, POLICY)
+
+    _mock_rca_llm(monkeypatch, {
+        "primary_causal_claim_index": 1,
+        "claims": [{"text": "OOMKilled, exit code 137", "claim_type": "observed_fact",
+                     "supporting_evidence_ids": ["ev_001"]}],  # cites ONLY the failed call
+        "alternative_hypotheses_considered": [], "evidence_chain": ["ev_001", "ev_002"],
+        "evidence_gaps": [], "reasoning_trace": [], "suggested_remediation": [], "sources_skipped": [],
+    })
+    # Deliberately NOT mocking the verifier -- if the real code called it anyway despite
+    # citing only failed evidence, this test would attempt a real network call and
+    # fail/hang, catching the regression directly.
+
+    result = rca_builder_mod.rca_builder(state)["final_summary"]
+    assert result["outcome"] == "insufficient_evidence"
+    assert result["outcome"] not in ("confirmed", "probable")
+    assert result["requires_human_review"] is True
+    assert result["primary_causal_claim_id"] is None
+    assert result["verifier_result"] is None
+
+
+def test_primary_claim_citing_phantom_evidence_never_calls_verifier_and_is_insufficient_evidence(monkeypatch):
+    _quiet_observability_log(monkeypatch)
+    evidence_store = {"ev_001": make_evidence("ev_001", "describe_pod_detail", key_facts=["x"])}
+    tool_history = [make_tool_history_entry(0, "describe_pod_detail")]
+    state = make_state("OOMKilled", evidence_store, tool_history)
+    state["run_id"] = "run_test_phantom_evidence"
+    state["incident_id"] = "inc_test_phantom_evidence"
+    state["incident_envelope"] = {"user_query": "pod is OOMKilled", "memory_context": ""}
+    state["sources_skipped"] = []
+    state["investigation"]["completeness"] = score_investigation_completeness(state, POLICY)
+
+    _mock_rca_llm(monkeypatch, {
+        "primary_causal_claim_index": 1,
+        "claims": [{"text": "OOMKilled, exit code 137", "claim_type": "observed_fact",
+                     "supporting_evidence_ids": ["ev_999"]}],  # never existed
+        "alternative_hypotheses_considered": [], "evidence_chain": ["ev_001"],
+        "evidence_gaps": [], "reasoning_trace": [], "suggested_remediation": [], "sources_skipped": [],
+    })
+
+    result = rca_builder_mod.rca_builder(state)["final_summary"]
+    assert result["outcome"] == "insufficient_evidence"
+    assert result["outcome"] not in ("confirmed", "probable")
+    assert result["requires_human_review"] is True
+    assert result["verifier_result"] is None
+
+
+def test_stray_model_provided_likely_root_cause_is_never_displayed_when_no_primary_claim(monkeypatch):
+    """2026-09-01 review, correction round 2, point 4: even if the model emits an
+    unexpected likely_root_cause key (outside the current prompt schema) asserting a
+    specific cause, it must never be shown to the user while outcome=insufficient_evidence
+    -- only the earlier no_evidence/llm_failure code paths (never the model) may set that
+    field when there's no valid primary claim."""
+    _quiet_observability_log(monkeypatch)
+    state, _ = _state_with_strong_evidence()
+    _mock_rca_llm(monkeypatch, {
+        "primary_causal_claim_index": None,
+        "likely_root_cause": "Definitely a network partition (unsupported, stray field)",
+        "claims": [{"text": "The root cause is unclear", "claim_type": "observed_fact",
+                     "supporting_evidence_ids": ["ev_001"]}],
+        "alternative_hypotheses_considered": [], "evidence_chain": ["ev_001"],
+        "evidence_gaps": [], "reasoning_trace": [], "suggested_remediation": [], "sources_skipped": [],
+    })
+
+    result = rca_builder_mod.rca_builder(state)["final_summary"]
+    assert result["outcome"] == "insufficient_evidence"
+    assert "network partition" not in result["likely_root_cause"]
+    assert result["likely_root_cause"] == "No specific root cause was established from the available evidence."
 
 
 # ── I. RCA + verifier token/cost totals include both calls ─────────────────────

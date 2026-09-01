@@ -77,6 +77,45 @@ def test_hypothesis_claim_type_is_never_eligible():
     assert select_primary_causal_claim(claims, result) is None
 
 
+def test_claim_citing_failed_evidence_ok_false_is_never_eligible():
+    """2026-09-01 review, correction round 2, point 3: a failed tool call still gets a
+    raw_ref (its GCS-written error record is technically readable), so this check must
+    be mechanical and explicit -- not left to the verifier to somehow notice the cited
+    'evidence' is just error text."""
+    result = {"primary_causal_claim_index": 1, "claims": [
+        {"text": "OOMKilled", "claim_type": "observed_fact", "supporting_evidence_ids": ["ev_001"]},
+    ]}
+    evidence_store = {"ev_001": make_evidence("ev_001", "describe_pod_detail", key_facts=[], ok=False)}
+    claims = build_claims(result, ["ev_001"], evidence_store)
+    assert select_primary_causal_claim(claims, result, evidence_store) is None
+
+
+def test_claim_citing_phantom_missing_evidence_id_is_never_eligible():
+    result = {"primary_causal_claim_index": 1, "claims": [
+        {"text": "OOMKilled", "claim_type": "observed_fact", "supporting_evidence_ids": ["ev_999"]},
+    ]}
+    # ev_999 is never in evidence_store at all -- build_claims() itself already scores
+    # this "phantom_evidence"/support_strength=0.0, but select_primary_causal_claim must
+    # independently refuse it too, not rely on the claim's grounding_status alone.
+    evidence_store = {"ev_001": make_evidence("ev_001", "describe_pod_detail", key_facts=["x"])}
+    claims = build_claims(result, ["ev_001"], evidence_store)
+    assert select_primary_causal_claim(claims, result, evidence_store) is None
+
+
+def test_evidence_store_check_is_skipped_when_not_provided():
+    """Backward-compat: callers that don't pass evidence_store (e.g. existing unit tests
+    that only care about index/type resolution) get the pre-existing mechanical checks
+    only -- the new evidence-validity check is additive, opt-in via the parameter, never
+    a silent behavior change for a caller that hasn't been updated to pass it. The real
+    production call site (rca_builder.py) always passes it."""
+    result = {"primary_causal_claim_index": 1, "claims": [
+        {"text": "OOMKilled", "claim_type": "observed_fact", "supporting_evidence_ids": ["ev_999"]},
+    ]}
+    claims = build_claims(result, ["ev_999"], {})
+    claim = select_primary_causal_claim(claims, result)
+    assert claim is not None
+
+
 def test_claim_with_no_supporting_evidence_is_never_eligible():
     result = {"primary_causal_claim_index": 1, "claims": [
         {"text": "OOMKilled", "claim_type": "observed_fact", "supporting_evidence_ids": []},

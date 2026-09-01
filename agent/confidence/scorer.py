@@ -537,12 +537,22 @@ def derive_outcome(
         return InvestigationOutcome.INSUFFICIENT_EVIDENCE.value
 
     # 3. Hard conflicts — must map to CONFLICTING_EVIDENCE, never fall through to PROBABLE,
-    # regardless of how clean everything else looks.
+    # regardless of how clean everything else looks. (2026-09-01 review, correction round 2:
+    # an explicit cluster/namespace/pod mismatch on the PRIMARY claim's own cited evidence
+    # is now a hard conflict too, not a soft PROBABLE downgrade — checked here, before any
+    # of the softer gates below, using the SAME deterministic _check_resource_identity()
+    # score_root_cause_confidence already uses; a score < 1.0 only ever happens when an
+    # EXPLICIT mismatch was found — the non-Pod/ConfigMap-Service relaxation inside that
+    # function is unchanged, so legitimate non-Pod evidence is still never falsely flagged.)
     hard_resource_conflict = any(c.kind == "wrong_resource" for c in contradictions)
+    resource_score, _ = _check_resource_identity(
+        set(primary_claim.supporting_evidence_ids), evidence_store, resolved_context,
+    )
     if (
         verifier.semantic_contradiction == "present"
         or verifier.temporal_relevance == "conflicting"
         or hard_resource_conflict
+        or resource_score < 1.0
     ):
         return InvestigationOutcome.CONFLICTING_EVIDENCE.value
 
@@ -568,24 +578,30 @@ def derive_outcome(
     if verifier.faithfulness == "partial":
         return InvestigationOutcome.POSSIBLE.value
 
-    # From here: faithfulness == supported AND sufficiency == sufficient AND no hard conflict.
+    # From here: faithfulness == supported AND sufficiency == sufficient AND no hard conflict
+    # (resource identity has ALREADY been checked at step 3 above — reaching this point
+    # guarantees resource_score == 1.0, it is not re-checked or re-gated here).
     active_alt = [h for h in hypotheses if h.status == "active" and h.supporting_evidence_ids]
-    resource_score, _ = _check_resource_identity(
-        set(primary_claim.supporting_evidence_ids), evidence_store, resolved_context,
-    )
     complete_enough = completeness["score"] >= 0.60  # unchanged existing threshold, not re-tuned
 
+    # 2026-09-01 review, correction round 2: temporal_relevance == "unknown" must NOT be
+    # treated as satisfied-by-default — CONFIRMED requires it to be POSITIVELY established
+    # as "relevant". "unknown" (no trustworthy timestamp information existed to judge it)
+    # is a real gap, not a pass; it caps at PROBABLE same as any other non-fatal gate.
+    # "conflicting" was already excluded as a hard conflict at step 3, so only "relevant"
+    # reaches CONFIRMED here.
     all_confirm_gates = (
-        resource_score == 1.0
-        and complete_enough
+        complete_enough
         and not active_alt
         and verifier.contradiction_check_complete
+        and verifier.temporal_relevance == "relevant"
     )
     if all_confirm_gates:
         return InvestigationOutcome.CONFIRMED.value
-    # 8. Otherwise: a solid causal claim (supported + sufficient + uncontradicted), but at
-    # least one non-fatal confirmation gate (resource identity, completeness, an
-    # unresolved hypothesis, or an incomplete contradiction scan) isn't fully satisfied.
+    # 8. Otherwise: a solid causal claim (supported + sufficient + uncontradicted, resource
+    # identity clean), but at least one non-fatal confirmation gate (completeness, an
+    # unresolved hypothesis, an incomplete contradiction scan, or temporal relevance not
+    # positively established) isn't fully satisfied.
     return InvestigationOutcome.PROBABLE.value
 
 

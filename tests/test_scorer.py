@@ -489,16 +489,30 @@ def _evidence_and_ctx():
 
 
 def test_outcome_confirmed_requires_all_gates_to_pass():
+    """temporal_relevance must be explicitly "relevant" -- _clean_verifier()'s own default
+    is "unknown" (the safer default, see the dedicated test below), so this CONFIRMED-
+    proving test opts in explicitly rather than relying on the default."""
     evidence_store, ctx = _evidence_and_ctx()
-    outcome = derive_outcome(_primary_claim(), _clean_verifier(), {"score": 0.9}, [], [], evidence_store, ctx, POLICY)
+    verifier = _clean_verifier(temporal_relevance="relevant")
+    outcome = derive_outcome(_primary_claim(), verifier, {"score": 0.9}, [], [], evidence_store, ctx, POLICY)
     assert outcome == InvestigationOutcome.CONFIRMED.value
+
+
+def test_outcome_probable_when_temporal_relevance_unknown_even_with_every_other_gate_perfect():
+    """2026-09-01 review, correction round 2, point 1: "unknown" is not a pass-by-default
+    -- CONFIRMED requires temporal_relevance to be POSITIVELY established as "relevant"."""
+    evidence_store, ctx = _evidence_and_ctx()
+    verifier = _clean_verifier()  # temporal_relevance defaults to "unknown", not overridden
+    outcome = derive_outcome(_primary_claim(), verifier, {"score": 0.9}, [], [], evidence_store, ctx, POLICY)
+    assert outcome == InvestigationOutcome.PROBABLE.value
 
 
 def test_outcome_confirmed_downgrades_to_probable_with_unresolved_hypothesis():
     evidence_store, ctx = _evidence_and_ctx()
+    verifier = _clean_verifier(temporal_relevance="relevant")
     active_hyp = [Hypothesis("hyp_001", "x", supporting_evidence_ids=["ev_001"], status="active")]
     outcome = derive_outcome(
-        _primary_claim(), _clean_verifier(), {"score": 0.9}, [], active_hyp, evidence_store, ctx, POLICY,
+        _primary_claim(), verifier, {"score": 0.9}, [], active_hyp, evidence_store, ctx, POLICY,
     )
     assert outcome == InvestigationOutcome.PROBABLE.value
 
@@ -630,19 +644,55 @@ def test_outcome_probable_when_contradiction_scan_incomplete_even_with_perfect_c
     assert outcome == InvestigationOutcome.PROBABLE.value
 
 
-def test_outcome_probable_when_resource_identity_mismatch_but_claim_otherwise_solid():
-    """Resource-identity mismatch on the PRIMARY claim's own cited evidence is a
-    non-fatal CONFIRMED gate (caps at PROBABLE) — distinct from the deterministic
-    wrong_resource CONTRADICTION check above, which is a hard conflict. This is the
-    scorer's per-claim resource_identity_match check (reused from
-    score_root_cause_confidence via _check_resource_identity), not detect_contradictions()."""
+def test_outcome_conflicting_evidence_when_primary_evidence_cluster_mismatches():
+    """2026-09-01 review, correction round 2, point 2: an explicit cluster mismatch on
+    the PRIMARY claim's own cited evidence is now a HARD conflict (CONFLICTING_EVIDENCE),
+    not a soft PROBABLE downgrade — distinct from the deterministic wrong_resource
+    CONTRADICTION check tested above (that one comes from detect_contradictions();
+    this one comes from _check_resource_identity(), reused from
+    score_root_cause_confidence, now also gating derive_outcome() directly)."""
     claim = _primary_claim(supporting_ids=("ev_001",))
     evidence_store = {
         "ev_001": make_evidence("ev_001", "describe_pod_detail", cluster="a-different-cluster", key_facts=["x"]),
     }
     ctx = {"cluster_name": CLUSTER, "namespace": "test-incidents", "pod": "test-pod"}
     outcome = derive_outcome(claim, _clean_verifier(), {"score": 0.9}, [], [], evidence_store, ctx, POLICY)
-    assert outcome == InvestigationOutcome.PROBABLE.value
+    assert outcome == InvestigationOutcome.CONFLICTING_EVIDENCE.value
+
+
+def test_outcome_conflicting_evidence_when_primary_evidence_namespace_mismatches_correct_cluster():
+    """Same hard-conflict treatment, but for a NAMESPACE mismatch with the CORRECT
+    cluster -- proves the namespace/pod path (not just the cluster path) is covered,
+    per the explicit regression this correction requires."""
+    claim = _primary_claim(supporting_ids=("ev_001",))
+    evidence_store = {
+        "ev_001": make_evidence(
+            "ev_001", "describe_pod_detail", cluster=CLUSTER, key_facts=["x"],
+            resource_id="wrong-namespace/test-pod",
+        ),
+    }
+    ctx = {"cluster_name": CLUSTER, "namespace": "test-incidents", "pod": "test-pod"}
+    outcome = derive_outcome(claim, _clean_verifier(), {"score": 0.9}, [], [], evidence_store, ctx, POLICY)
+    assert outcome == InvestigationOutcome.CONFLICTING_EVIDENCE.value
+
+
+def test_outcome_confirmed_still_reachable_with_legitimate_non_pod_evidence():
+    """The existing ConfigMap/Service relaxation inside _check_resource_identity() must
+    stay intact: non-Pod evidence that doesn't literally contain the pod's name must
+    NOT be flagged as a mismatch (and therefore must not be pushed to
+    CONFLICTING_EVIDENCE) -- only an explicit, real mismatch should."""
+    claim = _primary_claim(supporting_ids=("ev_001",))
+    evidence_store = {
+        "ev_001": make_evidence(
+            "ev_001", "describe_pod_detail", cluster=CLUSTER, key_facts=["x"],
+            resource_id="test-incidents/app-config",  # a ConfigMap the pod depends on
+        ),
+    }
+    evidence_store["ev_001"]["resource_type"] = "configmap"
+    ctx = {"cluster_name": CLUSTER, "namespace": "test-incidents", "pod": "test-pod"}
+    verifier = _clean_verifier(temporal_relevance="relevant")
+    outcome = derive_outcome(claim, verifier, {"score": 0.9}, [], [], evidence_store, ctx, POLICY)
+    assert outcome == InvestigationOutcome.CONFIRMED.value
 
 
 # ── Legacy confidence_band mapping ──────────────────────────────────────────

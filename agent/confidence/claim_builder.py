@@ -246,7 +246,7 @@ def build_claims(
     return claims
 
 
-def select_primary_causal_claim(claims: list, rca_result: dict):
+def select_primary_causal_claim(claims: list, rca_result: dict, evidence_store: dict | None = None):
     """Resolves the model-proposed primary_causal_claim_index into an actual Claim,
     doing ONLY mechanical validation -- never judging whether the claim's content
     'sounds causal'. There is no safe deterministic rule for that (2026-09-01
@@ -267,8 +267,15 @@ def select_primary_causal_claim(claims: list, rca_result: dict):
     Returns None for: null index, non-integer/out-of-range index, a claim_id that
     doesn't exist in `claims` (e.g. the model's index pointed at an entry so malformed
     it was dropped before ever getting a Claim built for it), a claim whose type is
-    RECOMMENDATION or HYPOTHESIS (never eligible to be "the" causal claim), or a claim
-    with no supporting_evidence_ids at all (nothing for the verifier to check).
+    RECOMMENDATION or HYPOTHESIS (never eligible to be "the" causal claim), a claim
+    with no supporting_evidence_ids at all (nothing for the verifier to check), OR
+    (2026-09-01 review, correction round 2) a claim citing evidence that is missing from
+    evidence_store or whose entry has ok=False. A failed tool call still gets a raw_ref
+    (its GCS-written error record is technically readable), so without this specific
+    check the verifier could be handed only error text and never know it wasn't real
+    evidence -- this is a deterministic PRE-verifier check precisely so that never
+    happens; the verifier is not even called for a claim that fails it (see
+    rca_builder.py's call site).
     """
     raw_index = rca_result.get("primary_causal_claim_index")
     if raw_index is None:
@@ -289,6 +296,11 @@ def select_primary_causal_claim(claims: list, rca_result: dict):
         return None
     if not claim.supporting_evidence_ids:
         return None
+    if evidence_store is not None:
+        for eid in claim.supporting_evidence_ids:
+            ev = evidence_store.get(eid)
+            if ev is None or not ev.get("ok", True):
+                return None
     return claim
 
 
