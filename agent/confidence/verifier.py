@@ -243,4 +243,16 @@ def verify_primary_claim(
     result = _parse_result(raw_result, cited_ids, other_ids)
     result.source_evidence_complete = source_evidence_complete
     result.contradiction_check_complete = contradiction_check_complete
+
+    # 2026-09-01 review, correction round 3: without a real incident_time_context, the
+    # verifier has no legitimate basis to claim EITHER "relevant" or "conflicting" -- it
+    # would be guessing. Enforced deterministically here, unconditionally overriding
+    # whatever the LLM returned (never trusted, regardless of value) -- this is NOT
+    # approximated from investigation.started_at or evidence collected_at, both of which
+    # are agent/runtime timestamps (when THIS investigation ran its tool calls), never
+    # the actual incident's own timestamp. Only a real incident_time_context earns a
+    # non-"unknown" temporal_relevance.
+    if not incident_time_context:
+        result.temporal_relevance = "unknown"
+
     return result, usage

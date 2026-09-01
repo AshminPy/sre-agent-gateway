@@ -76,6 +76,11 @@ def _state_with_strong_evidence():
 def test_a_correct_claim_with_strong_evidence_reaches_confirmed(monkeypatch):
     _quiet_observability_log(monkeypatch)
     state, _ = _state_with_strong_evidence()
+    # 2026-09-01 review, correction round 3: a CONFIRMED positive test must include real,
+    # explicit incident-time context -- without it, verify_primary_claim() now forces
+    # temporal_relevance="unknown" regardless of what the verifier LLM says (see
+    # test_a3 below), so "relevant" would never legitimately survive without this.
+    state["resolved_context"]["incident_start"] = 1893456000.0  # arbitrary real-looking epoch time
     _mock_rca_llm(monkeypatch, {
         "primary_causal_claim_index": 1,
         "claims": [{"text": "Container OOMKilled, exit code 137, memory limit exceeded",
@@ -95,6 +100,36 @@ def test_a_correct_claim_with_strong_evidence_reaches_confirmed(monkeypatch):
     assert result["outcome"] == "confirmed"
     assert result["requires_human_review"] is False
     assert result["likely_root_cause"] == "Container OOMKilled, exit code 137, memory limit exceeded"
+
+
+def test_a3_no_incident_time_context_forces_temporal_unknown_never_confirmed(monkeypatch):
+    """2026-09-01 review, correction round 3: without real incident_time_context, the
+    verifier's own claimed temporal_relevance is NEVER trusted -- even when it says
+    "relevant" -- because it would only be guessing. This must be enforced deterministically
+    in verify_primary_claim(), not left to the LLM's own honesty. Explicitly does NOT set
+    resolved_context's incident_start/incident_end/incident_reported_at (state["investigation"]
+    still has its own started_at, but that's an agent/runtime timestamp, never a substitute
+    -- see verify_primary_claim()'s docstring)."""
+    _quiet_observability_log(monkeypatch)
+    state, _ = _state_with_strong_evidence()
+    _mock_rca_llm(monkeypatch, {
+        "primary_causal_claim_index": 1,
+        "claims": [{"text": "Container OOMKilled, exit code 137, memory limit exceeded",
+                     "claim_type": "observed_fact", "supporting_evidence_ids": ["ev_001", "ev_002"]}],
+        "alternative_hypotheses_considered": [], "evidence_chain": ["ev_001", "ev_002", "ev_003"],
+        "evidence_gaps": [], "reasoning_trace": [], "suggested_remediation": ["Raise the memory limit."],
+        "sources_skipped": [],
+    })
+    # The verifier LIES (from this test's point of view) and claims "relevant" despite
+    # having no real incident-time context to judge that from -- the deterministic
+    # override must catch this regardless of what the mock returns.
+    mock_verifier(monkeypatch, temporal_relevance="relevant")
+    mock_verifier_evidence(monkeypatch)
+
+    result = rca_builder_mod.rca_builder(state)["final_summary"]
+    assert result["verifier_result"]["temporal_relevance"] == "unknown"
+    assert result["outcome"] == "probable"
+    assert result["outcome"] != "confirmed"
 
 
 def test_a2_temporal_unknown_never_reaches_confirmed_even_with_every_other_gate_perfect(monkeypatch):
@@ -305,8 +340,13 @@ def test_g_incomplete_contradiction_scan_caps_below_confirmed(monkeypatch):
 # ── H. Resource or temporal conflict -> CONFLICTING_EVIDENCE ───────────────────
 
 def test_h_temporal_conflict_reaches_conflicting_evidence(monkeypatch):
+    """2026-09-01 review, correction round 3: real incident_time_context is required here
+    too -- without it, verify_primary_claim()'s deterministic override would force
+    temporal_relevance to "unknown" regardless of what the mock says, which would no
+    longer prove this specific gate (see test_a3 for that scenario instead)."""
     _quiet_observability_log(monkeypatch)
     state, _ = _state_with_strong_evidence()
+    state["resolved_context"]["incident_start"] = 1893456000.0
     _mock_rca_llm(monkeypatch, {
         "primary_causal_claim_index": 1,
         "claims": [{"text": "Container OOMKilled, exit code 137", "claim_type": "observed_fact",

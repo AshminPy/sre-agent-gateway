@@ -109,6 +109,39 @@ def test_contradiction_ref_inside_set_b_is_accepted(monkeypatch):
     assert result.contradiction_evidence_ref == "ev_002"
 
 
+def test_no_incident_time_context_forces_temporal_relevance_unknown(monkeypatch):
+    """2026-09-01 review, correction round 3: without real incident_time_context, the
+    verifier's own claimed temporal_relevance is never trusted -- deterministically
+    overridden to "unknown" regardless of what the LLM said, since it would only be
+    guessing without a real incident timestamp to compare against."""
+    mock_verifier(monkeypatch, temporal_relevance="relevant")
+    mock_verifier_evidence(monkeypatch)
+    claim = _claim()
+    evidence_store = {"ev_001": make_evidence("ev_001", "describe_pod_detail", key_facts=["x"])}
+    result, _ = verify_primary_claim(claim, evidence_store, incident_time_context=None)
+    assert result.temporal_relevance == "unknown"
+
+
+def test_no_incident_time_context_overrides_even_a_claimed_conflict(monkeypatch):
+    """The override is unconditional -- a claimed "conflicting" without real incident
+    timing is just as untrustworthy as a claimed "relevant"."""
+    mock_verifier(monkeypatch, temporal_relevance="conflicting")
+    mock_verifier_evidence(monkeypatch)
+    claim = _claim()
+    evidence_store = {"ev_001": make_evidence("ev_001", "describe_pod_detail", key_facts=["x"])}
+    result, _ = verify_primary_claim(claim, evidence_store, incident_time_context={})
+    assert result.temporal_relevance == "unknown"
+
+
+def test_real_incident_time_context_lets_verifier_relevance_through(monkeypatch):
+    mock_verifier(monkeypatch, temporal_relevance="relevant")
+    mock_verifier_evidence(monkeypatch)
+    claim = _claim()
+    evidence_store = {"ev_001": make_evidence("ev_001", "describe_pod_detail", key_facts=["x"])}
+    result, _ = verify_primary_claim(claim, evidence_store, incident_time_context={"incident_start": 123.0})
+    assert result.temporal_relevance == "relevant"
+
+
 def test_source_evidence_unavailable_sets_source_evidence_complete_false(monkeypatch):
     mock_verifier(monkeypatch)
     mock_verifier_evidence(monkeypatch, available_ids=[])  # ev_001 (Set A) unreadable
