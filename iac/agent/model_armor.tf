@@ -7,19 +7,10 @@
 # sre_agent_request and response_template_id = sre_agent_response.
 #
 # Used two ways:
-#   1. App layer (always on, issue #203) — the agent code calls
-#      sanitize_user_prompt / sanitize_model_response directly
-#      (agent/main.py's SREAgent._sanitize(), and agent/mcp_client.py's
-#      custom-MCP response wrap); it uses the request template for input,
-#      the response template for output.
-#   2. Project-level floor setting (google_model_armor_floorsetting.mcp
-#      below, gateway ON only) — inspects GOOGLE_MCP_SERVER (GKE Remote MCP)
-#      and AI_PLATFORM (Gemini) traffic automatically, no app code involved.
-#      NOTE: this is NOT the Agent Gateway's own CONTENT_AUTHZ -- no such
-#      extension exists for this gateway (see agent_gateway.tf's header: "no
-#      working Terraform path exists to wire CONTENT_AUTHZ to this gateway").
-#      An earlier version of this comment claimed otherwise; corrected in the
-#      same change that made the app layer always-on (issue #203).
+#   1. App layer (gateway OFF) — the agent code calls sanitize_user_prompt /
+#      sanitize_model_response (agent/main.py); it uses the request template.
+#   2. Gateway layer (gateway ON) — the CONTENT_AUTHZ authz extension inspects
+#      traffic at the Agent Gateway. Defense in depth.
 
 # Request-side: prompt injection / jailbreak + malicious URI + RAI. SRE agents
 # ingest raw k8s logs, so input inspection is the high-risk path.
