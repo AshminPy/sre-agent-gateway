@@ -38,7 +38,10 @@ from agent.mcp_client import ALLOWED_TOOLS, BLOCKED_ACTIONS, CUSTOM_K8S_TOOLS, c
 from agent.nodes.context_resolver import context_resolver
 from agent.nodes.mcp_router import mcp_router
 from agent.state import get_initial_state
-from tests.conftest import CLUSTER, make_evidence, make_state, make_tool_history_entry
+from tests.conftest import (
+    CLUSTER, make_evidence, make_state, make_tool_history_entry,
+    mock_verifier, mock_verifier_evidence,
+)
 
 
 def _quiet_observability_log(monkeypatch):
@@ -90,7 +93,7 @@ def test_crashloop_backoff_grounded_rca_confirms_cause(monkeypatch):
     state = _base_state("CrashLoopBackOff", evidence_store, tool_history)
 
     _mock_llm_json(monkeypatch, {
-        "likely_root_cause": "Container is in CrashLoopBackOff, exiting with fatal error (ev_001, ev_002, ev_003)",
+        "primary_causal_claim_index": 1,
         "claims": [{
             "text": "Container CrashLoopBackOff, process exited fatal error",
             "claim_type": "observed_fact",
@@ -101,6 +104,8 @@ def test_crashloop_backoff_grounded_rca_confirms_cause(monkeypatch):
         "reasoning_trace": [], "suggested_remediation": ["Check the container's startup command and fix the crashing bug."],
         "sources_skipped": [],
     })
+    mock_verifier(monkeypatch)
+    mock_verifier_evidence(monkeypatch)
 
     result = rca_builder_mod.rca_builder(state)["final_summary"]
 
@@ -130,7 +135,7 @@ def test_imagepull_backoff_grounded_rca(monkeypatch):
     state = _base_state("ImagePullBackOff", evidence_store, tool_history)
 
     _mock_llm_json(monkeypatch, {
-        "likely_root_cause": "ImagePullBackOff — ErrImagePull, image manifest not found (ev_001, ev_002)",
+        "primary_causal_claim_index": 1,
         "claims": [{
             "text": "ImagePullBackOff caused by ErrImagePull, image manifest not found",
             "claim_type": "observed_fact",
@@ -141,6 +146,8 @@ def test_imagepull_backoff_grounded_rca(monkeypatch):
         "reasoning_trace": [], "suggested_remediation": ["Verify the image tag and registry credentials."],
         "sources_skipped": [],
     })
+    mock_verifier(monkeypatch)
+    mock_verifier_evidence(monkeypatch)
 
     result = rca_builder_mod.rca_builder(state)["final_summary"]
 
@@ -166,7 +173,7 @@ def test_oomkilled_investigation_context_matches_resolved_cluster_namespace(monk
     state = _base_state("OOMKilled", evidence_store, tool_history)
 
     _mock_llm_json(monkeypatch, {
-        "likely_root_cause": "Container OOMKilled, exit code 137, memory limit exceeded (ev_001, ev_002)",
+        "primary_causal_claim_index": 1,
         "claims": [{"text": "Container OOMKilled, exit code 137, memory limit exceeded",
                      "claim_type": "observed_fact",
                      "supporting_evidence_ids": ["ev_001", "ev_002"]}],
@@ -175,6 +182,8 @@ def test_oomkilled_investigation_context_matches_resolved_cluster_namespace(monk
         "reasoning_trace": [], "suggested_remediation": ["Raise the memory limit or fix the leak."],
         "sources_skipped": [],
     })
+    mock_verifier(monkeypatch)
+    mock_verifier_evidence(monkeypatch)
 
     result = rca_builder_mod.rca_builder(state)["final_summary"]
     ctx = result["investigation_context"]
@@ -202,8 +211,8 @@ def test_pending_unschedulable_grounded(monkeypatch):
     state = _base_state("Pending", evidence_store, tool_history)
 
     _mock_llm_json(monkeypatch, {
-        "likely_root_cause": "Pod stuck Pending — FailedScheduling, Insufficient cpu on all nodes (ev_001, ev_002)",
-        "claims": [{"text": "Pending FailedScheduling due to Insufficient cpu",
+        "primary_causal_claim_index": 1,
+        "claims": [{"text": "Pod stuck Pending — FailedScheduling, Insufficient cpu on all nodes",
                      "claim_type": "observed_fact",
                      "supporting_evidence_ids": ["ev_001", "ev_002"]}],
         "alternative_hypotheses_considered": [],
@@ -211,6 +220,8 @@ def test_pending_unschedulable_grounded(monkeypatch):
         "reasoning_trace": [], "suggested_remediation": ["Scale the node pool or reduce requested cpu."],
         "sources_skipped": [],
     })
+    mock_verifier(monkeypatch)
+    mock_verifier_evidence(monkeypatch)
 
     result = rca_builder_mod.rca_builder(state)["final_summary"]
 
@@ -375,7 +386,7 @@ def test_conflicting_evidence_forces_conflicting_outcome(monkeypatch):
     state = _base_state("CrashLoopBackOff", evidence_store, tool_history)
 
     _mock_llm_json(monkeypatch, {
-        "likely_root_cause": "Pod unstable, restarts observed (ev_001, ev_002)",
+        "primary_causal_claim_index": 1,
         "claims": [{
             "text": "Pod unstable with restarts",
             "claim_type": "observed_fact",
@@ -386,6 +397,13 @@ def test_conflicting_evidence_forces_conflicting_outcome(monkeypatch):
         "reasoning_trace": [], "suggested_remediation": [],
         "sources_skipped": [],
     })
+    # The conflict here is the DETERMINISTIC wrong-resource check (detect_contradictions()
+    # comparing ev_002's cluster tag against resolved_context) -- a clean/passing verifier
+    # mock is still needed to get past gates 1-2 of derive_outcome() before the hard-conflict
+    # check at gate 3 is even reached; this test is not exercising the verifier's OWN
+    # semantic_contradiction judgment (see test_confirmed_contract.py for that case).
+    mock_verifier(monkeypatch)
+    mock_verifier_evidence(monkeypatch)
 
     result = rca_builder_mod.rca_builder(state)["final_summary"]
 

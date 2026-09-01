@@ -7,6 +7,7 @@ from agent.confidence.scorer import (
     score_investigation_completeness,
     score_root_cause_confidence,
 )
+from agent.confidence.verifier import VerifierResult
 
 from tests.conftest import CLUSTER, make_evidence, make_state, make_tool_history_entry
 
@@ -447,54 +448,251 @@ def test_root_cause_confidence_closely_spaced_evidence_timestamps_keeps_full_tim
     assert result["components"]["time_correlation"] == 1.0
 
 
-# ── Outcome derivation ────────────────────────────────────────────────────
+# ── Outcome derivation (2026-09-01 confidence-architecture review) ──────────
+# derive_outcome() is now driven by the primary causal claim + its independent verifier
+# result + deterministic gates — the legacy numeric confidence score is diagnostic/
+# compatibility-only and is not a parameter of this function at all anymore (see
+# score_root_cause_confidence's own docstring/call site in rca_builder.py).
 
-def test_outcome_confirmed_requires_high_confidence_high_completeness_no_issues():
-    completeness = {"score": 0.9}
-    confidence = {"score": 0.9}
-    outcome = derive_outcome(completeness, confidence, [], [], POLICY)
+def _primary_claim(supporting_ids=("ev_001",)) -> Claim:
+    return Claim(
+        claim_id="claim_001",
+        text="specific root cause",
+        claim_type=ClaimType.OBSERVED_FACT,
+        supporting_evidence_ids=list(supporting_ids),
+        grounding_status="grounded",
+        support_strength=1.0,
+    )
+
+
+def _clean_verifier(**overrides) -> VerifierResult:
+    defaults = dict(
+        causal_assertion="specific_cause",
+        faithfulness="supported",
+        sufficiency="sufficient",
+        semantic_contradiction="absent",
+        temporal_relevance="unknown",
+        verified_ok=True,
+        source_evidence_complete=True,
+        contradiction_check_complete=True,
+    )
+    defaults.update(overrides)
+    return VerifierResult(**defaults)
+
+
+def _evidence_and_ctx():
+    evidence_store = {
+        "ev_001": make_evidence("ev_001", "describe_pod_detail", cluster=CLUSTER, key_facts=["x"]),
+    }
+    resolved_context = {"cluster_name": CLUSTER, "namespace": "test-incidents", "pod": "test-pod"}
+    return evidence_store, resolved_context
+
+
+def test_outcome_confirmed_requires_all_gates_to_pass():
+    """temporal_relevance must be explicitly "relevant" -- _clean_verifier()'s own default
+    is "unknown" (the safer default, see the dedicated test below), so this CONFIRMED-
+    proving test opts in explicitly rather than relying on the default."""
+    evidence_store, ctx = _evidence_and_ctx()
+    verifier = _clean_verifier(temporal_relevance="relevant")
+    outcome = derive_outcome(_primary_claim(), verifier, {"score": 0.9}, [], [], evidence_store, ctx, POLICY)
     assert outcome == InvestigationOutcome.CONFIRMED.value
 
 
+def test_outcome_probable_when_temporal_relevance_unknown_even_with_every_other_gate_perfect():
+    """2026-09-01 review, correction round 2, point 1: "unknown" is not a pass-by-default
+    -- CONFIRMED requires temporal_relevance to be POSITIVELY established as "relevant"."""
+    evidence_store, ctx = _evidence_and_ctx()
+    verifier = _clean_verifier()  # temporal_relevance defaults to "unknown", not overridden
+    outcome = derive_outcome(_primary_claim(), verifier, {"score": 0.9}, [], [], evidence_store, ctx, POLICY)
+    assert outcome == InvestigationOutcome.PROBABLE.value
+
+
 def test_outcome_confirmed_downgrades_to_probable_with_unresolved_hypothesis():
-    completeness = {"score": 0.9}
-    confidence = {"score": 0.9}
+    evidence_store, ctx = _evidence_and_ctx()
+    verifier = _clean_verifier(temporal_relevance="relevant")
     active_hyp = [Hypothesis("hyp_001", "x", supporting_evidence_ids=["ev_001"], status="active")]
-    outcome = derive_outcome(completeness, confidence, [], active_hyp, POLICY)
-    assert outcome != InvestigationOutcome.CONFIRMED.value
+    outcome = derive_outcome(
+        _primary_claim(), verifier, {"score": 0.9}, [], active_hyp, evidence_store, ctx, POLICY,
+    )
+    assert outcome == InvestigationOutcome.PROBABLE.value
 
 
-def test_outcome_conflicting_evidence_when_severe_contradiction_present():
-    completeness = {"score": 0.9}
-    confidence = {"score": 0.5}
-    contradictions = [Contradiction("c1", "claim_001", "x", "ev_001", "", "semantic", severity=0.7)]
-    outcome = derive_outcome(completeness, confidence, contradictions, [], POLICY)
+def test_outcome_conflicting_evidence_when_deterministic_wrong_resource_contradiction_present():
+    """The deterministic (code-detected) contradiction path — unrelated to the verifier's
+    own semantic_contradiction judgment, see the next test."""
+    evidence_store, ctx = _evidence_and_ctx()
+    contradictions = [Contradiction("c1", "claim_001", "x", "ev_001", "", "wrong_resource", severity=0.7)]
+    outcome = derive_outcome(
+        _primary_claim(), _clean_verifier(), {"score": 0.9}, contradictions, [], evidence_store, ctx, POLICY,
+    )
     assert outcome == InvestigationOutcome.CONFLICTING_EVIDENCE.value
 
 
-def test_outcome_insufficient_evidence_when_completeness_too_low():
-    completeness = {"score": 0.2}
-    confidence = {"score": 0.9}
-    outcome = derive_outcome(completeness, confidence, [], [], POLICY)
+def test_outcome_conflicting_evidence_when_verifier_reports_semantic_contradiction():
+    """Proves the verifier's own independently-checked semantic_contradiction is a real,
+    separate gate now — not merely a mirror of the RCA generator's self-reported
+    contradicting_evidence_ids (2026-09-01 review, point 3: 'that is not sufficient for
+    the new verifier architecture')."""
+    evidence_store, ctx = _evidence_and_ctx()
+    verifier = _clean_verifier(semantic_contradiction="present", contradiction_evidence_ref="ev_999")
+    outcome = derive_outcome(_primary_claim(), verifier, {"score": 0.9}, [], [], evidence_store, ctx, POLICY)
+    assert outcome == InvestigationOutcome.CONFLICTING_EVIDENCE.value
+
+
+def test_outcome_conflicting_evidence_when_temporal_relevance_conflicting():
+    evidence_store, ctx = _evidence_and_ctx()
+    verifier = _clean_verifier(temporal_relevance="conflicting")
+    outcome = derive_outcome(_primary_claim(), verifier, {"score": 0.9}, [], [], evidence_store, ctx, POLICY)
+    assert outcome == InvestigationOutcome.CONFLICTING_EVIDENCE.value
+
+
+def test_outcome_probable_when_completeness_below_minimum_but_claim_otherwise_solid():
+    """Low completeness is a NON-FATAL gate for an otherwise fully-verified specific
+    causal claim — caps at PROBABLE, does not force INSUFFICIENT_EVIDENCE (2026-09-01
+    review, point 1: 'supported + sufficient causal claim but one non-fatal confirmation
+    gate remains unresolved -> PROBABLE'). Investigation completeness alone never
+    ESTABLISHES correctness either way — see the primary-claim-required tests below for
+    the case where completeness is high but there's no valid claim at all."""
+    evidence_store, ctx = _evidence_and_ctx()
+    outcome = derive_outcome(
+        _primary_claim(), _clean_verifier(), {"score": 0.2}, [], [], evidence_store, ctx, POLICY,
+    )
+    assert outcome == InvestigationOutcome.PROBABLE.value
+
+
+def test_outcome_insufficient_evidence_when_no_valid_primary_claim():
+    """The exact selector-001/pending-001 regression this whole redesign targets: no
+    primary claim is explicit and immediate, never a fallthrough onto scoring of any
+    kind — proven here with a deliberately HIGH completeness score that must not rescue
+    it."""
+    evidence_store, ctx = _evidence_and_ctx()
+    outcome = derive_outcome(None, None, {"score": 0.95}, [], [], evidence_store, ctx, POLICY)
     assert outcome == InvestigationOutcome.INSUFFICIENT_EVIDENCE.value
 
 
-def test_outcome_unknown_when_confidence_very_low_but_completeness_ok():
-    completeness = {"score": 0.9}
-    confidence = {"score": 0.1}
-    outcome = derive_outcome(completeness, confidence, [], [], POLICY)
-    assert outcome == InvestigationOutcome.UNKNOWN.value
+def test_outcome_insufficient_evidence_on_explicit_abstention():
+    """causal_assertion=abstention is the model/verifier saying 'the root cause is
+    unknown' — a legitimate, correct answer, never CONFIRMED/PROBABLE regardless of how
+    well-grounded the claim's own wording is."""
+    evidence_store, ctx = _evidence_and_ctx()
+    verifier = _clean_verifier(causal_assertion="abstention")
+    outcome = derive_outcome(_primary_claim(), verifier, {"score": 0.9}, [], [], evidence_store, ctx, POLICY)
+    assert outcome == InvestigationOutcome.INSUFFICIENT_EVIDENCE.value
 
 
-def test_outcome_never_confirmed_from_a_bare_numeric_threshold_alone():
-    """Same confidence score (0.9), but WITH an unresolved contradiction — must not be
-    CONFIRMED just because the number is high. This is the 'no auto-post on a numeric
-    threshold alone' requirement."""
-    completeness = {"score": 0.9}
-    confidence = {"score": 0.9}
-    contradictions = [Contradiction("c1", "claim_001", "x", "ev_001", "", "wrong_resource", severity=0.3)]
-    outcome = derive_outcome(completeness, confidence, contradictions, [], POLICY)
-    assert outcome != InvestigationOutcome.CONFIRMED.value
+def test_outcome_insufficient_evidence_on_non_causal_assertion():
+    evidence_store, ctx = _evidence_and_ctx()
+    verifier = _clean_verifier(causal_assertion="non_causal")
+    outcome = derive_outcome(_primary_claim(), verifier, {"score": 0.9}, [], [], evidence_store, ctx, POLICY)
+    assert outcome == InvestigationOutcome.INSUFFICIENT_EVIDENCE.value
+
+
+def test_outcome_insufficient_evidence_when_faithfulness_unsupported():
+    """Never CONFIRMED or PROBABLE from an unfaithful claim — this is the exact
+    intermittent-001 regression: strong surrounding facts must not rescue an unsupported
+    primary causal claim."""
+    evidence_store, ctx = _evidence_and_ctx()
+    verifier = _clean_verifier(faithfulness="unsupported")
+    outcome = derive_outcome(_primary_claim(), verifier, {"score": 0.9}, [], [], evidence_store, ctx, POLICY)
+    assert outcome == InvestigationOutcome.INSUFFICIENT_EVIDENCE.value
+
+
+def test_outcome_never_confirmed_or_probable_when_verifier_failed():
+    evidence_store, ctx = _evidence_and_ctx()
+    verifier = VerifierResult(verified_ok=False)
+    outcome = derive_outcome(_primary_claim(), verifier, {"score": 0.9}, [], [], evidence_store, ctx, POLICY)
+    assert outcome == InvestigationOutcome.INSUFFICIENT_EVIDENCE.value
+
+
+def test_outcome_never_confirmed_or_probable_when_source_evidence_incomplete():
+    evidence_store, ctx = _evidence_and_ctx()
+    verifier = _clean_verifier(source_evidence_complete=False)
+    outcome = derive_outcome(_primary_claim(), verifier, {"score": 0.9}, [], [], evidence_store, ctx, POLICY)
+    assert outcome == InvestigationOutcome.INSUFFICIENT_EVIDENCE.value
+
+
+def test_outcome_possible_when_sufficiency_insufficient_but_faithfulness_supported():
+    evidence_store, ctx = _evidence_and_ctx()
+    verifier = _clean_verifier(sufficiency="insufficient")
+    outcome = derive_outcome(_primary_claim(), verifier, {"score": 0.9}, [], [], evidence_store, ctx, POLICY)
+    assert outcome == InvestigationOutcome.POSSIBLE.value
+
+
+def test_outcome_insufficient_evidence_when_faithfulness_partial_and_sufficiency_insufficient():
+    """Two independently-weak signals must not combine into a firmer outcome than either
+    alone (2026-09-01 review, point 1's nested sufficiency rule)."""
+    evidence_store, ctx = _evidence_and_ctx()
+    verifier = _clean_verifier(faithfulness="partial", sufficiency="insufficient")
+    outcome = derive_outcome(_primary_claim(), verifier, {"score": 0.9}, [], [], evidence_store, ctx, POLICY)
+    assert outcome == InvestigationOutcome.INSUFFICIENT_EVIDENCE.value
+
+
+def test_outcome_possible_when_faithfulness_partial_but_sufficiency_sufficient():
+    evidence_store, ctx = _evidence_and_ctx()
+    verifier = _clean_verifier(faithfulness="partial")
+    outcome = derive_outcome(_primary_claim(), verifier, {"score": 0.9}, [], [], evidence_store, ctx, POLICY)
+    assert outcome == InvestigationOutcome.POSSIBLE.value
+
+
+def test_outcome_probable_when_contradiction_scan_incomplete_even_with_perfect_claim():
+    """Point 1, final review round: an incomplete Set-B contradiction scan caps the
+    outcome at PROBABLE — never CONFIRMED — even when everything else about the primary
+    claim is clean, because an incomplete scan cannot rule out a real contradiction."""
+    evidence_store, ctx = _evidence_and_ctx()
+    verifier = _clean_verifier(contradiction_check_complete=False)
+    outcome = derive_outcome(_primary_claim(), verifier, {"score": 0.9}, [], [], evidence_store, ctx, POLICY)
+    assert outcome == InvestigationOutcome.PROBABLE.value
+
+
+def test_outcome_conflicting_evidence_when_primary_evidence_cluster_mismatches():
+    """2026-09-01 review, correction round 2, point 2: an explicit cluster mismatch on
+    the PRIMARY claim's own cited evidence is now a HARD conflict (CONFLICTING_EVIDENCE),
+    not a soft PROBABLE downgrade — distinct from the deterministic wrong_resource
+    CONTRADICTION check tested above (that one comes from detect_contradictions();
+    this one comes from _check_resource_identity(), reused from
+    score_root_cause_confidence, now also gating derive_outcome() directly)."""
+    claim = _primary_claim(supporting_ids=("ev_001",))
+    evidence_store = {
+        "ev_001": make_evidence("ev_001", "describe_pod_detail", cluster="a-different-cluster", key_facts=["x"]),
+    }
+    ctx = {"cluster_name": CLUSTER, "namespace": "test-incidents", "pod": "test-pod"}
+    outcome = derive_outcome(claim, _clean_verifier(), {"score": 0.9}, [], [], evidence_store, ctx, POLICY)
+    assert outcome == InvestigationOutcome.CONFLICTING_EVIDENCE.value
+
+
+def test_outcome_conflicting_evidence_when_primary_evidence_namespace_mismatches_correct_cluster():
+    """Same hard-conflict treatment, but for a NAMESPACE mismatch with the CORRECT
+    cluster -- proves the namespace/pod path (not just the cluster path) is covered,
+    per the explicit regression this correction requires."""
+    claim = _primary_claim(supporting_ids=("ev_001",))
+    evidence_store = {
+        "ev_001": make_evidence(
+            "ev_001", "describe_pod_detail", cluster=CLUSTER, key_facts=["x"],
+            resource_id="wrong-namespace/test-pod",
+        ),
+    }
+    ctx = {"cluster_name": CLUSTER, "namespace": "test-incidents", "pod": "test-pod"}
+    outcome = derive_outcome(claim, _clean_verifier(), {"score": 0.9}, [], [], evidence_store, ctx, POLICY)
+    assert outcome == InvestigationOutcome.CONFLICTING_EVIDENCE.value
+
+
+def test_outcome_confirmed_still_reachable_with_legitimate_non_pod_evidence():
+    """The existing ConfigMap/Service relaxation inside _check_resource_identity() must
+    stay intact: non-Pod evidence that doesn't literally contain the pod's name must
+    NOT be flagged as a mismatch (and therefore must not be pushed to
+    CONFLICTING_EVIDENCE) -- only an explicit, real mismatch should."""
+    claim = _primary_claim(supporting_ids=("ev_001",))
+    evidence_store = {
+        "ev_001": make_evidence(
+            "ev_001", "describe_pod_detail", cluster=CLUSTER, key_facts=["x"],
+            resource_id="test-incidents/app-config",  # a ConfigMap the pod depends on
+        ),
+    }
+    evidence_store["ev_001"]["resource_type"] = "configmap"
+    ctx = {"cluster_name": CLUSTER, "namespace": "test-incidents", "pod": "test-pod"}
+    verifier = _clean_verifier(temporal_relevance="relevant")
+    outcome = derive_outcome(claim, verifier, {"score": 0.9}, [], [], evidence_store, ctx, POLICY)
+    assert outcome == InvestigationOutcome.CONFIRMED.value
 
 
 # ── Legacy confidence_band mapping ──────────────────────────────────────────

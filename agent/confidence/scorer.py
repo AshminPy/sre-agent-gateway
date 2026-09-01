@@ -173,6 +173,82 @@ def score_investigation_completeness(
     }
 
 
+def _check_resource_identity(
+    supporting_ids: set, evidence_store: dict, resolved_context: dict,
+) -> tuple:
+    """Does the given supporting evidence match the resolved cluster/namespace/pod?
+
+    Extracted 2026-09-01 (confidence-architecture review) from score_root_cause_confidence
+    so the same deterministic check can also gate derive_outcome()'s CONFIRMED/
+    CONFLICTING_EVIDENCE decision for one specific claim (the primary causal claim),
+    not just contribute a partial-credit component to the legacy aggregate score. No
+    behavior change to the existing scoring path -- same logic, same return shape
+    (score 0.0-1.0 + reason strings), just callable independently.
+
+    (fixed 2026-08-12, issue #67 -- this comment used to describe the intent while the code
+    below only checked cluster; namespace/pod are now actually compared against evidence's
+    resource_id field.)
+    A claim with NO supporting evidence gets zero here too — "matches" is meaningless (and
+    must not score positively) when there is nothing to match against. Matches
+    "a claim without valid supporting evidence must not contribute positively" beyond just
+    claim_grounding — every component must independently refuse to credit an empty claim.
+    """
+    reasons: list = []
+    if not supporting_ids:
+        return 0.0, reasons
+
+    mismatches = 0
+    namespace_pod_mismatches = 0
+    resolved_namespace = resolved_context.get("namespace", "")
+    resolved_pod = resolved_context.get("pod", "")
+    for eid in supporting_ids:
+        ev = evidence_store.get(eid, {})
+        if ev.get("cluster") and resolved_context.get("cluster_name"):
+            if ev["cluster"] != resolved_context["cluster_name"]:
+                mismatches += 1
+        # issue #67: this function's own comment claimed cluster/namespace/pod were all
+        # checked, but only cluster ever was. evidence_extractor.py stores identity as a
+        # combined "resource_id" (e.g. "namespace/pod-name"), not separate keys -- so this
+        # checks containment, not equality. Lenient by design, matching the cluster check
+        # above: only flags an EXPLICIT mismatch (both sides known, resource_id present,
+        # neither the resolved namespace nor pod name appears in it) -- a legitimate
+        # investigation touches evidence about the incident (events, node info) that may
+        # not literally embed the pod name, and this must not penalize that.
+        #
+        # 2026-08-29, confirmed root cause via 2 live runs (configmap-001, init-001; see
+        # docs/management/confidence-genericity-review-2026-08-28.md #15.7): a ConfigMap or
+        # Service the pod genuinely depends on can never contain the pod's own name in its
+        # resource_id, so the pod-name check was falsely dinging the RCA's own key causal
+        # evidence. resource_type (stored by evidence_extractor.py, never read here before
+        # this fix) tells us when evidence is legitimately about a non-Pod resource -- the
+        # pod-name requirement only makes sense for evidence that IS about a Pod. Namespace
+        # containment still applies unconditionally; this does not weaken cross-namespace
+        # detection at all, only the pod-name requirement for non-Pod resource types.
+        resource_id = ev.get("resource_id", "")
+        resource_type = ev.get("resource_type", "pod")
+        if resource_id and (resolved_namespace or resolved_pod):
+            namespace_ok = not resolved_namespace or resolved_namespace in resource_id
+            pod_ok = (
+                not resolved_pod
+                or resource_type != "pod"
+                or resolved_pod in resource_id
+            )
+            if not (namespace_ok and pod_ok):
+                namespace_pod_mismatches += 1
+
+    score = 1.0 if not (mismatches or namespace_pod_mismatches) else max(
+        0.0, 1.0 - 0.5 * (mismatches + namespace_pod_mismatches)
+    )
+    if mismatches:
+        reasons.append(f"{mismatches} supporting evidence item(s) reference a different cluster")
+    if namespace_pod_mismatches:
+        reasons.append(
+            f"{namespace_pod_mismatches} supporting evidence item(s) reference a different "
+            "namespace/pod than the resolved investigation target"
+        )
+    return score, reasons
+
+
 def score_root_cause_confidence(
     claims: list,
     contradictions: list,
@@ -275,72 +351,24 @@ def score_root_cause_confidence(
         reasons.append(f"{len(supporting_domains)} independent evidence domain(s) corroborate the claim")
 
     # resource_identity_match: does supporting evidence match the resolved cluster/namespace/pod?
-    # (fixed 2026-08-12, issue #67 -- this comment used to describe the intent while the code
-    # below only checked cluster; namespace/pod are now actually compared against evidence's
-    # resource_id field.)
-    # A claim with NO supporting evidence gets zero here too — "matches" is meaningless (and
-    # must not score positively) when there is nothing to match against. Matches
-    # "a claim without valid supporting evidence must not contribute positively" beyond just
-    # claim_grounding — every component must independently refuse to credit an empty claim.
-    if not supporting_ids:
-        resource_identity_match = 0.0
-    else:
-        mismatches = 0
-        namespace_pod_mismatches = 0
-        resolved_namespace = resolved_context.get("namespace", "")
-        resolved_pod = resolved_context.get("pod", "")
-        for eid in supporting_ids:
-            ev = evidence_store.get(eid, {})
-            if ev.get("cluster") and resolved_context.get("cluster_name"):
-                if ev["cluster"] != resolved_context["cluster_name"]:
-                    mismatches += 1
-            # issue #67: this function's own comment claimed cluster/namespace/pod were all
-            # checked, but only cluster ever was. evidence_extractor.py stores identity as a
-            # combined "resource_id" (e.g. "namespace/pod-name"), not separate keys -- so this
-            # checks containment, not equality. Lenient by design, matching the cluster check
-            # above: only flags an EXPLICIT mismatch (both sides known, resource_id present,
-            # neither the resolved namespace nor pod name appears in it) -- a legitimate
-            # investigation touches evidence about the incident (events, node info) that may
-            # not literally embed the pod name, and this must not penalize that.
-            #
-            # 2026-08-29, confirmed root cause via 2 live runs (configmap-001, init-001; see
-            # docs/management/confidence-genericity-review-2026-08-28.md #15.7): a ConfigMap or
-            # Service the pod genuinely depends on can never contain the pod's own name in its
-            # resource_id, so the pod-name check was falsely dinging the RCA's own key causal
-            # evidence. resource_type (stored by evidence_extractor.py, never read here before
-            # this fix) tells us when evidence is legitimately about a non-Pod resource -- the
-            # pod-name requirement only makes sense for evidence that IS about a Pod. Namespace
-            # containment still applies unconditionally; this does not weaken cross-namespace
-            # detection at all, only the pod-name requirement for non-Pod resource types.
-            resource_id = ev.get("resource_id", "")
-            resource_type = ev.get("resource_type", "pod")
-            if resource_id and (resolved_namespace or resolved_pod):
-                namespace_ok = not resolved_namespace or resolved_namespace in resource_id
-                pod_ok = (
-                    not resolved_pod
-                    or resource_type != "pod"
-                    or resolved_pod in resource_id
-                )
-                if not (namespace_ok and pod_ok):
-                    namespace_pod_mismatches += 1
-        resource_identity_match = 1.0 if not (mismatches or namespace_pod_mismatches) else max(
-            0.0, 1.0 - 0.5 * (mismatches + namespace_pod_mismatches)
-        )
-        if mismatches:
-            reasons.append(f"{mismatches} supporting evidence item(s) reference a different cluster")
-        if namespace_pod_mismatches:
-            reasons.append(
-                f"{namespace_pod_mismatches} supporting evidence item(s) reference a different "
-                "namespace/pod than the resolved investigation target"
-            )
+    resource_identity_match, ri_reasons = _check_resource_identity(supporting_ids, evidence_store, resolved_context)
     components["resource_identity_match"] = resource_identity_match
+    reasons.extend(ri_reasons)
 
-    # time_correlation: how closely in time was this claim's supporting evidence actually
-    # collected (issue #68 -- evidence_extractor.py now stamps a real collected_at per item).
-    # Evidence gathered close together is more likely to reflect the SAME incident state;
-    # evidence spread far apart risks mixing stale and fresh signals within one claim. No
-    # per-evidence timestamp existed before this fix at all -- this was previously a flat
-    # 1.0/0.0 with no real time signal behind it.
+    # time_correlation: COLLECTION FRESHNESS ONLY, not incident-time relevance (renamed in
+    # comment only, 2026-09-01 confidence-architecture review point 4). collected_at proves
+    # when the agent's tool call retrieved this evidence, never when the underlying
+    # event/log actually occurred -- it cannot establish "is this evidence about the
+    # incident's real time window", only "were these pieces of evidence gathered in the
+    # same investigation pass as each other". Real incident-time relevance is
+    # agent.confidence.verifier.VerifierResult.temporal_relevance, judged from timestamps
+    # actually present in the cited source evidence plus incident_time_context -- a
+    # separate, later check that gates derive_outcome() directly, not folded into this
+    # component. (issue #68 -- evidence_extractor.py now stamps a real collected_at per
+    # item). Evidence gathered close together is more likely to reflect the SAME
+    # investigation state; evidence spread far apart risks mixing stale and fresh signals
+    # within one claim. No per-evidence timestamp existed before that fix at all -- this
+    # was previously a flat 1.0/0.0 with no real time signal behind it.
     if not supporting_ids:
         time_correlation = 0.0
     else:
@@ -449,34 +477,132 @@ def score_root_cause_confidence(
 
 
 def derive_outcome(
+    primary_claim,
+    verifier,
     completeness: dict,
-    confidence: dict,
     contradictions: list,
     hypotheses: list,
+    evidence_store: dict,
+    resolved_context: dict,
     policy: ConfidencePolicy,
 ) -> str:
-    """Deterministic outcome — never asked of the LLM. See design doc §7."""
-    if contradictions and any(c.severity >= 0.5 for c in contradictions):
+    """Deterministic outcome — never asked of the LLM, and (2026-09-01 confidence-
+    architecture review) never decided by the legacy numeric confidence score either.
+    The frozen architecture: incident -> evidence collection -> primary causal claim ->
+    independent verification against source evidence -> deterministic safety gates ->
+    operational outcome. This function IS that last step.
+
+    primary_claim: agent.confidence.models.Claim | None — the one claim
+      agent.confidence.claim_builder.select_primary_causal_claim() resolved, or None for
+      any of: an explicit null primary_causal_claim_index (model abstention), an invalid/
+      out-of-range index, or a resolved claim with no usable supporting evidence. All of
+      these collapse to the SAME explicit branch below — there is exactly one
+      "no valid primary claim" state, not several similar-but-different ones.
+
+    verifier: agent.confidence.verifier.VerifierResult | None — MUST be None if and only
+      if primary_claim is None (the verifier is never called when there's nothing to
+      verify — see rca_builder.py's call site).
+
+    `confidence["score"]` (the legacy weighted aggregate from score_root_cause_confidence,
+    still computed and still returned to callers for the diagnostic/compatibility
+    `root_cause_confidence` field) is DELIBERATELY not a parameter here — it must not
+    independently decide CONFIRMED, PROBABLE, POSSIBLE, or UNKNOWN. It remains uncalibrated
+    (POLICY_VERSION) and is never a probability.
+
+    `contradictions` here means the DETERMINISTIC ones from
+    agent.confidence.claim_builder.detect_contradictions() — specifically its
+    kind="wrong_resource" entries (a real, code-detected cluster/namespace mismatch).
+    Its other kind, "semantic" (the RCA generator's own self-reported
+    contradicting_evidence_ids), is no longer an independent gate here: the verifier's
+    own semantic_contradiction field is the authoritative, independently-checked source
+    for that judgment now (it inspects Set B evidence itself, rather than trusting what
+    the claim's own author flagged about itself) — self-reported semantic contradictions
+    stay visible in the result's `contradictions` list for audit, but do not by themselves
+    change the outcome.
+    """
+    # 1. No valid primary claim — explicit, never a fallthrough onto legacy scoring.
+    if primary_claim is None:
+        return InvestigationOutcome.INSUFFICIENT_EVIDENCE.value
+
+    # Defensive: verifier is only ever None when primary_claim is None (enforced by the
+    # caller), but a missing/failed verifier must fail closed regardless of why.
+    if verifier is None or not verifier.verified_ok:
+        return InvestigationOutcome.INSUFFICIENT_EVIDENCE.value
+
+    # 2. Explicit abstention or a non-causal answer — the model itself (or the verifier,
+    # independently) says there is no specific cause here. This is what makes
+    # "the root cause is unknown"-shaped claims (well-grounded, but not a cause) report
+    # correctly instead of averaging their way to CONFIRMED via strong surrounding facts.
+    if verifier.causal_assertion in ("abstention", "non_causal"):
+        return InvestigationOutcome.INSUFFICIENT_EVIDENCE.value
+
+    # 3. Hard conflicts — must map to CONFLICTING_EVIDENCE, never fall through to PROBABLE,
+    # regardless of how clean everything else looks. (2026-09-01 review, correction round 2:
+    # an explicit cluster/namespace/pod mismatch on the PRIMARY claim's own cited evidence
+    # is now a hard conflict too, not a soft PROBABLE downgrade — checked here, before any
+    # of the softer gates below, using the SAME deterministic _check_resource_identity()
+    # score_root_cause_confidence already uses; a score < 1.0 only ever happens when an
+    # EXPLICIT mismatch was found — the non-Pod/ConfigMap-Service relaxation inside that
+    # function is unchanged, so legitimate non-Pod evidence is still never falsely flagged.)
+    hard_resource_conflict = any(c.kind == "wrong_resource" for c in contradictions)
+    resource_score, _ = _check_resource_identity(
+        set(primary_claim.supporting_evidence_ids), evidence_store, resolved_context,
+    )
+    if (
+        verifier.semantic_contradiction == "present"
+        or verifier.temporal_relevance == "conflicting"
+        or hard_resource_conflict
+        or resource_score < 1.0
+    ):
         return InvestigationOutcome.CONFLICTING_EVIDENCE.value
 
-    if completeness["score"] < 0.35 or confidence["score"] == 0.0:
+    # 4. The primary claim's OWN cited evidence (Set A) was incomplete for the verifier —
+    # faithfulness/sufficiency below can't be trusted as a full read. Defense in depth:
+    # verify_primary_claim() already folds this into verified_ok upstream in normal
+    # operation, but this function must not rely on that alone.
+    if not verifier.source_evidence_complete:
         return InvestigationOutcome.INSUFFICIENT_EVIDENCE.value
 
-    active_alt = [h for h in hypotheses if h.status == "active" and h.supporting_evidence_ids]
-
-    conf_score = confidence["score"]
-    complete_enough = completeness["score"] >= 0.60
-
-    if not complete_enough:
+    # 5. Faithfulness gate — never CONFIRMED or PROBABLE past this point if unsupported.
+    if verifier.faithfulness == "unsupported":
         return InvestigationOutcome.INSUFFICIENT_EVIDENCE.value
 
-    if conf_score >= policy.band_thresholds["auto"] and not active_alt and not contradictions:
-        return InvestigationOutcome.CONFIRMED.value
-    if conf_score >= policy.band_thresholds["review"]:
-        return InvestigationOutcome.PROBABLE.value
-    if conf_score >= 0.35:
+    # 6. Sufficiency gate. Two independently-weak signals (partial + insufficient) must
+    # not combine into a firmer outcome than either alone.
+    if verifier.sufficiency == "insufficient":
+        if verifier.faithfulness == "supported":
+            return InvestigationOutcome.POSSIBLE.value
+        return InvestigationOutcome.INSUFFICIENT_EVIDENCE.value
+
+    # 7. Partial faithfulness with otherwise-sufficient evidence.
+    if verifier.faithfulness == "partial":
         return InvestigationOutcome.POSSIBLE.value
-    return InvestigationOutcome.UNKNOWN.value
+
+    # From here: faithfulness == supported AND sufficiency == sufficient AND no hard conflict
+    # (resource identity has ALREADY been checked at step 3 above — reaching this point
+    # guarantees resource_score == 1.0, it is not re-checked or re-gated here).
+    active_alt = [h for h in hypotheses if h.status == "active" and h.supporting_evidence_ids]
+    complete_enough = completeness["score"] >= 0.60  # unchanged existing threshold, not re-tuned
+
+    # 2026-09-01 review, correction round 2: temporal_relevance == "unknown" must NOT be
+    # treated as satisfied-by-default — CONFIRMED requires it to be POSITIVELY established
+    # as "relevant". "unknown" (no trustworthy timestamp information existed to judge it)
+    # is a real gap, not a pass; it caps at PROBABLE same as any other non-fatal gate.
+    # "conflicting" was already excluded as a hard conflict at step 3, so only "relevant"
+    # reaches CONFIRMED here.
+    all_confirm_gates = (
+        complete_enough
+        and not active_alt
+        and verifier.contradiction_check_complete
+        and verifier.temporal_relevance == "relevant"
+    )
+    if all_confirm_gates:
+        return InvestigationOutcome.CONFIRMED.value
+    # 8. Otherwise: a solid causal claim (supported + sufficient + uncontradicted, resource
+    # identity clean), but at least one non-fatal confirmation gate (completeness, an
+    # unresolved hypothesis, an incomplete contradiction scan, or temporal relevance not
+    # positively established) isn't fully satisfied.
+    return InvestigationOutcome.PROBABLE.value
 
 
 def confidence_band_from_scores(outcome: str) -> str:

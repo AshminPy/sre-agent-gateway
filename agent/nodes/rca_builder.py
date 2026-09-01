@@ -129,10 +129,25 @@ def _evidence_storage_stats(state: AgentState) -> dict:
     }
 
 
-def _write_observability_log(state: AgentState, rca: dict, usage: dict) -> None:
+def _write_observability_log(
+    state: AgentState, rca: dict, usage: dict, tok: dict,
+    verifier_usage: dict | None = None, verifier_result=None,
+) -> None:
     """
     Write full structured audit event to Cloud Logging.
     ADR Appendix C — queryable by run_id, cluster, confidence_band.
+
+    `tok` is the ALREADY-COMPUTED final investigation-level token/cost totals (from the
+    caller's own accumulate_usage() chain) — 2026-09-01 (confidence-architecture review,
+    point 7): this function used to recompute its own `tok` here via
+    accumulate_usage(state["investigation"], usage), which only ever folded THIS node's
+    own llm_json() call. When the primary-claim verifier also runs, that recomputation
+    would silently exclude the verifier's usage from this log entry (while
+    session_tokens_total below, coming from the shared LLM adapter, WOULD include it) —
+    turning the entry's own documented cross-check ("these should equal... a mismatch
+    means an LLM call happened outside the normal node flow") into a guaranteed false
+    alarm on every verified investigation. Accepting the caller's already-correct `tok`
+    instead of recomputing removes the possibility of the two diverging.
     """
     try:
         from google.cloud import logging as cloud_logging
@@ -149,15 +164,9 @@ def _write_observability_log(state: AgentState, rca: dict, usage: dict) -> None:
         client   = cloud_logging.Client(project=os.environ.get("PROJECT_ID"), _use_grpc=False)
         logger_c = client.logger("sre-agent-investigations")
 
-        from agent.llm.accounting import accumulate_usage
-
         inv = state["investigation"]
         ctx = state.get("resolved_context", {})
 
-        # Folds this call's usage the same way every other node does — tokens_total
-        # here is Gemini's own reported total (never a local input+output
-        # recomputation, see accumulate_usage's docstring for why that matters).
-        tok = accumulate_usage(inv, usage)
         tokens_total  = tok["tokens_total"]
         cost_usd      = tok["estimated_cost_usd"]
 
@@ -294,6 +303,13 @@ def _write_observability_log(state: AgentState, rca: dict, usage: dict) -> None:
             "mcp_latency_s":      mcp_latency_s,
             "model_latency_s":    session["session_model_latency_s"],
             "total_latency_s":    total_latency_s,
+
+            # Primary-claim verifier call (2026-09-01 confidence-architecture review,
+            # point 7) — None/False fields when no primary claim was selected, so a
+            # verifier call never ran for this investigation.
+            "verifier_ran":       verifier_usage is not None,
+            "verifier_latency_s": (verifier_usage or {}).get("duration_s"),
+            "verifier_ok":        bool(verifier_result and verifier_result.verified_ok),
 
             # Evidence-storage (GCS) success/failure — see _evidence_storage_stats().
             "evidence_storage_ok":           evidence_storage["evidence_storage_ok"],
@@ -531,7 +547,12 @@ def rca_builder(state: AgentState) -> dict:
     hypotheses      = build_hypotheses(result, known_ids)
     contradictions  = detect_contradictions(claims, result, evidence_store, ctx)
 
-    # ── Deterministic root-cause confidence — this call decides the score, not the LLM ──
+    # ── Legacy root-cause confidence — DIAGNOSTIC/COMPATIBILITY ONLY (2026-09-01
+    # confidence-architecture review, point 8). Still computed exactly as before (same
+    # weighted components, same hard caps, unchanged) for the existing
+    # result["root_cause_confidence"] field and any dashboard/report that reads it — but
+    # it is no longer consulted by derive_outcome() below. It remains
+    # POLICY.version == "1.0.0-uncalibrated" and must never be described as a probability.
     root_cause_confidence = score_root_cause_confidence(
         claims=claims,
         contradictions=contradictions,
@@ -543,14 +564,83 @@ def rca_builder(state: AgentState) -> dict:
         policy=POLICY,
     )
 
-    outcome = derive_outcome(completeness, root_cause_confidence, contradictions, hypotheses, POLICY)
+    # ── Primary causal claim + independent verification (2026-09-01 confidence-
+    # architecture review, frozen architecture: incident -> evidence collection ->
+    # primary causal claim -> independent verification against source evidence ->
+    # deterministic safety gates -> operational outcome). ──
+    from agent.confidence.claim_builder import select_primary_causal_claim
+    from agent.confidence.verifier import verify_primary_claim
+
+    primary_claim = select_primary_causal_claim(claims, result, evidence_store)
+    verifier_result = None
+    # Separate from `inv` on purpose: accumulate_usage() returns a dict containing ONLY
+    # the 8 token/cost fields (not a copy of `inv` with those fields updated) — reassigning
+    # `inv` itself to that return value would silently drop current_step/started_at/etc.
+    # for the rest of this function. Folded into the final accumulate_usage(..., usage)
+    # call below instead, so both calls' usage lands in one correct final `tok`.
+    verifier_tok = None
+    verifier_usage = None
+
+    if primary_claim is None:
+        # Explicit, not a fallthrough (point 2, final review round): null/invalid index,
+        # a resolved claim with no usable evidence, or a claim citing missing/failed
+        # evidence (correction round 2, point 4), is itself the answer — the verifier is
+        # never called, there is nothing to verify.
+        #
+        # Safety fix (correction round 2, point 4): only preserve an EXISTING
+        # result["likely_root_cause"] here when it was written by our own earlier
+        # deterministic code (the no_evidence / llm_failure paths above, both
+        # code-authored, never model-authored). In the normal flow the model's own
+        # free-text likely_root_cause field no longer exists in the prompt schema at
+        # all, but a model can still emit stray/unexpected JSON keys — this must never
+        # be trusted and displayed as the root cause while the outcome is
+        # INSUFFICIENT_EVIDENCE, since it could assert a specific, unverified cause.
+        if not (no_evidence or llm_failure):
+            result["likely_root_cause"] = "No specific root cause was established from the available evidence."
+    else:
+        # Minimal explicit incident-time context (point 5, final review round) — only
+        # fields that actually exist, never the full resolved_context/AgentState.
+        incident_time_context = {
+            k: v for k, v in {
+                "reported_at": ctx.get("incident_reported_at"),
+                "incident_start": ctx.get("incident_start"),
+                "incident_end": ctx.get("incident_end"),
+            }.items() if v
+        }
+        verifier_result, verifier_usage = verify_primary_claim(
+            primary_claim, evidence_store, incident_time_context or None,
+        )
+        if verifier_usage is not None:
+            # Point 7 (final review round): the verifier is a real additional model call —
+            # fold its usage into the SAME investigation totals as the RCA-generation call
+            # below, via the same accumulate_usage() helper (issue #63's one shared
+            # accumulator), not a side-channel log. Stored in verifier_tok, not `inv` itself
+            # (see the note above) — the final accumulate_usage(..., usage) call further
+            # down uses verifier_tok as its base when present, so both calls' usage lands
+            # in one correct final total instead of either one silently disappearing.
+            from agent.llm.accounting import accumulate_usage as _accumulate_usage
+            verifier_tok = _accumulate_usage(inv, verifier_usage)
+        # One authoritative user-facing root cause: derived directly from the verified
+        # primary claim's own text, never an independently-generated second string
+        # (point 2, prior review round — closes the paraphrase-divergence bug class
+        # structurally, not by detecting it after the fact).
+        result["likely_root_cause"] = primary_claim.text
+
+    outcome = derive_outcome(
+        primary_claim, verifier_result, completeness, contradictions, hypotheses,
+        evidence_store, ctx, POLICY,
+    )
     confidence_band = confidence_band_from_scores(outcome)
     confidence = root_cause_confidence["score"]
+
+    result["primary_causal_claim_id"] = primary_claim.claim_id if primary_claim else None
+    result["verifier_result"] = verifier_result.to_dict() if verifier_result else None
 
     # requires_human_review is now derived, not self-reported by the LLM — "auto" is the only
     # band that doesn't require it, and even that requires the gates below to have passed
     # (enforced by confidence_band_from_scores only ever returning "auto" for CONFIRMED, which
-    # derive_outcome only returns when there are zero unresolved contradictions/hypotheses).
+    # derive_outcome only returns for a fully-verified, ungated primary causal claim — see
+    # agent/confidence/scorer.py's derive_outcome docstring for the complete gate list).
     requires_review = confidence_band != "auto" or no_evidence
 
     result["schema_version"]            = "2.0"
@@ -620,8 +710,14 @@ def rca_builder(state: AgentState) -> dict:
     # a partial return here left tokens_input/tokens_output stuck at whatever the
     # second-to-last node had accumulated — silently missing this node's own call.
     # accumulate_usage() always returns the complete field set, so that gap can't recur.
+    #
+    # 2026-09-01 (confidence-architecture review, point 7): folds on top of verifier_tok
+    # when the verifier ran, not on top of the original `inv` — otherwise this node's own
+    # llm_json() call would silently overwrite (not add to) the verifier's already-folded
+    # totals, since accumulate_usage()'s base argument only ever contributes its OWN
+    # existing token fields, and `inv` alone never had the verifier's usage in it.
     from agent.llm.accounting import accumulate_usage
-    tok = accumulate_usage(inv, usage)
+    tok = accumulate_usage(verifier_tok if verifier_tok is not None else inv, usage)
     total_tokens = tok["tokens_total"]
     total_cost = tok["estimated_cost_usd"]
 
@@ -634,7 +730,7 @@ def rca_builder(state: AgentState) -> dict:
     )
 
     # Write full structured observability event to Cloud Logging
-    _write_observability_log(state, result, usage)
+    _write_observability_log(state, result, usage, tok, verifier_usage, verifier_result)
 
     return {
         "final_summary": result,
