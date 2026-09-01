@@ -47,8 +47,11 @@ hardening (row 123, ties #79), Console Traces telemetry (row 154, ties #130/#136
 Materially blocks correctness, security, reliability, production readiness, or an approved
 requirement:
 
-- **#30 — Model Armor endpoint hostname mismatch.** Code hardcodes the wrong hostname
-  (missing `.rep.`) in the Agent Registry. Small, scoped, unblocked. **Unblocks #203.**
+- **#30 — Model Armor endpoint hostname mismatch, PARTIALLY fixed.** `sreagent-t2-demo`
+  fixed and live-verified 2026-08-31 (§10). `sreagent-demo` still has the bug — the same
+  fix fails live there with a real "URL already in use by another service" error, a
+  previously-unknown platform constraint. Small in scope, but now blocked on
+  understanding that constraint before a second attempt — see §10 for the exact error.
 - **#86 — Multi-cluster support is single-cluster in disguise.** Real correctness bug, not
   just a missing feature: for anything other than the default cluster, a single
   `@lru_cache(maxsize=1)` K8s client and single-scalar IAM mean the agent silently
@@ -66,8 +69,10 @@ Valid work that cannot currently proceed:
   precondition gate (§2 above) remains unmet — flipping `inspect_and_block` live has
   twice already caused a real incident. Do not attempt until the 3 preconditions hold or
   a human explicitly overrides the gate.
-- **#203 — MODEL_ARMOR_TEMPLATE dead-code path.** BLOCKED by #30 (explicit, in the issue's
-  own text: "Do not enable this before #30 is fixed").
+- **#203 — MODEL_ARMOR_TEMPLATE dead-code path.** #30 is only partially fixed
+  (`sreagent-t2-demo` yes, `sreagent-demo` no — see §5/§10) — its precondition does not
+  yet fully hold. Even once it does, enabling `MODEL_ARMOR_TEMPLATE` remains a separate,
+  deliberate decision gated on the same Model Armor precondition gate as #202 (§2 above).
 - **#89 — No E2E routing-safety test suite.** BLOCKED — explicitly depends on #86 and #88,
   both open.
 - **Tracker `Blocked` tab (4 rows, tracker-internal IDs — NOT GitHub issue numbers, do not
@@ -157,6 +162,25 @@ explicitly scoped follow-up.
 
 ## 10. Validation / evidence links
 
+- **#30 — Model Armor endpoint hostname fixed for `sreagent-t2-demo` ONLY (2026-08-31,
+  live-verified). `sreagent-demo` (`project_b_id`) has the identical bug, unresolved —
+  do not read this as fixed on both engines.** Root cause: `scripts/register_endpoints.py`'s
+  generic `regional_only` pattern didn't know Model Armor needs a `.rep.` segment. Fix:
+  `_REGIONAL_INTERFACE_HOSTNAME_OVERRIDES` corrects the registered interface URL while
+  leaving resource-name derivation (and therefore the live resource ID,
+  `us-central1-modelarmor-us-central1`) unchanged — an in-place `services update`, not a
+  delete+recreate. Live `describe` on `sreagent-t2-demo` after the fix:
+  `url: https://modelarmor.us-central1.rep.googleapis.com`, same resource name, same
+  `registryResource` id as before.
+  **`sreagent-demo` blocked by new evidence, not yet resolved:** the identical
+  `services update` call against `sreagent-demo` fails live —
+  `"Interface URL 'https://modelarmor.us-central1.rep.googleapis.com' is already in use
+  by another service"` — a real, previously-unknown Agent Registry constraint (apparent
+  cross-project interface-URL uniqueness). This was not anticipated by the original fix
+  and needs its own investigation before a second attempt (see issue #30's follow-up
+  comment). The `-mtls` variant is explicitly untouched on both projects (no verified
+  correct hostname shape for it yet). `MODEL_ARMOR_TEMPLATE` remains unset on both
+  engines — this fix is registration-only, does not enable Model Armor.
 - Agent-integrity review (16 gaps, PASS, live-verified): `archive/RESOLVED_2026-08-27_agent-integrity-review.md`
 - Confidence-scoring structural fixes + corrections addendum: `docs/management/confidence-genericity-review-2026-08-28.md`
 - Model Armor floor-setting history (superseded snapshots): `archive/SUPERSEDED_2026-08-25_model-armor-management-report.md`, `archive/SUPERSEDED_2026-08-25_custom-mcp-model-armor-coverage.md`
@@ -176,7 +200,7 @@ explicitly scoped follow-up.
 
 ## 12. Next highest-priority deliverable
 
-**#202 is BLOCKED (§6) — not next.** The highest-priority **UNBLOCKED** deliverable is
-**#30** (Model Armor endpoint hostname mismatch): small, scoped, no dependencies, and it
-unblocks #203. #86 is the highest-priority unblocked item if a larger, security-relevant
-redesign is preferred instead.
+**#202 is BLOCKED (§6) — not next.** #30 is unblocked but only half-done — finishing
+`sreagent-demo` needs the cross-project URL-uniqueness constraint understood first (§10).
+**#86** (multi-cluster support is single-cluster in disguise) is the highest-priority
+UNBLOCKED item with no open questions blocking it.

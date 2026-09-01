@@ -77,6 +77,21 @@ _HTTP_JSON_HOSTNAMES = {
     "logging.mtls.googleapis.com",
 }
 
+# Issue #30: Model Armor's regional REST endpoint requires a ".rep." segment that the
+# generic regional_only pattern (base.{region}.googleapis.com) does not produce --
+# confirmed against current official Google Cloud docs (the documented format and SDK
+# pattern are both "modelarmor.{location}.rep.googleapis.com") and against this repo's
+# own prior working curl evidence (archive/RESOLVED_2026-08-08_MODEL_ARMOR_CONTENT_AUTHZ_TEST.md).
+# This overrides only the INTERFACE URL registered -- add_endpoint()'s resource-name
+# derivation still uses the unmodified base hostname, so the registered resource ID
+# (us-central1-modelarmor-us-central1) is unchanged; only the URL it points at is fixed.
+# mTLS is deliberately NOT covered here -- no verified evidence exists yet for the
+# correct mTLS+regional Model Armor hostname shape; the existing generic mtls pattern
+# is left untouched.
+_REGIONAL_INTERFACE_HOSTNAME_OVERRIDES = {
+    "modelarmor.googleapis.com": "modelarmor.{region}.rep.googleapis.com",
+}
+
 
 def protocol_binding_for(hostname: str) -> str:
     if hostname in _GRPC_ONLY_HOSTNAMES:
@@ -289,15 +304,20 @@ def main():
     # This automatically de-duplicates collisions where global and regional variants derive to the same ID.
     endpoints_map = {}
 
-    def add_endpoint(hostname, loc):
+    def add_endpoint(hostname, loc, interface_hostname=None):
+        # `hostname` drives the resource-ID derivation (identity); `interface_hostname`,
+        # when given, is the actual URL registered (may differ from the identity
+        # hostname -- see _REGIONAL_INTERFACE_HOSTNAME_OVERRIDES below, issue #30). This
+        # keeps existing resource IDs stable across a fix to what URL they point at.
+        iface = interface_hostname if interface_hostname is not None else hostname
         res_name = derive_resource_name(hostname, loc, args.region)
         key = (res_name, loc)
         if key in endpoints_map:
             # If collision occurs, regionalized hostname is more specific, so overwrite/prefer it
             if hostname.startswith(f"{args.region}-"):
-                endpoints_map[key] = hostname
+                endpoints_map[key] = iface
         else:
-            endpoints_map[key] = hostname
+            endpoints_map[key] = iface
 
     # 1. Process global endpoints -> Cross-register in global AND regional registries
     for base in categories["global"]:
@@ -368,7 +388,9 @@ def main():
         r_loc = args.region
         for base in categories["regional_only"]:
             reg_host = base.replace(".googleapis.com", f".{r_loc}.googleapis.com")
-            add_endpoint(reg_host, r_loc)
+            iface_template = _REGIONAL_INTERFACE_HOSTNAME_OVERRIDES.get(base)
+            iface_host = iface_template.format(region=r_loc) if iface_template else reg_host
+            add_endpoint(reg_host, r_loc, interface_hostname=iface_host)
 
             if args.mtls_endpoints == "include":
                 reg_host_mtls = base.replace(".googleapis.com", f".{r_loc}.mtls.googleapis.com")
@@ -401,7 +423,18 @@ def main():
 
     # Perform registration with dynamic location routing and smart skipping
     for (resource_name, registry_location), hostname in sorted(endpoints_map.items()):
-        # Smart Skip Check
+        # Smart Skip Check -- matches on resource-name existence only, never on whether
+        # the EXISTING entry's URL is actually correct. Same landmine class as #139
+        # (see _GRPC_ONLY_HOSTNAMES above): this script cannot self-heal a stale/wrong
+        # interface URL on a resource ID that already exists -- it will always print
+        # [Already Registered - Skip], forever, even after a fix like
+        # _REGIONAL_INTERFACE_HOSTNAME_OVERRIDES corrects what a FRESH registration would
+        # produce. Confirmed live during #30: fixing this override alone left the
+        # already-registered sreagent-demo entry silently unchanged; the wrong URL had
+        # to be corrected out-of-band via `gcloud alpha agent-registry services update`.
+        # This script deliberately does not attempt an automatic update-in-place here --
+        # that needs its own design (see #30's tracking issue) -- flagging the gap
+        # rather than leaving it silent.
         if resource_name in existing_services_by_location.get(registry_location, set()):
             continue
 
