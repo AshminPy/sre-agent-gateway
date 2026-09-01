@@ -288,4 +288,154 @@ GOLDEN_CASES = [
         "expected_keywords": ["Secret", "db-credentials", "ContainerCreating"],
         "expected_confidence_min": 0.65,
     },
+
+    # ── Group C / D control cases (added 2026-08-31) ──────────────────────────
+    #
+    # docs/management/confidence-genericity-review-2026-08-28.md §12-13: the 14 cases
+    # above are all Group A/B (a real, findable correct answer reachable by a
+    # reasonably thorough investigation). None of them deliberately test:
+    #   Group C — evidence that plausibly points to the WRONG culprit (does the
+    #             scorer/agent stay uncertain or correctly reject the tempting-but-
+    #             wrong cause, instead of confidently citing it?)
+    #   Group D — evidence too sparse/ambiguous to support ANY specific causal
+    #             story (does the agent say "insufficient evidence" instead of
+    #             fabricating a plausible-sounding chain?)
+    # §13 asks for "at least 1-2" Group C cases and "at least 1" Group D case.
+    # This adds the minimum: 1 Group C + 1 Group D. `cascading-001` above already
+    # contains a mild version of the Group C trap in its design comment (naive
+    # investigation blames order-api, not order-db) but it is not scored as a
+    # trap case today — it was blocked on an LLM-parse bug per the review's §7
+    # table (outcome=insufficient_evidence, no answer produced), so it could not
+    # be used to confirm this behavior and is left as-is here; it should be
+    # revisited once that parse bug is fixed instead of being duplicated.
+    #
+    # Both new cases were re-argued from the opposite side before inclusion —
+    # see the per-case "why not X" comment. One additional candidate was
+    # considered and REJECTED, not included:
+    #   "truncated-stack-001" — a pod whose current logs end mid-line in what
+    #   looks like a partial stack trace, framed as tempting the agent to blame
+    #   a real app crash when the true cause was meant to be a liveness-probe
+    #   kill (same trap shape as probe-timeout-001 below). Rejected because a
+    #   truncated stack trace in a real cluster is genuinely ambiguous evidence
+    #   for BOTH causes (kubelet SIGKILL mid-write truncates real output same as
+    #   probe-kill mid-write does) — there is no clean way to write a ground-truth
+    #   comment defending one answer as objectively correct over the other
+    #   without inventing an unstated tie-breaker. A trap case needs a smoking-gun
+    #   fact that unambiguously resolves it (probe-timeout-001's kubelet event
+    #   text serves that role); this candidate didn't have one, so it was dropped
+    #   rather than shipped with shaky ground truth.
+    {
+        "id": "probe-timeout-001",
+        "group": "C",
+        "payload": {
+            "user_query": "checkout-api in test-incidents is CrashLoopBackOff. Users see intermittent checkout failures. Identify the true root cause.",
+            "incident": {"severity": "P1"},
+            "resource_hints": {
+                "namespace": "test-incidents",
+                "pod": "checkout-api",
+                "cluster": "sre-test-cluster",
+            },
+        },
+        # THE TRAP (Group C): current logs are clean up to the moment of
+        # termination -- no exception, no stack trace, no error line -- because
+        # checkout-api is a slow-starting JVM service (~15s warm-up) that never
+        # got far enough to log anything abnormal. A shallow investigation that
+        # only checks get_k8s_logs and pattern-matches "CrashLoopBackOff" against
+        # this dataset's other crash cases (crashloop-001, oomkilled-001) is
+        # tempted to guess a generic "application crashed / unhandled exception"
+        # cause -- there IS a CrashLoopBackOff label and a restart count, which is
+        # exactly the superficially-plausible-but-wrong shape Group C requires.
+        #
+        # GROUND TRUTH: list_k8s_events carries kubelet's own event text --
+        # "Liveness probe failed: Get http://10.x.x.x:8080/healthz: context
+        # deadline exceeded" immediately followed by "Killing container
+        # checkout-api: failed liveness probe, will be restarted" -- this is a
+        # kubelet-generated system event, not an inference, and it names the
+        # actual mechanism directly (standard, well-documented Kubernetes event
+        # wording for a probe-triggered kill). describe_k8s_resource corroborates:
+        # livenessProbe.initialDelaySeconds=2, timeoutSeconds=1 -- provably too
+        # aggressive for a ~15s warm-up, and the container's
+        # lastState.terminated.reason is "Error" (kubelet-initiated kill), NOT
+        # "OOMKilled" and not an app-thrown exit. The app was never unhealthy;
+        # kubelet killed a slow-but-healthy container before it finished starting.
+        #
+        # WHY THE TEMPTING ANSWER IS WRONG: "the app crashed / has a bug" fails
+        # to explain why current logs show zero errors across every restart --
+        # a real unhandled exception would leave a trace. It also requires
+        # ignoring the kubelet event, which is direct, first-party evidence of
+        # the actual kill reason sitting in the same investigation.
+        #
+        # ARGUED FROM THE OPPOSITE SIDE: could "app crashed" still be defensible
+        # if the app crashes so fast that stdout is never flushed? No -- that
+        # would show as an OOMKilled- or app-exit-style lastState.terminated.reason
+        # with a nonzero app exit code, not "Error" paired with a "Killing
+        # container ... failed liveness probe" event. The kubelet event is the
+        # deciding fact that removes the ambiguity, so this case is kept (unlike
+        # the rejected truncated-stack-001 candidate above, which had no
+        # equivalent deciding fact).
+        "expected_trajectory": ["list_k8s_events", "describe_k8s_resource"],
+        "expected_keywords": ["liveness probe", "probe failed", "timeoutSeconds"],
+        # Causal-inference case (probe config -> kill -> observed CrashLoopBackOff),
+        # same shape as selector-001/cascading-001 -- 0.50, not 0.65, is the right
+        # floor for this dataset's existing convention for inference-heavy cases.
+        "expected_confidence_min": 0.50,
+    },
+    {
+        "id": "intermittent-001",
+        "group": "D",
+        "payload": {
+            "user_query": "checkout-frontend in test-incidents intermittently returns HTTP 500 for a small number of users, roughly once every 2-3 hours for about 30 seconds, then recovers on its own. Investigate and identify the root cause before it happens again.",
+            "incident": {"severity": "P3"},
+            "resource_hints": {
+                "namespace": "test-incidents",
+                "pod": "checkout-frontend",
+                "cluster": "sre-test-cluster",
+            },
+        },
+        # THE TRAP (Group D): unlike insufficient-evidence-001 (target pod no
+        # longer exists -- zero evidence obtainable) this pod EXISTS and every
+        # tool call SUCCEEDS: get_k8s_resource shows Running, 0 restarts, memory/
+        # CPU well inside limits; list_k8s_events has nothing in the incident
+        # window; get_k8s_logs shows clean 200-status request lines, no errors,
+        # no timeouts, no warnings. The investigation is fully evidenced and
+        # fully clean -- there is no error signal anywhere pointing to ANY
+        # specific mechanism for a 30-second intermittent blip that has already
+        # passed by the time anyone looked. This is exactly the setup Group D
+        # needs: a fabricated-sounding but unsupported story ("likely a GC
+        # pause", "probably a transient network blip", "possibly a downstream
+        # dependency timeout") is tempting to write because it SOUNDS like
+        # competent SRE reasoning, but none of it is grounded in any evidence
+        # this investigation actually collected -- no GC/metrics/APM tool exists
+        # in this agent's current toolset (agent/mcp_client.py's GKE_REMOTE_TOOLS
+        # is k8s-object/log/event only), so any such claim would be invented,
+        # not observed or inferred from a collected fact.
+        #
+        # GROUND TRUTH: correct outcome is insufficient_evidence/unknown with a
+        # low-bounded confidence score, matching this dataset's existing
+        # insufficient-evidence-001/mcp-gateway-failure-001 convention for "the
+        # right answer is recognizing the limit, not naming a cause."
+        #
+        # WHY A SPECIFIC-MECHANISM ANSWER IS WRONG: every plausible-sounding
+        # guess here is unfalsifiable with the tools actually available and the
+        # evidence actually collected -- the case is deliberately built so that
+        # ALL of the observable K8s-level evidence is clean, which is the
+        # opposite of a case where a genuine (if subtle) signal exists to find.
+        #
+        # ARGUED FROM THE OPPOSITE SIDE: is "possible: GC pause" defensible as a
+        # weak-but-honest hypothesis rather than a fabrication, given GC pauses
+        # are a real, common cause of exactly this symptom (short periodic
+        # latency/error blips)? No -- being a common REAL-WORLD cause of this
+        # symptom class is not the same as being SUPPORTED BY THIS
+        # INVESTIGATION's evidence; the agent has no GC/metrics tool to check it
+        # against, so naming it (even hedged as "possible") reports an unverified
+        # external prior as if it were a finding. The correct move with this
+        # toolset is to say evidence is insufficient and recommend adding
+        # instrumentation (metrics/APM) capable of catching the next occurrence
+        # -- not to guess which known cause-class it probably is.
+        "expected_trajectory": ["get_k8s_resource"],
+        "expected_keywords": ["insufficient", "unknown"],
+        "expected_confidence_min": 0.0,
+        "expected_outcome": ["insufficient_evidence", "unknown"],
+        "max_confidence": 0.5,
+    },
 ]

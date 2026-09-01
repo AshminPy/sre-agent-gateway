@@ -22,8 +22,8 @@ and the rest of [`docs/architecture/`](../README.md) (17 pages, current). Do not
 
 - **Live engine:** `sreagent-t2-demo`, Agent Gateway bound natively via Terraform (`google_vertex_ai_reasoning_engine.sre_agent`'s `agentGatewayConfig` — the gateway binding is Terraform-managed since PR #93, 2026-08-10; no manual re-attach step needed after a normal apply).
 - **Model Armor:** both floor settings (`google_mcp_server`, `ai_platform`) are `inspect_only = true` (`iac/agent/model_armor.tf:218-237`). `inspect_and_block` was tried once (2026-08-25) and reverted the next day after two real false positives (one fabricated an RCA, one crashed a run). **Standing precondition gate before re-enabling** (verbatim from the Terraform's own comment, `model_armor.tf:190-195`): a week of `MATCH_FOUND` log entries reviewed with zero false positives on real SRE traffic; `pi_and_jailbreak` block-tested specifically; SDP block-tested at all. None of the three currently hold.
-- **App-level Model Armor** (`SREAgent._sanitize()`) is dead code in every real deployment — gated on the Agent Gateway being off, and the gateway defaults on (#203, blocked by #30).
-- **Custom/fallback MCP traffic** transits the Agent Gateway but is NOT inspected by Model Armor (Google's floor-setting API doesn't support a custom integration type) — a confirmed, real, scoped gap. Full detail: `archive/SUPERSEDED_2026-08-25_custom-mcp-model-armor-coverage.md`.
+- **App-level Model Armor** (`SREAgent._sanitize()`) — **fixed 2026-08-31, PR pending merge (#203).** `MODEL_ARMOR_TEMPLATE` is now set unconditionally (`iac/agent/agent_engine.tf`), not gated on the Agent Gateway being off — that gate's premise (gateway-side CONTENT_AUTHZ) was confirmed never wired (`agent_gateway.tf`'s own header). #30 (the hostname blocker) is fixed and live-verified for `project_a_id`/`sreagent-t2-demo` (this deployment's target); it remains open/reopened only for the unrelated `project_b_id` Agent Registry, which this repo's CI never touches (`register_endpoints.py` runs against `GCP_PROJECT_A_ID` only). Deployed through the normal CI `terraform-apply` + smoke-test path, not applied locally. **Not yet live-validated end to end** for the custom-MCP path specifically — that requires the custom-MCP Cloud Run service to be network-reachable through the gateway, a separate not-yet-approved networking workstream (see the Custom/fallback MCP line below).
+- **Custom/fallback MCP traffic** now has a working app-level Model Armor template (as of the fix above) via `agent/mcp_client.py`'s `_sanitize_custom_mcp_response` (PR #223), gated to run only on the non-GKE-Remote branch so GKE Remote MCP's existing floor-setting coverage isn't double-inspected. Google's floor-setting API still has no custom-Cloud-Run integration type, so this remains the only coverage this path can ever get at the infra layer. **Still not live-proven**: no real tool call has yet been routed through the gateway to the custom-MCP service to confirm inspection actually fires end to end — blocked on the same networking gap. Full detail: `archive/SUPERSEDED_2026-08-25_custom-mcp-model-armor-coverage.md`.
 
 ## 3. Completed capabilities
 
@@ -116,10 +116,49 @@ Improvements that must not block completion:
 ## 9. Known limitations
 
 Canonical ranked list: [Risks and Limitations](risks-and-limitations.md). Notable additions
-from this consolidation pass: custom/fallback MCP traffic is not Model Armor-inspected (§2);
-3 unresolved loose ends from PR #219's own report — a wrong RCA answer on `cascading-001`, an
-intermittent LLM-response-parse failure hitting different cases across runs, and one unclear
-score change (`init-001`) needing a same-input controlled re-check.
+from this consolidation pass: custom/fallback MCP traffic is not Model Armor-inspected (§2).
+
+**2026-08-31 update — 2 of PR #219's 3 unresolved loose ends fixed, 1 still open:**
+- **`cascading-001`'s wrong RCA — FIXED.** Root cause: `agent/mcp_client.py`'s `call_tool()`
+  treated a name-scoped `NotFound` response from `describe_k8s_resource`/`get_k8s_resource`
+  as real evidence (`ok: True`) — same failure SHAPE issue #70 already fixed for
+  `list_k8s_events`, just on the two GKE Remote MCP tools whose `name` field is required and
+  therefore can't be retried unscoped. A guessed/wrong resource name (Deployments' pods and
+  ReplicaSets carry a random hash suffix no caller can know in advance) 404'd, and that
+  NotFound text became "evidence" the RCA-builder LLM cited as proof `order-api` didn't
+  exist — when it was running the whole time. Fix: both tools now return `ok: False` on a
+  NotFound result, same treatment as the existing `isError`/Model Armor-block branches, so a
+  wrong name-guess can no longer by itself ground a "resource is missing" claim. See
+  `docs/management/confidence-genericity-review-2026-08-28.md` for the full writeup.
+- **Intermittent LLM-response-parse failure — FIXED (most probable root cause; not
+  live-confirmed, see caveat below).** `agent/llm/gemini_adapter.py`'s `llm_json()` could not
+  tell a response truncated by `max_output_tokens` apart from a genuinely malformed one — a
+  truncated JSON object (unterminated string/unbalanced braces) can never be repaired by the
+  brace-matching logic, so any truncation was a guaranteed parse failure with no signal as to
+  why. Fix: `llm_json()` now reads the provider's own `finish_reason` and (a) retries once
+  with a larger token budget specifically when `finish_reason=MAX_TOKENS`, and (b) raised
+  `rca_builder`'s `max_tokens` 1536→3072 (its output schema is the most verbose `llm_json()`
+  call in the codebase — the tightest budget on the biggest schema). **Caveat:** this could
+  not be live-confirmed against a real Gemini call (no live GCP calls in scope for this fix)
+  — the evidence is: (1) the brace-repair logic is mathematically unable to fix a truncated
+  response, so if truncation ever happens it is a 100% guaranteed failure; (2) only the
+  higher-complexity multi-hop cases (`cascading-001`, `pending-001`, `mcp-gateway-failure-001`)
+  ever hit this, never the simpler single-cause cases, consistent with an output-length
+  problem rather than a random API glitch. If this recurs post-fix, Cloud Logging now carries
+  `finish_reason` on every call, which will confirm or rule this out directly.
+- **`init-001`'s unclear score change (0.84→0.68) — still open**, needs a same-input
+  controlled re-check per PR #219's own report; out of scope for this fix (scoring-logic
+  question, not an RCA-correctness or parse-reliability bug).
+
+**Calibration — BLOCKED, unchanged.** `agent/eval/golden_cases.py` still has all 14 original
+cases and zero Group C/D cases (verified 2026-08-31: `grep -c '"id":'` → 14, same as before).
+Per `confidence-genericity-review-2026-08-28.md` §13, calibration needs at minimum: 1-2 Group C
+cases (evidence that plausibly points to the wrong culprit — e.g. a cascading-failure-shaped
+scenario where naive investigation finds the downstream symptom and a correct agent must trace
+to the real upstream cause) and 1 Group D case (evidence sparse/ambiguous enough to tempt a
+fabricated-sounding causal chain, to test whether contradiction/grounding checks catch it). Not
+created here — that is new dataset-authoring work, not a bug fix, and remains a separate,
+explicitly scoped follow-up.
 
 ## 10. Validation / evidence links
 
