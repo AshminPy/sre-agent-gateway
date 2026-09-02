@@ -45,7 +45,12 @@ def build_tool_spec() -> dict:
     tools = asyncio.run(server.mcp.list_tools())
     trimmed = []
     for t in tools:
-        full = t.to_mcp_tool().model_dump(exclude_none=True)
+        # by_alias=True is required: fastmcp's Tool model exposes these fields as
+        # snake_case (input_schema/output_schema) with camelCase aliases. Without it,
+        # model_dump() returns the snake_case names and full["inputSchema"] KeyErrors
+        # on every tool (issue #228) -- confirmed by reproducing locally against the
+        # installed fastmcp 4.0.1.
+        full = t.to_mcp_tool().model_dump(exclude_none=True, by_alias=True)
         trimmed.append({
             "name": full["name"],
             "description": full["description"],
