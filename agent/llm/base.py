@@ -108,6 +108,20 @@ class LLMClient(abc.ABC):
         (issue #74) -- without this, get_session_usage() accumulates across every
         investigation a warm/reused process handles, not just the current one."""
 
+    @abc.abstractmethod
+    def count_tokens(self, text: str) -> int:
+        """Real token count for `text`, via the provider's own counting capability
+        (2026-09-02, confidence-verifier context-budget fix). Callers needing to know
+        whether a request fits a model's context window must use this -- never a
+        character-length proxy, which has no defined relationship to how any given
+        model actually tokenizes text."""
+
+    @abc.abstractmethod
+    def max_context_tokens(self) -> int:
+        """This model's documented input-token capacity, reported by the provider
+        itself -- never a value hardcoded by a caller. Static per model; adapters
+        should cache it rather than re-fetching on every call."""
+
 
 def validate_capabilities(client: LLMClient, required: frozenset[str]) -> None:
     """Fail loudly at startup if the configured adapter can't do what this

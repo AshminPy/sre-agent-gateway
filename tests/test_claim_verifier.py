@@ -11,7 +11,12 @@ from __future__ import annotations
 
 from agent.confidence.claim_builder import build_claims
 from agent.confidence.verifier import verify_primary_claim
-from tests.conftest import make_evidence, mock_verifier, mock_verifier_evidence
+from tests.conftest import (
+    make_evidence,
+    mock_verifier,
+    mock_verifier_context_budget,
+    mock_verifier_evidence,
+)
 
 
 def _claim(supporting_ids=("ev_001",)):
@@ -151,16 +156,142 @@ def test_source_evidence_unavailable_sets_source_evidence_complete_false(monkeyp
     assert result.source_evidence_complete is False
 
 
-def test_source_evidence_oversized_fails_closed_not_silently_truncated(monkeypatch):
-    """Point 4, final review round: false-low acceptable, false-high is not -- an
-    oversized Set A item must never be silently head/tail-truncated and treated as
-    though the verifier saw the complete source."""
+def test_large_but_readable_evidence_is_included_in_full_not_marked_unavailable(monkeypatch):
+    """2026-09-02 correction: a prior version of this file excluded any Set A item over a
+    fixed 3000-character ceiling, reporting it as "unavailable" -- proven wrong by live
+    16-case evaluation, where ordinary successfully-read Kubernetes evidence (up to
+    26,132 chars for a real case) was being excluded this way, producing false
+    insufficient_evidence outcomes for cases with real, complete evidence. A large item
+    that reads successfully must now be marked available and sent in full -- size is
+    judged once, against the model's real context capacity, on the complete request (see
+    test_complete_request_exceeding_model_context_sets_context_limit_exceeded), never
+    per-item by character count."""
     mock_verifier(monkeypatch)
-    mock_verifier_evidence(monkeypatch, oversized_ids=["ev_001"])
+    mock_verifier_evidence(monkeypatch, large_ids=["ev_001"])
+    mock_verifier_context_budget(monkeypatch)  # comfortably fits -- not the case under test
     claim = _claim()
     evidence_store = {"ev_001": make_evidence("ev_001", "describe_pod_detail", key_facts=["x"])}
     result, _ = verify_primary_claim(claim, evidence_store)
-    assert result.source_evidence_complete is False
+    assert result.source_evidence_complete is True
+    assert result.context_limit_exceeded is False
+
+
+def test_8571_char_init_evidence_is_included_in_full(monkeypatch):
+    """Pins the exact real-world size that triggered the original defect (init-001's
+    get_k8s_logs evidence, live 16-case run 2026-09-02, run_id run_20260902_064904_ylrj,
+    ev_003 = 8571 chars) -- confirms this specific real size is no longer excluded."""
+    import agent.confidence.verifier as verifier_mod
+
+    real_size_payload = {"sanitized": {"logs": "x" * 8571}}
+    monkeypatch.setattr(verifier_mod, "read_evidence", lambda raw_ref: real_size_payload)
+    mock_verifier(monkeypatch)
+    mock_verifier_context_budget(monkeypatch)
+    claim = _claim()
+    evidence_store = {"ev_001": make_evidence("ev_001", "get_k8s_logs", key_facts=["x"])}
+    result, _ = verify_primary_claim(claim, evidence_store)
+    assert result.source_evidence_complete is True
+
+
+def test_multiple_evidence_items_are_token_counted_as_one_complete_request(monkeypatch):
+    """Set A + Set B must be assembled into ONE request and sized together -- not
+    per-item -- so many individually-small items whose combined size is large are still
+    correctly judged against the model's real context capacity."""
+    mock_verifier(monkeypatch)
+    mock_verifier_evidence(monkeypatch)  # all ids available
+    seen = {}
+
+    def _count_tokens(text: str) -> int:
+        seen["text"] = text
+        return 50  # fits comfortably
+
+    def _max_context_tokens() -> int:
+        return 1_000_000
+
+    import agent.llm as agent_llm_mod
+    monkeypatch.setattr(agent_llm_mod, "count_tokens", _count_tokens)
+    monkeypatch.setattr(agent_llm_mod, "max_context_tokens", _max_context_tokens)
+
+    claim = _claim(supporting_ids=("ev_001",))
+    evidence_store = {
+        "ev_001": make_evidence("ev_001", "describe_pod_detail", key_facts=["x"]),
+        "ev_002": make_evidence("ev_002", "list_events", key_facts=["y"]),
+        "ev_003": make_evidence("ev_003", "get_logs", key_facts=["z"]),
+    }
+    verify_primary_claim(claim, evidence_store)
+    # The counted text must contain every available evidence item's content -- proving
+    # Set A and Set B were combined into one real request before sizing, not sized
+    # per-item or approximated.
+    assert "real evidence content for ev_001" in seen["text"]
+    assert "real evidence content for ev_002" in seen["text"]
+    assert "real evidence content for ev_003" in seen["text"]
+
+
+def test_complete_request_exceeding_model_context_sets_context_limit_exceeded(monkeypatch):
+    """The complete-request-too-big state must be distinct from both 'evidence
+    unavailable' and ordinary verifier failure: evidence is NOT blamed, and references
+    are preserved for audit."""
+    mock_verifier(monkeypatch)
+    mock_verifier_evidence(monkeypatch)  # every item reads successfully
+    mock_verifier_context_budget(monkeypatch, count_tokens_return=2_000_000, max_context_tokens_return=1_048_576)
+    claim = _claim(supporting_ids=("ev_001",))
+    evidence_store = {"ev_001": make_evidence("ev_001", "describe_pod_detail", key_facts=["x"])}
+    result, usage = verify_primary_claim(claim, evidence_store)
+    assert result.verified_ok is False
+    assert result.context_limit_exceeded is True
+    assert result.evidence_refs == ["ev_001"]  # preserved for audit, not wiped
+    assert usage is None  # the LLM call never happened -- nothing to fold into accounting
+
+
+def test_context_limit_exceeded_does_not_mark_evidence_unavailable(monkeypatch):
+    mock_verifier(monkeypatch)
+    mock_verifier_evidence(monkeypatch)
+    mock_verifier_context_budget(monkeypatch, count_tokens_return=2_000_000, max_context_tokens_return=1_048_576)
+    claim = _claim(supporting_ids=("ev_001",))
+    evidence_store = {"ev_001": make_evidence("ev_001", "describe_pod_detail", key_facts=["x"])}
+    result, _ = verify_primary_claim(claim, evidence_store)
+    # The evidence WAS read successfully -- the request as a whole didn't fit, which is a
+    # different fact. Must not be reported as source_evidence_complete=False.
+    assert result.source_evidence_complete is True
+
+
+def test_count_tokens_failure_produces_safe_verifier_failure_not_a_crash(monkeypatch):
+    mock_verifier(monkeypatch)
+    mock_verifier_evidence(monkeypatch)
+    mock_verifier_context_budget(monkeypatch, count_tokens_raise=True)
+    claim = _claim(supporting_ids=("ev_001",))
+    evidence_store = {"ev_001": make_evidence("ev_001", "describe_pod_detail", key_facts=["x"])}
+    result, usage = verify_primary_claim(claim, evidence_store)  # must not raise
+    assert result.verified_ok is False
+    assert result.context_limit_exceeded is False  # never established -- distinct state
+    assert "context-sizing check failed" in result.rationale
+    assert usage is None
+
+
+def test_max_context_tokens_failure_produces_safe_verifier_failure_not_a_crash(monkeypatch):
+    mock_verifier(monkeypatch)
+    mock_verifier_evidence(monkeypatch)
+    mock_verifier_context_budget(monkeypatch, max_context_tokens_raise=True)
+    claim = _claim(supporting_ids=("ev_001",))
+    evidence_store = {"ev_001": make_evidence("ev_001", "describe_pod_detail", key_facts=["x"])}
+    result, usage = verify_primary_claim(claim, evidence_store)  # must not raise
+    assert result.verified_ok is False
+    assert result.context_limit_exceeded is False
+    assert "context-sizing check failed" in result.rationale
+    assert usage is None
+
+
+def test_invalid_max_context_tokens_value_produces_safe_verifier_failure(monkeypatch):
+    """A misconfigured/unexpected model response (e.g. 0 or None for input_token_limit)
+    must fail closed the same as an exception -- never be silently treated as 'fits'."""
+    mock_verifier(monkeypatch)
+    mock_verifier_evidence(monkeypatch)
+    mock_verifier_context_budget(monkeypatch, max_context_tokens_return=0)
+    claim = _claim(supporting_ids=("ev_001",))
+    evidence_store = {"ev_001": make_evidence("ev_001", "describe_pod_detail", key_facts=["x"])}
+    result, usage = verify_primary_claim(claim, evidence_store)
+    assert result.verified_ok is False
+    assert result.context_limit_exceeded is False
+    assert usage is None
 
 
 def test_other_evidence_unavailable_sets_contradiction_check_complete_false_only(monkeypatch):
@@ -195,3 +326,19 @@ def test_failed_tool_call_evidence_is_excluded_from_set_b():
     cited_ids = list(claim.supporting_evidence_ids)
     other_ids = [eid for eid, ev in evidence_store.items() if eid not in cited_ids and ev.get("ok", True)]
     assert "ev_002" not in other_ids
+
+
+def test_corrupted_non_dict_stored_evidence_fails_closed_not_a_crash(monkeypatch):
+    """Stored evidence is normally a JSON object, but corrupted/unexpected content (a
+    bare list, string, or number) is a real possibility -- must be treated as unusable,
+    same bucket as a read failure, never crash verify_primary_claim() with an
+    AttributeError from calling .get() on a non-dict."""
+    import agent.confidence.verifier as verifier_mod
+
+    monkeypatch.setattr(verifier_mod, "read_evidence", lambda raw_ref: ["not", "a", "dict"])
+    mock_verifier(monkeypatch)
+    mock_verifier_context_budget(monkeypatch)
+    claim = _claim()
+    evidence_store = {"ev_001": make_evidence("ev_001", "describe_pod_detail", key_facts=["x"])}
+    result, _ = verify_primary_claim(claim, evidence_store)  # must not raise
+    assert result.source_evidence_complete is False

@@ -17,10 +17,11 @@ Two labeled evidence sets go into the prompt (see agent/prompts.py's VERIFIER_US
 
 Fail-closed rules (see agent/confidence/scorer.py's derive_outcome for how these gate the
 outcome):
-  - Any Set A evidence item whose raw source can't be read, or whose size would require
-    truncation, sets source_evidence_complete=False -- false-low is acceptable here,
-    false-high is not, so this blocks CONFIRMED rather than silently truncating and
-    proceeding as though the verifier saw the complete source.
+  - Any Set A evidence item whose raw source is missing/invalid or can't be read sets
+    source_evidence_complete=False -- false-low is acceptable here, false-high is not, so
+    this blocks CONFIRMED rather than proceeding as though the verifier saw the complete
+    source. Evidence size is NEVER a reason for this -- see "Evidence availability vs.
+    request size" below (2026-09-02 correction).
   - Any Set B evidence item that can't be fully read sets contradiction_check_complete=False
     -- caps the outcome at PROBABLE (an incomplete contradiction scan can't rule out a
     contradiction, so it can't earn full CONFIRMED trust), never blocks it down to
@@ -31,6 +32,26 @@ outcome):
   - evidence_refs claimed for faithfulness/sufficiency must be a subset of Set A's IDs;
     an evidence_ref claimed as the cause of a contradiction must be in Set B. Either
     violated -> verified_ok=False (the model cited something it wasn't given).
+
+Evidence availability vs. request size (2026-09-02 correction):
+  A prior version of this file excluded any single evidence item over a fixed
+  3000-character ceiling, reporting it as "unavailable" alongside genuine read failures.
+  Live 16-case evaluation proved this false: ordinary, successfully-read Kubernetes
+  evidence (describe_k8s_resource/get_k8s_logs output) routinely exceeds 3000 characters,
+  so real root causes with real supporting evidence were being scored
+  insufficient_evidence purely because one cited item was verbose -- not because anything
+  was actually unreadable. Evidence availability now depends ONLY on whether the source
+  could be retrieved (see _fetch_sanitized_source's three states below); it is never a
+  function of size. The COMPLETE Set A + Set B text is sent to the verifier every time
+  evidence is available. Size is judged exactly once, against the CONFIGURED model's real
+  documented input-token capacity (agent.llm.max_context_tokens(), reported by the
+  provider itself, and agent.llm.count_tokens() on the exact assembled request --
+  see agent.llm.base.LLMClient and https://ai.google.dev/gemini-api/docs/tokens: "Make
+  this call before sending input to check the size of your requests") -- never a
+  character-count proxy, and never hardcoded for any one provider/model in this file.
+  If the complete request doesn't fit, that is a distinct, explicit
+  context_limit_exceeded state -- evidence is NOT described as unavailable, and its
+  references are preserved for audit. See _check_request_fits_context().
 """
 from __future__ import annotations
 
@@ -41,12 +62,6 @@ from dataclasses import dataclass, field
 from agent.gcs_client import read_evidence
 
 log = logging.getLogger("sre-agent.confidence.verifier")
-
-# Same head+tail truncation budget already used by rca_builder.py's
-# _enriched_evidence_digest() for GCS-reread raw evidence -- reused, not reinvented.
-# Here it's a hard ceiling, not a truncate-and-continue budget: exceeding it means
-# source_evidence_complete=False, never a silently-truncated payload.
-_MAX_RAW_CHARS_PER_ITEM = 3000
 
 _VALID_CAUSAL_ASSERTION = {"specific_cause", "non_causal", "abstention"}
 _VALID_FAITHFULNESS = {"supported", "partial", "unsupported"}
@@ -68,6 +83,7 @@ class VerifierResult:
     verified_ok: bool = False
     source_evidence_complete: bool = False
     contradiction_check_complete: bool = False
+    context_limit_exceeded: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -82,46 +98,99 @@ class VerifierResult:
             "verified_ok": self.verified_ok,
             "source_evidence_complete": self.source_evidence_complete,
             "contradiction_check_complete": self.contradiction_check_complete,
+            "context_limit_exceeded": self.context_limit_exceeded,
         }
 
 
-def _fetch_sanitized_source(ev: dict) -> tuple[str, bool]:
-    """Returns (text, complete). complete=False covers both "couldn't read it at all"
-    and "it exists but is too large" -- both are incomplete; there is no partial credit
-    for "we saw most of it" (2026-09-01 review, point 4: false-low acceptable, false-high
-    is not)."""
+# Reasons an evidence item can be unavailable -- read/reference failure only, NEVER size
+# (2026-09-02 correction; see module docstring's "Evidence availability vs. request size").
+_REASON_NO_REF = "no_ref"
+_REASON_READ_ERROR = "read_error"
+_UNAVAILABLE_REASON_TEXT = {
+    _REASON_NO_REF: "has no valid evidence reference",
+    _REASON_READ_ERROR: "could not be read from source storage",
+}
+
+
+def _fetch_sanitized_source(ev: dict) -> tuple[str, bool, str]:
+    """Returns (text, available, reason). reason is "ok" when available, else one of
+    _UNAVAILABLE_REASON_TEXT's keys. Availability depends ONLY on whether the source
+    could actually be retrieved -- a missing/invalid raw_ref, a read that raised, or a
+    read that returned nothing. It is never a function of size: a large-but-successfully-
+    read item is available, in full, same as a small one. See the module docstring."""
     raw_ref = ev.get("raw_ref", "")
     if not raw_ref or not raw_ref.startswith("gs://"):
-        return "", False
+        return "", False, _REASON_NO_REF
     try:
         raw_data = read_evidence(raw_ref)
     except Exception as exc:
         log.warning("verifier: read_evidence(%s) raised: %s", raw_ref, exc)
-        return "", False
+        return "", False, _REASON_READ_ERROR
     if not raw_data:
-        return "", False
+        return "", False, _REASON_READ_ERROR
+    # raw_data is whatever read_evidence() parsed from stored JSON -- normally a dict,
+    # but corrupted/unexpected stored content (a bare list, string, or number) is a real
+    # possibility, not just a hypothetical. .get() on anything else would raise and crash
+    # verify_primary_claim() -- treat non-dict content as unusable, same bucket as a
+    # read failure, never a crash.
+    if not isinstance(raw_data, dict):
+        log.warning("verifier: evidence at %s is not a JSON object (got %s)", raw_ref, type(raw_data).__name__)
+        return "", False, _REASON_READ_ERROR
     sanitized = raw_data.get("sanitized", raw_data)
-    raw_str = json.dumps(sanitized, indent=2)
-    if len(raw_str) > _MAX_RAW_CHARS_PER_ITEM:
-        return "", False
-    return raw_str, True
+    try:
+        return json.dumps(sanitized, indent=2), True, "ok"
+    except (TypeError, ValueError) as exc:
+        # Corrupted/unusable stored evidence (e.g. non-serializable content) is the
+        # same practical bucket as a read failure -- readable-but-garbage is no more
+        # usable than unreadable. Never let this raise into verify_primary_claim() and
+        # crash the investigation.
+        log.warning("verifier: sanitized evidence at %s is not serializable: %s", raw_ref, exc)
+        return "", False, _REASON_READ_ERROR
 
 
 def _build_evidence_block(label: str, ids: list, evidence_store: dict) -> tuple[str, bool]:
     lines = [f"{label}:"]
-    all_complete = True
+    all_available = True
     if not ids:
         lines.append("  (none)")
     for eid in ids:
         ev = evidence_store.get(eid, {})
-        text, complete = _fetch_sanitized_source(ev)
-        if not complete:
-            all_complete = False
-            lines.append(f"  [{eid}] (source evidence unavailable or too large for this pass -- NOT INCLUDED)")
+        text, available, reason = _fetch_sanitized_source(ev)
+        if not available:
+            all_available = False
+            why = _UNAVAILABLE_REASON_TEXT.get(reason, "is unavailable")
+            lines.append(f"  [{eid}] (source evidence {why} -- NOT INCLUDED)")
             continue
         lines.append(f"  [{eid}]:")
         lines.append(text)
-    return "\n".join(lines), all_complete
+    return "\n".join(lines), all_available
+
+
+def _check_request_fits_context(complete_request_text: str) -> tuple[bool | None, str | None]:
+    """Returns (fits, error). error is None when sizing was determined successfully (fits
+    is then a real True/False); error is a short diagnostic string when the sizing check
+    itself could not be completed -- a runtime/API failure here (count_tokens or
+    max_context_tokens raising, or either returning something unusable) must never crash
+    the investigation, and must never be confused with either "evidence unavailable" or
+    "context exceeded" (see verify_primary_claim's caller for how these three states stay
+    distinct). Provider-neutral: uses only agent.llm's facade, never anything
+    Gemini-specific -- a future adapter for another model only needs to implement
+    LLMClient.count_tokens/max_context_tokens for this function to work unchanged.
+    """
+    from agent.llm import count_tokens, max_context_tokens
+
+    try:
+        total_tokens = count_tokens(complete_request_text)
+        limit = max_context_tokens()
+    except Exception as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+
+    if not isinstance(total_tokens, int) or total_tokens <= 0:
+        return None, f"count_tokens returned an unusable value: {total_tokens!r}"
+    if not isinstance(limit, int) or limit <= 0:
+        return None, f"max_context_tokens returned an unusable value: {limit!r}"
+
+    return total_tokens <= limit, None
 
 
 def _parse_result(raw_result: dict, cited_ids: list, other_ids: list) -> VerifierResult:
@@ -206,17 +275,66 @@ def verify_primary_claim(
         json.dumps(incident_time_context) if incident_time_context else "(no incident timing available)"
     )
 
-    try:
-        raw_result, usage = llm_json(
-            VERIFIER_SYSTEM,
-            VERIFIER_USER.format(
-                claim_text=claim.text,
-                incident_time_context=time_ctx_text,
-                set_a=set_a_text,
-                set_b=set_b_text,
-            ),
-            max_tokens=600,
+    # Built ONCE -- this exact string is both what gets token-counted below and what
+    # gets sent to llm_json() if it fits. Never count an approximation and then send a
+    # different prompt. (llm_json()'s own adapter may append a small fixed-size
+    # response-format instruction before the actual wire call -- a ~15-token addition,
+    # immaterial at a ~1M-token budget -- but the evidence content itself, which is what
+    # actually varies in size, is identical between what's counted and what's sent.)
+    user_prompt = VERIFIER_USER.format(
+        claim_text=claim.text,
+        incident_time_context=time_ctx_text,
+        set_a=set_a_text,
+        set_b=set_b_text,
+    )
+
+    fits, sizing_error = _check_request_fits_context(f"{VERIFIER_SYSTEM}\n\n{user_prompt}")
+    if sizing_error is not None:
+        # count_tokens/max_context_tokens themselves failed (raised, or returned
+        # something unusable) -- a distinct, third failure mode from both "evidence
+        # unavailable" and "context exceeded": we could not even determine whether the
+        # request fits. Fail closed the same way an LLM-call exception does, without
+        # blaming the evidence (it may well be fully available) and without claiming
+        # the context was exceeded (that was never established).
+        log.error(
+            "verifier: context-sizing check failed for claim %s: %s",
+            claim.claim_id, sizing_error,
         )
+        return (
+            VerifierResult(
+                source_evidence_complete=source_evidence_complete,
+                contradiction_check_complete=contradiction_check_complete,
+                rationale=f"verifier context-sizing check failed: {sizing_error}",
+            ),
+            None,
+        )
+    if not fits:
+        # The complete request (all available Set A + Set B evidence) exceeds the
+        # configured model's documented input-token capacity. This is NOT "evidence
+        # unavailable" -- every cited item may have been read successfully; it's the
+        # combined request that doesn't fit. Evidence references are preserved so the
+        # audit trail still shows what was actually cited.
+        log.warning(
+            "verifier: complete request exceeds model context for claim %s",
+            claim.claim_id,
+        )
+        return (
+            VerifierResult(
+                source_evidence_complete=source_evidence_complete,
+                contradiction_check_complete=contradiction_check_complete,
+                context_limit_exceeded=True,
+                rationale=(
+                    "verification could not complete: the complete verifier request "
+                    "(all available cited and collected evidence) exceeded the "
+                    "configured model's documented context capacity"
+                ),
+                evidence_refs=list(cited_ids),
+            ),
+            None,
+        )
+
+    try:
+        raw_result, usage = llm_json(VERIFIER_SYSTEM, user_prompt, max_tokens=600)
     except Exception as exc:
         log.error("verifier: llm_json call raised for claim %s: %s", claim.claim_id, exc)
         return (

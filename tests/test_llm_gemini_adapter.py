@@ -353,3 +353,73 @@ def test_llm_json_real_content_on_first_try_never_retries(monkeypatch):
     result, _ = adapter.llm_json("sys", "user")
     assert result == {"ok": True}
     assert queue == []
+
+
+# ── count_tokens() / max_context_tokens() (2026-09-02 confidence-verifier context-budget fix) ──
+#
+# Real SDK signatures confirmed against the actually-installed google-genai (1.47.0 and
+# 2.10.0 both checked live):
+#   Client.models.count_tokens(*, model: str, contents) -> CountTokensResponse (.total_tokens)
+#   Client.models.get(*, model: str) -> Model (.input_token_limit)
+# These tests mock at that boundary (adapter._get_client()), not the network.
+#
+# input_token_limit's real Vertex behavior, confirmed live against project
+# sreagent-t2-demo (2026-09-02): Client.models.get(model="gemini-2.5-flash") returns
+# input_token_limit=None on the Vertex AI backend (vertexai=True, what this adapter
+# always uses) -- the field is only populated on the separate, non-Vertex Gemini
+# Developer API. The tests below cover both that real None-returning shape (proving the
+# documented-fallback path activates) and the hypothetical case where Google populates
+# it later (proving the live value would be used and preferred, with zero code change).
+
+def test_count_tokens_uses_the_sdk_count_tokens_call(monkeypatch):
+    adapter = GeminiAdapter(model="gemini-2.5-flash")
+    fake_client = SimpleNamespace(
+        models=SimpleNamespace(
+            count_tokens=lambda model, contents: SimpleNamespace(total_tokens=1234)
+        )
+    )
+    monkeypatch.setattr(adapter, "_get_client", lambda: fake_client)
+    assert adapter.count_tokens("some text") == 1234
+
+
+def test_max_context_tokens_falls_back_to_documented_limit_when_vertex_returns_none(monkeypatch):
+    """Pins the REAL Vertex response shape (input_token_limit=None), not a hypothetical
+    one -- confirmed live against the actually deployed project. Must still resolve to
+    the correct documented limit via the fallback table, not raise and not return None."""
+    adapter = GeminiAdapter(model="gemini-2.5-flash")
+    calls = []
+
+    def _fake_get(model):
+        calls.append(model)
+        return SimpleNamespace(input_token_limit=None)  # the real Vertex shape
+
+    fake_client = SimpleNamespace(models=SimpleNamespace(get=_fake_get))
+    monkeypatch.setattr(adapter, "_get_client", lambda: fake_client)
+
+    assert adapter.max_context_tokens() == 1_048_576
+    assert adapter.max_context_tokens() == 1_048_576
+    assert calls == ["gemini-2.5-flash"], "must call models.get() once and cache, not re-fetch per call"
+
+
+def test_max_context_tokens_prefers_live_value_when_vertex_actually_returns_one(monkeypatch):
+    """If Google ever populates input_token_limit on the Vertex path, the live value
+    must be used and preferred over the fallback table -- with zero code change."""
+    adapter = GeminiAdapter(model="gemini-2.5-flash")
+    fake_client = SimpleNamespace(
+        models=SimpleNamespace(get=lambda model: SimpleNamespace(input_token_limit=999_999))
+    )
+    monkeypatch.setattr(adapter, "_get_client", lambda: fake_client)
+    assert adapter.max_context_tokens() == 999_999
+
+
+def test_max_context_tokens_raises_for_unlisted_model_instead_of_guessing(monkeypatch):
+    adapter = GeminiAdapter(model="some-future-model-not-in-the-table")
+    fake_client = SimpleNamespace(
+        models=SimpleNamespace(get=lambda model: SimpleNamespace(input_token_limit=None))
+    )
+    monkeypatch.setattr(adapter, "_get_client", lambda: fake_client)
+    try:
+        adapter.max_context_tokens()
+        assert False, "expected a RuntimeError for an unlisted model"
+    except RuntimeError as exc:
+        assert "some-future-model-not-in-the-table" in str(exc)

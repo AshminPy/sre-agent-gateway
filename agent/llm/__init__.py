@@ -46,6 +46,14 @@ def get_session_usage() -> dict:
     return _client.get_session_usage()
 
 
+def count_tokens(text: str) -> int:
+    return _client.count_tokens(text)
+
+
+def max_context_tokens() -> int:
+    return _client.max_context_tokens()
+
+
 def reset_session() -> None:
     """issue #74: call once at the start of every investigation (agent/main.py's
     investigate() does this) -- the adapter instance is cached process-wide, so
@@ -75,9 +83,11 @@ __all__ = [
     "LLMClient",
     "LLMUsage",
     "MODEL",
+    "count_tokens",
     "get_session_usage",
     "llm",
     "llm_json",
+    "max_context_tokens",
     "reset_session",
     "validate_capabilities",
 ]

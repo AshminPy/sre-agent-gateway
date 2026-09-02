@@ -44,6 +44,15 @@ class FakeLLMClient(LLMClient):
     def reset_session(self) -> None:
         self.calls = 0
 
+    def count_tokens(self, text: str) -> int:
+        # Deterministic, no network -- good enough for contract tests that don't
+        # exercise real context-budget math (those live in test_claim_verifier.py
+        # with their own explicit mocks).
+        return max(1, len(text) // 4)
+
+    def max_context_tokens(self) -> int:
+        return 1_000_000
+
 
 @pytest.fixture
 def fake_registry(monkeypatch):
