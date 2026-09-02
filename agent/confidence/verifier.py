@@ -166,27 +166,53 @@ def _build_evidence_block(label: str, ids: list, evidence_store: dict) -> tuple[
     return "\n".join(lines), all_available
 
 
-def _check_request_fits_context(complete_request_text: str) -> tuple[bool | None, str | None]:
+_SET_A_LABEL = (
+    "SET A -- CITED SUPPORTING EVIDENCE (the ONLY evidence you may use to judge "
+    "faithfulness and sufficiency)"
+)
+_SET_B_LABEL = (
+    "SET B -- OTHER COLLECTED EVIDENCE (use ONLY to check for a contradiction -- "
+    "never to support the claim)"
+)
+_SET_B_OMITTED_FOR_SIZING_CHECK = f"{_SET_B_LABEL}:\n  (omitted for this capacity check)"
+_SET_B_OMITTED_FOR_CAPACITY = (
+    f"{_SET_B_LABEL}:\n  (Set B could not be included in this verification -- the "
+    "complete request with full Set B would exceed the configured model's context "
+    "capacity. The contradiction scan against Set B was NOT performed for this reason "
+    "-- this is a capacity limit, not evidence unavailability. Do not treat the absence "
+    "of Set B content here as evidence that nothing would have contradicted the claim.)"
+)
+
+
+def _check_request_fits_context(system: str, user: str) -> tuple[bool | None, str | None]:
     """Returns (fits, error). error is None when sizing was determined successfully (fits
     is then a real True/False); error is a short diagnostic string when the sizing check
-    itself could not be completed -- a runtime/API failure here (count_tokens or
-    max_context_tokens raising, or either returning something unusable) must never crash
-    the investigation, and must never be confused with either "evidence unavailable" or
-    "context exceeded" (see verify_primary_claim's caller for how these three states stay
-    distinct). Provider-neutral: uses only agent.llm's facade, never anything
-    Gemini-specific -- a future adapter for another model only needs to implement
-    LLMClient.count_tokens/max_context_tokens for this function to work unchanged.
+    itself could not be completed -- a runtime/API failure here (count_json_request_tokens
+    or max_context_tokens raising, or either returning something unusable) must never
+    crash the investigation, and must never be confused with either "evidence unavailable"
+    or "context exceeded" (see verify_primary_claim's caller for how these three states
+    stay distinct).
+
+    Counts the EXACT request the provider will send, not an approximation:
+    count_json_request_tokens(system, user) delegates to the provider adapter's own
+    request-construction logic (e.g. GeminiAdapter builds the identical string llm_json()
+    sends, including its response-format instruction, via one shared internal helper) --
+    so the counted text and the sent text can never drift apart. Provider-neutral: this
+    function only calls agent.llm's facade, never anything provider-specific -- a future
+    adapter for another model/provider only needs to implement
+    LLMClient.count_json_request_tokens/max_context_tokens, built from that provider's own
+    real request shape, for this function to work unchanged.
     """
-    from agent.llm import count_tokens, max_context_tokens
+    from agent.llm import count_json_request_tokens, max_context_tokens
 
     try:
-        total_tokens = count_tokens(complete_request_text)
+        total_tokens = count_json_request_tokens(system, user)
         limit = max_context_tokens()
     except Exception as exc:
         return None, f"{type(exc).__name__}: {exc}"
 
     if not isinstance(total_tokens, int) or total_tokens <= 0:
-        return None, f"count_tokens returned an unusable value: {total_tokens!r}"
+        return None, f"count_json_request_tokens returned an unusable value: {total_tokens!r}"
     if not isinstance(limit, int) or limit <= 0:
         return None, f"max_context_tokens returned an unusable value: {limit!r}"
 
@@ -261,41 +287,27 @@ def verify_primary_claim(
         if eid not in cited_ids and ev.get("ok", True)
     ]
 
-    set_a_text, source_evidence_complete = _build_evidence_block(
-        "SET A -- CITED SUPPORTING EVIDENCE (the ONLY evidence you may use to judge "
-        "faithfulness and sufficiency)",
-        cited_ids, evidence_store,
-    )
-    set_b_text, contradiction_check_complete = _build_evidence_block(
-        "SET B -- OTHER COLLECTED EVIDENCE (use ONLY to check for a contradiction -- "
-        "never to support the claim)",
-        other_ids, evidence_store,
-    )
+    set_a_text, source_evidence_complete = _build_evidence_block(_SET_A_LABEL, cited_ids, evidence_store)
     time_ctx_text = (
         json.dumps(incident_time_context) if incident_time_context else "(no incident timing available)"
     )
 
-    # Built ONCE -- this exact string is both what gets token-counted below and what
-    # gets sent to llm_json() if it fits. Never count an approximation and then send a
-    # different prompt. (llm_json()'s own adapter may append a small fixed-size
-    # response-format instruction before the actual wire call -- a ~15-token addition,
-    # immaterial at a ~1M-token budget -- but the evidence content itself, which is what
-    # actually varies in size, is identical between what's counted and what's sent.)
-    user_prompt = VERIFIER_USER.format(
-        claim_text=claim.text,
-        incident_time_context=time_ctx_text,
-        set_a=set_a_text,
-        set_b=set_b_text,
-    )
+    def _build_user_prompt(set_b_block: str) -> str:
+        return VERIFIER_USER.format(
+            claim_text=claim.text,
+            incident_time_context=time_ctx_text,
+            set_a=set_a_text,
+            set_b=set_b_block,
+        )
 
-    fits, sizing_error = _check_request_fits_context(f"{VERIFIER_SYSTEM}\n\n{user_prompt}")
+    # Step A (required first, per the 2026-09-02 Set A/Set B safety-semantics review):
+    # prove the request holds up with FULL Set A and NO Set B at all. Set A is the
+    # claim's OWN support -- if it alone can't fit the model's context, nothing else
+    # matters; this must fail closed exactly like source-unavailable does, never be
+    # rescued or reshaped by dropping some of it.
+    prompt_a_only = _build_user_prompt(_SET_B_OMITTED_FOR_SIZING_CHECK)
+    fits_a, sizing_error = _check_request_fits_context(VERIFIER_SYSTEM, prompt_a_only)
     if sizing_error is not None:
-        # count_tokens/max_context_tokens themselves failed (raised, or returned
-        # something unusable) -- a distinct, third failure mode from both "evidence
-        # unavailable" and "context exceeded": we could not even determine whether the
-        # request fits. Fail closed the same way an LLM-call exception does, without
-        # blaming the evidence (it may well be fully available) and without claiming
-        # the context was exceeded (that was never established).
         log.error(
             "verifier: context-sizing check failed for claim %s: %s",
             claim.claim_id, sizing_error,
@@ -303,35 +315,81 @@ def verify_primary_claim(
         return (
             VerifierResult(
                 source_evidence_complete=source_evidence_complete,
-                contradiction_check_complete=contradiction_check_complete,
+                contradiction_check_complete=False,
                 rationale=f"verifier context-sizing check failed: {sizing_error}",
             ),
             None,
         )
-    if not fits:
-        # The complete request (all available Set A + Set B evidence) exceeds the
-        # configured model's documented input-token capacity. This is NOT "evidence
-        # unavailable" -- every cited item may have been read successfully; it's the
-        # combined request that doesn't fit. Evidence references are preserved so the
-        # audit trail still shows what was actually cited.
+    if not fits_a:
+        # FULL Set A alone -- the claim's own support -- doesn't fit. This can never be
+        # rescued by dropping Set B (Set B was never in this request). Fail closed to
+        # insufficient_evidence via the existing verified_ok=False gate; evidence is NOT
+        # described as unavailable (it may well be fully readable), and cited references
+        # are preserved for audit.
         log.warning(
-            "verifier: complete request exceeds model context for claim %s",
+            "verifier: FULL Set A alone exceeds model context for claim %s",
             claim.claim_id,
         )
         return (
             VerifierResult(
                 source_evidence_complete=source_evidence_complete,
-                contradiction_check_complete=contradiction_check_complete,
+                contradiction_check_complete=False,
                 context_limit_exceeded=True,
                 rationale=(
-                    "verification could not complete: the complete verifier request "
-                    "(all available cited and collected evidence) exceeded the "
-                    "configured model's documented context capacity"
+                    "verification could not complete: the claim's own cited evidence "
+                    "(Set A) alone exceeds the configured model's documented context "
+                    "capacity"
                 ),
                 evidence_refs=list(cited_ids),
             ),
             None,
         )
+
+    # Step B: Set A fits on its own. Now check whether adding the FULL Set B (the
+    # existing safety-sensitive, contradiction-only evidence) still fits.
+    set_b_text, set_b_read_complete = _build_evidence_block(_SET_B_LABEL, other_ids, evidence_store)
+    prompt_full = _build_user_prompt(set_b_text)
+    fits_full, sizing_error_full = _check_request_fits_context(VERIFIER_SYSTEM, prompt_full)
+    if sizing_error_full is not None:
+        log.error(
+            "verifier: context-sizing check failed for claim %s (Set A+B step): %s",
+            claim.claim_id, sizing_error_full,
+        )
+        return (
+            VerifierResult(
+                source_evidence_complete=source_evidence_complete,
+                contradiction_check_complete=False,
+                rationale=f"verifier context-sizing check failed: {sizing_error_full}",
+            ),
+            None,
+        )
+
+    if fits_full:
+        # Normal path -- everything available fits. contradiction_check_complete
+        # reflects ordinary evidence-read completeness, same as before this change.
+        user_prompt = prompt_full
+        contradiction_check_complete = set_b_read_complete
+        prompt_other_ids = other_ids
+    else:
+        # Set A fits; adding full Set B does not. Per the existing, deliberately
+        # asymmetric safety design (Set A incompleteness fails closed to
+        # insufficient_evidence; Set B incompleteness only caps the outcome at
+        # PROBABLE), this is NOT a context_limit_exceeded failure -- the claim's own
+        # support is fully assessable. Verify against the FULL Set A, tell the verifier
+        # explicitly (not silently) that Set B could not be checked for this reason, and
+        # cap via contradiction_check_complete=False -- the SAME existing scorer.py gate
+        # that already handles "Set B couldn't be fully read," unchanged. other_ids is
+        # deliberately NOT passed to the parser below in this branch: the model was
+        # never shown any Set B content, so no Set B id is a legitimate citation target
+        # even if one happens to match a real id.
+        log.warning(
+            "verifier: full Set A + Set B exceeds model context for claim %s -- "
+            "verifying on Set A alone, capping at contradiction_check_complete=False",
+            claim.claim_id,
+        )
+        user_prompt = prompt_a_only
+        contradiction_check_complete = False
+        prompt_other_ids = []
 
     try:
         raw_result, usage = llm_json(VERIFIER_SYSTEM, user_prompt, max_tokens=600)
@@ -358,7 +416,7 @@ def verify_primary_claim(
             usage,
         )
 
-    result = _parse_result(raw_result, cited_ids, other_ids)
+    result = _parse_result(raw_result, cited_ids, prompt_other_ids)
     result.source_evidence_complete = source_evidence_complete
     result.contradiction_check_complete = contradiction_check_complete
 

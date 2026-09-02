@@ -382,6 +382,42 @@ def test_count_tokens_uses_the_sdk_count_tokens_call(monkeypatch):
     assert adapter.count_tokens("some text") == 1234
 
 
+def test_count_json_request_tokens_counts_the_exact_text_llm_json_sends(monkeypatch):
+    """2026-09-02 correction: a caller (agent.confidence.verifier) that built its own
+    approximation of the request (system + "\\n\\n" + user) undercounted whatever
+    request-formatting llm_json()'s adapter adds on top -- here, a JSON response-format
+    instruction. Both count_json_request_tokens() and llm_json() must go through the SAME
+    internal _build_json_request() helper, so this can never drift apart again. Proven
+    directly: capture the exact text passed to count_tokens() (via a spy) and the exact
+    text passed to _call_model() (via a spy), and assert they are byte-identical."""
+    adapter = GeminiAdapter(model="gemini-2.5-flash")
+
+    counted_text = {}
+    monkeypatch.setattr(adapter, "count_tokens", lambda text: counted_text.setdefault("text", text) and 42)
+
+    sent_text = {}
+
+    def _fake_call_model(prompt, max_tokens):
+        sent_text["text"] = prompt
+        return _fake_model_response('{"ok": true}', finish_reason="STOP"), _fake_usage()
+
+    monkeypatch.setattr(adapter, "_call_model", _fake_call_model)
+
+    system, user = "SYSTEM INSTRUCTIONS", "USER CONTENT WITH EVIDENCE"
+    token_count = adapter.count_json_request_tokens(system, user)
+    adapter.llm_json(system, user)
+
+    assert token_count == 42
+    assert counted_text["text"] == sent_text["text"], (
+        "count_json_request_tokens() counted a different string than llm_json() "
+        "actually sent -- the whole point of this method is that these can never diverge"
+    )
+    # Also pin that it's not just equal by coincidence -- both must actually include the
+    # adapter's real response-format instruction, proving the counted text isn't the
+    # naive system+"\n\n"+user approximation that caused the original bug.
+    assert "Respond ONLY with valid JSON" in counted_text["text"]
+
+
 def test_max_context_tokens_falls_back_to_documented_limit_when_vertex_returns_none(monkeypatch):
     """Pins the REAL Vertex response shape (input_token_limit=None), not a hypothetical
     one -- confirmed live against the actually deployed project. Must still resolve to

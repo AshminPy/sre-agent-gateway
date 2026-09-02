@@ -383,6 +383,20 @@ class GeminiAdapter(LLMClient):
                 f"error at pos {getattr(exc, 'pos', -1)}): {exc.msg}"
             )
 
+    def _build_json_request(self, system: str, user: str) -> str:
+        """The EXACT text llm_json() sends to the model for a given (system, user) pair
+        -- factored out so count_json_request_tokens() counts precisely this, never a
+        caller-side approximation that could drift from it (2026-09-02 correction: a
+        verifier-side `f"{system}\\n\\n{user}"` undercounted this response-format
+        instruction). This is the one place Gemini's real request shape is
+        constructed; agent.confidence.verifier never builds this itself.
+        """
+        system_json = system + "\n\nRespond ONLY with valid JSON. No markdown fences, no preamble."
+        return f"{system_json}\n\n{user}"
+
+    def count_json_request_tokens(self, system: str, user: str) -> int:
+        return self.count_tokens(self._build_json_request(system, user))
+
     def llm_json(self, system: str, user: str, *, max_tokens: int = 1024) -> tuple[dict, LLMUsage]:
         """Calls Gemini and parses the response as JSON.
 
@@ -400,8 +414,8 @@ class GeminiAdapter(LLMClient):
         multi-claim cases ever hit this, never the simple single-cause ones --
         consistent with an output-length problem, not a random glitch.
         """
-        system_json = system + "\n\nRespond ONLY with valid JSON. No markdown fences, no preamble."
-        response, usage = self._call_model(f"{system_json}\n\n{user}", max_tokens)
+        prompt = self._build_json_request(system, user)
+        response, usage = self._call_model(prompt, max_tokens)
 
         parsed, failure_reason = self._extract_json_object(response.text.strip())
 
@@ -419,7 +433,7 @@ class GeminiAdapter(LLMClient):
                 "with max_tokens=%d",
                 max_tokens, retry_max_tokens,
             )
-            retry_response, retry_usage = self._call_model(f"{system_json}\n\n{user}", retry_max_tokens)
+            retry_response, retry_usage = self._call_model(prompt, retry_max_tokens)
             retry_parsed, retry_failure_reason = self._extract_json_object(retry_response.text.strip())
 
             # Both calls' costs/tokens are real spend for this one llm_json() call --

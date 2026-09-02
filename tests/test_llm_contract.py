@@ -50,6 +50,15 @@ class FakeLLMClient(LLMClient):
         # with their own explicit mocks).
         return max(1, len(text) // 4)
 
+    def count_json_request_tokens(self, system: str, user: str) -> int:
+        # Deliberately NOT string concatenation like GeminiAdapter -- a structured
+        # "messages" shape, closer to how a real Claude-style adapter would represent a
+        # system+user request. Proves count_json_request_tokens's contract doesn't
+        # assume any one provider's request shape: this fake builds and counts its OWN
+        # shape, and agent.confidence.verifier never needs to know or care which.
+        request = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+        return sum(max(1, len(m["content"]) // 4) for m in request)
+
     def max_context_tokens(self) -> int:
         return 1_000_000
 

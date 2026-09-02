@@ -207,32 +207,49 @@ def mock_verifier_evidence(monkeypatch, available_ids: set | list | None = None,
 def mock_verifier_context_budget(
     monkeypatch,
     *,
-    count_tokens_return: int | None = None,
+    count_tokens_return: int | list[int] | None = None,
     max_context_tokens_return: int | None = None,
     count_tokens_raise: bool = False,
     max_context_tokens_raise: bool = False,
 ):
-    """Mocks agent.llm.count_tokens()/max_context_tokens() -- the two calls
+    """Mocks agent.llm.count_json_request_tokens()/max_context_tokens() -- the two calls
     agent.confidence.verifier._check_request_fits_context() makes via a per-call import
     (same pattern as mock_verifier()'s llm_json patch: patch the agent.llm module
     attribute itself, which the verifier's fresh per-call import always re-resolves
     against). Defaults (both None, no raises) simulate a small request that comfortably
-    fits a large model context — the common case. Pass count_tokens_return /
-    max_context_tokens_return to simulate a specific size relationship (e.g. a request
-    that exceeds context). Pass *_raise=True to simulate the sizing check itself failing
+    fits a large model context — the common case.
+
+    verify_primary_claim() calls the sizing check up to TWICE per invocation (Set A
+    alone, then Set A + Set B — 2026-09-02 Set A/B safety-semantics review): pass
+    count_tokens_return as a single int to return that value every time, or as a list to
+    return successive values per call (e.g. [100, 2_000_000] for "Set A alone fits, but
+    adding Set B doesn't"). Pass *_raise=True to simulate the sizing check itself failing
     (a distinct third state from both "evidence unavailable" and "context exceeded").
     """
     import agent.llm as agent_llm_mod
 
-    def _count_tokens(text: str) -> int:
+    if isinstance(count_tokens_return, list):
+        _returns = iter(count_tokens_return)
+    else:
+        _default = 100 if count_tokens_return is None else count_tokens_return
+        _returns = iter(lambda: _default, object())  # infinite repeat of _default
+
+    def _count_json_request_tokens(system: str, user: str) -> int:
         if count_tokens_raise:
-            raise RuntimeError("simulated count_tokens failure")
-        return count_tokens_return if count_tokens_return is not None else 100
+            raise RuntimeError("simulated count_json_request_tokens failure")
+        try:
+            return next(_returns)
+        except StopIteration:
+            raise AssertionError(
+                "mock_verifier_context_budget: count_tokens_return list exhausted -- "
+                "the code under test called the sizing check more times than the test "
+                "expected"
+            ) from None
 
     def _max_context_tokens() -> int:
         if max_context_tokens_raise:
             raise RuntimeError("simulated max_context_tokens failure")
         return max_context_tokens_return if max_context_tokens_return is not None else 1_000_000
 
-    monkeypatch.setattr(agent_llm_mod, "count_tokens", _count_tokens)
+    monkeypatch.setattr(agent_llm_mod, "count_json_request_tokens", _count_json_request_tokens)
     monkeypatch.setattr(agent_llm_mod, "max_context_tokens", _max_context_tokens)

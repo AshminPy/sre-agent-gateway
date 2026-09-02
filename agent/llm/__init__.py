@@ -50,6 +50,10 @@ def count_tokens(text: str) -> int:
     return _client.count_tokens(text)
 
 
+def count_json_request_tokens(system: str, user: str) -> int:
+    return _client.count_json_request_tokens(system, user)
+
+
 def max_context_tokens() -> int:
     return _client.max_context_tokens()
 
@@ -83,6 +87,7 @@ __all__ = [
     "LLMClient",
     "LLMUsage",
     "MODEL",
+    "count_json_request_tokens",
     "count_tokens",
     "get_session_usage",
     "llm",
