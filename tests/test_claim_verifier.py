@@ -284,8 +284,9 @@ def test_set_a_fits_but_adding_set_b_overflows_still_verifies_full_set_a(monkeyp
     not a new one."""
     mock_verifier(monkeypatch, faithfulness="supported", sufficiency="sufficient")
     mock_verifier_evidence(monkeypatch)  # every item reads successfully
-    # First call (Set A alone) fits; second call (Set A + Set B) does not.
-    mock_verifier_context_budget(monkeypatch, count_tokens_return=[100, 2_000_000], max_context_tokens_return=1_048_576)
+    # 3 sizing calls: (1) Set A alone fits, (2) Set A+B overflows, (3) Set A + the real
+    # capacity-notice fallback prompt fits.
+    mock_verifier_context_budget(monkeypatch, count_tokens_return=[100, 2_000_000, 150], max_context_tokens_return=1_048_576)
     claim = _claim(supporting_ids=("ev_001",))
     evidence_store = {
         "ev_001": make_evidence("ev_001", "describe_pod_detail", key_facts=["x"]),
@@ -305,13 +306,70 @@ def test_set_a_fits_but_adding_set_b_overflows_still_verifies_full_set_a(monkeyp
     assert usage is not None  # a real LLM call happened
 
 
+def test_set_a_fits_set_b_overflow_sends_real_capacity_notice_counted_before_sending(monkeypatch):
+    """2026-09-02 fix: the earlier version of this branch reused prompt_a_only (built
+    with the plain sizing-check placeholder) as the ACTUAL request sent to the verifier
+    -- meaning the real inference call never carried the intended explicit
+    "Set B could not be included... capacity" notice. This pins the corrected behavior:
+    the real sent prompt must contain that explicit notice text, and it must have been
+    its own separately-token-counted request (not assumed to fit just because the
+    shorter sizing-only placeholder did) before being sent."""
+    mock_verifier(monkeypatch, faithfulness="supported", sufficiency="sufficient")
+    mock_verifier_evidence(monkeypatch)
+    counted_requests = []
+
+    def _count_json_request_tokens(system: str, user: str) -> int:
+        counted_requests.append(user)
+        if len(counted_requests) == 2:
+            return 2_000_000  # step 2: Set A + full Set B overflows
+        return 100  # step 1 (Set A alone) and step 3 (Set A + capacity notice) both fit
+
+    import agent.llm as agent_llm_mod
+    monkeypatch.setattr(agent_llm_mod, "count_json_request_tokens", _count_json_request_tokens)
+    monkeypatch.setattr(agent_llm_mod, "max_context_tokens", lambda: 1_048_576)
+
+    sent_prompts = []
+    from agent.llm import llm_json as _real_llm_json_facade  # already mocked by mock_verifier() above
+
+    def _spy_llm_json(system, user, *, max_tokens=1024):
+        sent_prompts.append(user)
+        return _real_llm_json_facade(system, user, max_tokens=max_tokens)
+
+    monkeypatch.setattr(agent_llm_mod, "llm_json", _spy_llm_json)
+
+    claim = _claim(supporting_ids=("ev_001",))
+    evidence_store = {
+        "ev_001": make_evidence("ev_001", "describe_pod_detail", key_facts=["x"]),
+        "ev_002": make_evidence("ev_002", "list_events", key_facts=["y"]),
+    }
+    result, usage = verify_primary_claim(claim, evidence_store)
+
+    # Exactly 3 sizing calls happened: Set A alone, Set A+B, Set A+capacity-notice.
+    assert len(counted_requests) == 3
+    # The THIRD counted request (the fallback) must be the SAME text actually sent --
+    # never counted-then-swapped for something else.
+    assert counted_requests[2] == sent_prompts[0]
+    # The real, explicit capacity notice must be present in what was actually sent --
+    # not the plain "(omitted for this capacity check)" sizing-only placeholder.
+    assert "could not be included in this verification" in sent_prompts[0]
+    assert "exceed the configured model's context capacity" in sent_prompts[0]
+    assert "NOT performed for this reason" in sent_prompts[0]
+    assert "(omitted for this capacity check)" not in sent_prompts[0]
+
+    assert result.verified_ok is True
+    assert result.faithfulness == "supported"
+    assert result.sufficiency == "sufficient"
+    assert result.contradiction_check_complete is False
+    assert usage is not None
+
+
 def test_set_b_overflow_does_not_let_the_model_cite_omitted_set_b_content(monkeypatch):
     """When Set B is omitted from the actual request for capacity reasons, the model was
     never shown its content -- a hallucinated contradiction claim against a real Set B id
     must still be rejected, exactly as if that id didn't exist for this call."""
     mock_verifier(monkeypatch, semantic_contradiction="present", contradiction_evidence_ref="ev_002")
     mock_verifier_evidence(monkeypatch)
-    mock_verifier_context_budget(monkeypatch, count_tokens_return=[100, 2_000_000], max_context_tokens_return=1_048_576)
+    mock_verifier_context_budget(monkeypatch, count_tokens_return=[100, 2_000_000, 150], max_context_tokens_return=1_048_576)
     claim = _claim(supporting_ids=("ev_001",))
     evidence_store = {
         "ev_001": make_evidence("ev_001", "describe_pod_detail", key_facts=["x"]),

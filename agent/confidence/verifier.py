@@ -42,16 +42,33 @@ Evidence availability vs. request size (2026-09-02 correction):
   insufficient_evidence purely because one cited item was verbose -- not because anything
   was actually unreadable. Evidence availability now depends ONLY on whether the source
   could be retrieved (see _fetch_sanitized_source's three states below); it is never a
-  function of size. The COMPLETE Set A + Set B text is sent to the verifier every time
-  evidence is available. Size is judged exactly once, against the CONFIGURED model's real
-  documented input-token capacity (agent.llm.max_context_tokens(), reported by the
-  provider itself, and agent.llm.count_tokens() on the exact assembled request --
-  see agent.llm.base.LLMClient and https://ai.google.dev/gemini-api/docs/tokens: "Make
-  this call before sending input to check the size of your requests") -- never a
-  character-count proxy, and never hardcoded for any one provider/model in this file.
-  If the complete request doesn't fit, that is a distinct, explicit
-  context_limit_exceeded state -- evidence is NOT described as unavailable, and its
-  references are preserved for audit. See _check_request_fits_context().
+  function of size.
+
+  Size is judged against the CONFIGURED model's real documented input-token capacity
+  (agent.llm.max_context_tokens(), reported by the provider itself) and the EXACT request
+  a provider adapter would actually send (agent.llm.count_json_request_tokens(system,
+  user) -- never a caller-built approximation, since an adapter may add its own
+  request-formatting on top of system+user; see agent.llm.base.LLMClient and
+  https://ai.google.dev/gemini-api/docs/tokens: "Make this call before sending input to
+  check the size of your requests") -- never a character-count proxy, and never
+  hardcoded for any one provider/model in this file.
+
+  2026-09-02 (Set A/Set B safety-semantics review): the complete Set A + Set B text is
+  NOT sent unconditionally, and size is NOT judged only once. This project's existing
+  safety design deliberately treats the two evidence sets asymmetrically -- Set A
+  incompleteness fails closed to insufficient_evidence, Set B incompleteness only caps
+  the outcome at PROBABLE -- and a single whole-request size check would silently erase
+  that distinction (a large Set B could destroy an otherwise well-supported Set A claim).
+  So sizing runs in up to three real, separately-counted requests: (1) FULL Set A alone
+  -- if this doesn't fit, context_limit_exceeded=True, evidence is NOT described as
+  unavailable, and its references are preserved for audit; (2) if Set A fits, FULL Set A
+  + FULL Set B together -- if this fits, that combined request is what's actually sent;
+  (3) if only step 2 doesn't fit, FULL Set A + an explicit notice that Set B's
+  contradiction scan could not be performed for capacity reasons -- itself re-checked
+  against context before being sent, since it is a genuinely different request from step
+  1's shorter sizing-only placeholder. Only if even that notice-bearing request doesn't
+  fit does this collapse to the same context_limit_exceeded state as step 1. See
+  _check_request_fits_context() and verify_primary_claim()'s two-step body.
 """
 from __future__ import annotations
 
@@ -382,12 +399,60 @@ def verify_primary_claim(
         # deliberately NOT passed to the parser below in this branch: the model was
         # never shown any Set B content, so no Set B id is a legitimate citation target
         # even if one happens to match a real id.
+        #
+        # This IS the actual verification call, so it must use the real, explicit
+        # capacity notice (_SET_B_OMITTED_FOR_CAPACITY), never prompt_a_only's sizing-
+        # check-only placeholder -- and since this is a different string than the one
+        # already sized in Step A, its own exact token count must be checked before it
+        # is sent (never assumed to fit just because the shorter sizing-check
+        # placeholder did).
         log.warning(
             "verifier: full Set A + Set B exceeds model context for claim %s -- "
-            "verifying on Set A alone, capping at contradiction_check_complete=False",
+            "verifying on Set A alone with an explicit Set-B-capacity notice, "
+            "capping at contradiction_check_complete=False",
             claim.claim_id,
         )
-        user_prompt = prompt_a_only
+        prompt_a_with_capacity_notice = _build_user_prompt(_SET_B_OMITTED_FOR_CAPACITY)
+        fits_fallback, sizing_error_fallback = _check_request_fits_context(
+            VERIFIER_SYSTEM, prompt_a_with_capacity_notice
+        )
+        if sizing_error_fallback is not None:
+            log.error(
+                "verifier: context-sizing check failed for claim %s (Set-A fallback step): %s",
+                claim.claim_id, sizing_error_fallback,
+            )
+            return (
+                VerifierResult(
+                    source_evidence_complete=source_evidence_complete,
+                    contradiction_check_complete=False,
+                    rationale=f"verifier context-sizing check failed: {sizing_error_fallback}",
+                ),
+                None,
+            )
+        if not fits_fallback:
+            # Even Set A plus the (short, fixed-size) capacity notice doesn't fit --
+            # collapses to the same terminal state as Step A's own failure: Set A's own
+            # support can't be assessed at all.
+            log.warning(
+                "verifier: Set A + capacity notice still exceeds model context for "
+                "claim %s",
+                claim.claim_id,
+            )
+            return (
+                VerifierResult(
+                    source_evidence_complete=source_evidence_complete,
+                    contradiction_check_complete=False,
+                    context_limit_exceeded=True,
+                    rationale=(
+                        "verification could not complete: the claim's own cited "
+                        "evidence (Set A), even with Set B omitted, exceeds the "
+                        "configured model's documented context capacity"
+                    ),
+                    evidence_refs=list(cited_ids),
+                ),
+                None,
+            )
+        user_prompt = prompt_a_with_capacity_notice
         contradiction_check_complete = False
         prompt_other_ids = []
 
