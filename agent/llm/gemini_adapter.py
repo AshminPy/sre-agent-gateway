@@ -69,6 +69,22 @@ def _is_truncated(response) -> bool:
 # bound even if a caller passes an unusually large max_tokens already.
 _TRUNCATION_RETRY_MAX_TOKENS = 8192
 
+# Fallback ONLY -- max_context_tokens() always tries the live
+# Client.models.get(...).input_token_limit first. This table exists because that field
+# is confirmed (2026-09-02) to always be None for Gemini models on the Vertex AI
+# backend, in both the google-genai SDK's Vertex response mapper and the
+# aiplatform_v1beta1 ModelGardenService.get_publisher_model() response -- unlike the
+# separate, non-Vertex Gemini Developer (ai.google.dev, API-key) surface, which does
+# populate it. Values are Google's own documented limits, not guessed:
+#   https://ai.google.dev/gemini-api/docs/models/gemini-2.5-flash
+#   https://ai.google.dev/gemini-api/docs/models/gemini-2.5-pro
+# A model not listed here raises in max_context_tokens() rather than silently
+# defaulting to a guessed number.
+_VERTEX_INPUT_TOKEN_LIMIT_FALLBACK: dict[str, int] = {
+    "gemini-2.5-flash": 1_048_576,
+    "gemini-2.5-pro": 1_048_576,
+}
+
 
 class GeminiAdapter(LLMClient):
     """Vertex AI Gemini adapter. Model is fixed per instance (one adapter = one
@@ -105,6 +121,10 @@ class GeminiAdapter(LLMClient):
         self.price_output_per_1m = float(os.environ.get("GEMINI_PRICE_OUTPUT", "0.0"))
 
         self._client = None
+        # Static per model/deployment -- fetched once via the real SDK on first use,
+        # never re-derived per call. Not reset by reset_session() (that zeroes
+        # per-investigation usage counters; this is model metadata, not usage).
+        self._max_context_tokens: int | None = None
         self.reset_session()
 
     def reset_session(self) -> None:
@@ -363,6 +383,20 @@ class GeminiAdapter(LLMClient):
                 f"error at pos {getattr(exc, 'pos', -1)}): {exc.msg}"
             )
 
+    def _build_json_request(self, system: str, user: str) -> str:
+        """The EXACT text llm_json() sends to the model for a given (system, user) pair
+        -- factored out so count_json_request_tokens() counts precisely this, never a
+        caller-side approximation that could drift from it (2026-09-02 correction: a
+        verifier-side `f"{system}\\n\\n{user}"` undercounted this response-format
+        instruction). This is the one place Gemini's real request shape is
+        constructed; agent.confidence.verifier never builds this itself.
+        """
+        system_json = system + "\n\nRespond ONLY with valid JSON. No markdown fences, no preamble."
+        return f"{system_json}\n\n{user}"
+
+    def count_json_request_tokens(self, system: str, user: str) -> int:
+        return self.count_tokens(self._build_json_request(system, user))
+
     def llm_json(self, system: str, user: str, *, max_tokens: int = 1024) -> tuple[dict, LLMUsage]:
         """Calls Gemini and parses the response as JSON.
 
@@ -380,8 +414,8 @@ class GeminiAdapter(LLMClient):
         multi-claim cases ever hit this, never the simple single-cause ones --
         consistent with an output-length problem, not a random glitch.
         """
-        system_json = system + "\n\nRespond ONLY with valid JSON. No markdown fences, no preamble."
-        response, usage = self._call_model(f"{system_json}\n\n{user}", max_tokens)
+        prompt = self._build_json_request(system, user)
+        response, usage = self._call_model(prompt, max_tokens)
 
         parsed, failure_reason = self._extract_json_object(response.text.strip())
 
@@ -399,7 +433,7 @@ class GeminiAdapter(LLMClient):
                 "with max_tokens=%d",
                 max_tokens, retry_max_tokens,
             )
-            retry_response, retry_usage = self._call_model(f"{system_json}\n\n{user}", retry_max_tokens)
+            retry_response, retry_usage = self._call_model(prompt, retry_max_tokens)
             retry_parsed, retry_failure_reason = self._extract_json_object(retry_response.text.strip())
 
             # Both calls' costs/tokens are real spend for this one llm_json() call --
@@ -446,6 +480,50 @@ class GeminiAdapter(LLMClient):
         )
         reason = failure_reason + (" (truncated: finish_reason=MAX_TOKENS)" if truncated else "")
         return {LLM_JSON_PARSE_FAILED_KEY: reason}, usage
+
+    def count_tokens(self, text: str) -> int:
+        """Real token count via the installed google-genai SDK's own CountTokens
+        capability (Client.models.count_tokens) -- confirmed against the actually
+        installed SDK version, not assumed. See
+        https://ai.google.dev/gemini-api/docs/tokens: "Make this call before sending
+        input to check the size of your requests."
+        """
+        response = self._get_client().models.count_tokens(model=self.model, contents=text)
+        return response.total_tokens
+
+    def max_context_tokens(self) -> int:
+        """This model's input-token limit. Tries the provider's own live model
+        metadata FIRST (Client.models.get(...).input_token_limit) -- if Google ever
+        populates this for Vertex-hosted models, this starts working with zero code
+        change here. Falls back to _VERTEX_INPUT_TOKEN_LIMIT_FALLBACK only because that
+        live field is confirmed (2026-09-02, both via google-genai 1.47.0/2.10.0's
+        Client.models.get() and the aiplatform_v1beta1 ModelGardenService's
+        get_publisher_model()) to always return None for Gemini models on the Vertex AI
+        backend (vertexai=True, what this adapter always uses) -- unlike the separate,
+        non-Vertex Gemini Developer API, which does populate it. Raises for a model not
+        in the fallback table rather than guessing; callers (verify_primary_claim) treat
+        that as a fail-closed context-sizing failure, never as "fits". Cached after the
+        first resolution since this is a static model property, not per-call usage.
+        """
+        if self._max_context_tokens is not None:
+            return self._max_context_tokens
+
+        model_info = self._get_client().models.get(model=self.model)
+        if model_info.input_token_limit:
+            self._max_context_tokens = model_info.input_token_limit
+            return self._max_context_tokens
+
+        limit = _VERTEX_INPUT_TOKEN_LIMIT_FALLBACK.get(self.model)
+        if limit is None:
+            raise RuntimeError(
+                f"max_context_tokens: Vertex AI's model metadata does not report "
+                f"input_token_limit for {self.model!r}, and no documented fallback is "
+                f"registered for this model in _VERTEX_INPUT_TOKEN_LIMIT_FALLBACK -- "
+                f"add one from https://ai.google.dev/gemini-api/docs/models rather "
+                f"than guessing."
+            )
+        self._max_context_tokens = limit
+        return self._max_context_tokens
 
     def get_session_usage(self) -> dict:
         return {

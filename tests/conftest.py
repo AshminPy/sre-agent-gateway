@@ -118,8 +118,17 @@ def mock_verifier(
     with mock_verifier_evidence() (below) to also control source_evidence_complete /
     contradiction_check_complete, or leave evidence reads unmocked to test the real
     "GCS unreachable in this environment" fail-closed path.
+
+    Also mocks agent.llm.count_tokens()/max_context_tokens() to a comfortable default
+    (a small request against a large model context) — verify_primary_claim() checks
+    these before ever calling llm_json(), so every test exercising it needs them mocked
+    to something, not just tests that care about the context-budget path specifically.
+    Call mock_verifier_context_budget() AFTER this to override with a specific
+    size/failure scenario.
     """
     import agent.llm as agent_llm_mod
+
+    mock_verifier_context_budget(monkeypatch)
 
     if raise_exception:
         def _raise(*a, **k):
@@ -164,26 +173,83 @@ def mock_verifier(
     )
 
 
-def mock_verifier_evidence(monkeypatch, available_ids: set | list | None = None, oversized_ids: set | list | None = None):
+def mock_verifier_evidence(monkeypatch, available_ids: set | list | None = None, large_ids: set | list | None = None):
     """Mocks agent.confidence.verifier's read_evidence() so cited/other evidence items
     resolve to a small, real-looking sanitized payload (source_evidence_complete=True /
-    contradiction_check_complete=True) for IDs in `available_ids`, and to "too large" /
-    "unreadable" for everything else. Pass available_ids=None (default) to make every ID
-    resolve successfully — the common case. Pass oversized_ids to simulate a payload that
-    exists but exceeds the verifier's truncation budget (source/contradiction incomplete,
-    never silently truncated-and-trusted)."""
-    import agent.confidence.verifier as verifier_mod
+    contradiction_check_complete=True) for IDs in `available_ids`, and to a genuine read
+    failure ("unavailable", reason=read_error) for everything else. Pass available_ids=None
+    (default) to make every ID resolve successfully — the common case.
 
+    Pass `large_ids` to simulate a payload that is large (tens of thousands of characters)
+    but reads successfully — 2026-09-02 correction: size is no longer a reason evidence is
+    excluded, so a large_ids item must resolve exactly like any other available item
+    (available=True, full text returned), never as unavailable. See
+    test_large_evidence_is_included_in_full, not a truncation test.
+    """
     available = set(available_ids) if available_ids is not None else None
-    oversized = set(oversized_ids or [])
+    large = set(large_ids or [])
 
     def _fake_read_evidence(raw_ref: str):
         # raw_ref shape from tests/conftest.py's make_evidence: gs://bucket/{ev_id}.json
         ev_id = raw_ref.rsplit("/", 1)[-1].removesuffix(".json")
-        if ev_id in oversized:
-            return {"sanitized": {"note": "x" * (verifier_mod._MAX_RAW_CHARS_PER_ITEM + 1)}}
+        if ev_id in large:
+            # ~30,000 characters -- comfortably bigger than the old 3000-char ceiling and
+            # bigger than any single real evidence item seen in 16-case live testing
+            # (26,132 chars) -- proves large-but-readable evidence is no longer excluded.
+            return {"sanitized": {"note": "x" * 30_000}}
         if available is None or ev_id in available:
             return {"sanitized": {"detail": f"real evidence content for {ev_id}"}}
         return None
 
-    monkeypatch.setattr(verifier_mod, "read_evidence", _fake_read_evidence)
+    monkeypatch.setattr("agent.confidence.verifier.read_evidence", _fake_read_evidence)
+
+
+def mock_verifier_context_budget(
+    monkeypatch,
+    *,
+    count_tokens_return: int | list[int] | None = None,
+    max_context_tokens_return: int | None = None,
+    count_tokens_raise: bool = False,
+    max_context_tokens_raise: bool = False,
+):
+    """Mocks agent.llm.count_json_request_tokens()/max_context_tokens() -- the two calls
+    agent.confidence.verifier._check_request_fits_context() makes via a per-call import
+    (same pattern as mock_verifier()'s llm_json patch: patch the agent.llm module
+    attribute itself, which the verifier's fresh per-call import always re-resolves
+    against). Defaults (both None, no raises) simulate a small request that comfortably
+    fits a large model context — the common case.
+
+    verify_primary_claim() calls the sizing check up to TWICE per invocation (Set A
+    alone, then Set A + Set B — 2026-09-02 Set A/B safety-semantics review): pass
+    count_tokens_return as a single int to return that value every time, or as a list to
+    return successive values per call (e.g. [100, 2_000_000] for "Set A alone fits, but
+    adding Set B doesn't"). Pass *_raise=True to simulate the sizing check itself failing
+    (a distinct third state from both "evidence unavailable" and "context exceeded").
+    """
+    import agent.llm as agent_llm_mod
+
+    if isinstance(count_tokens_return, list):
+        _returns = iter(count_tokens_return)
+    else:
+        _default = 100 if count_tokens_return is None else count_tokens_return
+        _returns = iter(lambda: _default, object())  # infinite repeat of _default
+
+    def _count_json_request_tokens(system: str, user: str) -> int:
+        if count_tokens_raise:
+            raise RuntimeError("simulated count_json_request_tokens failure")
+        try:
+            return next(_returns)
+        except StopIteration:
+            raise AssertionError(
+                "mock_verifier_context_budget: count_tokens_return list exhausted -- "
+                "the code under test called the sizing check more times than the test "
+                "expected"
+            ) from None
+
+    def _max_context_tokens() -> int:
+        if max_context_tokens_raise:
+            raise RuntimeError("simulated max_context_tokens failure")
+        return max_context_tokens_return if max_context_tokens_return is not None else 1_000_000
+
+    monkeypatch.setattr(agent_llm_mod, "count_json_request_tokens", _count_json_request_tokens)
+    monkeypatch.setattr(agent_llm_mod, "max_context_tokens", _max_context_tokens)
