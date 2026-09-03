@@ -39,13 +39,6 @@ enable_agent_gateway = true
 # Set false in production to fail closed.
 authz_fail_open = true
 
-# ── NETWORKING ──────────────────────────────────────────────────────────────
-
-agent_subnet_cidr = "10.0.0.0/24"
-
-# Agent Gateway PSC-Interface subnet — min /28, RFC1918, must NOT overlap
-# 10.0.0.0/24, 10.0.1.0/24, or 10.0.2.0/24.
-
 # ── MODEL / MODEL ARMOR ─────────────────────────────────────────────────────
 
 gemini_model              = "gemini-2.5-flash"
