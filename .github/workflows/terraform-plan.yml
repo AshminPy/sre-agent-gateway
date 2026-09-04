@@ -16,8 +16,10 @@ on:
     paths:
       - "agent/**"
       - "iac/agent/**"
+      - "mcp/**"
       - "scripts/package_agent.sh"
       - "scripts/package_agent.py"
+      - "scripts/build_mcp_tool_spec.py"
       - ".github/workflows/terraform-*.yml"
 
 permissions:
@@ -37,6 +39,17 @@ jobs:
       # filebase64() reads agent.tar.gz at plan time, so build it first.
       - name: Package agent
         run: bash scripts/package_agent.sh
+        working-directory: .
+
+      # Same requirement for mcp/tool_spec.json, which agent_registry_mcp.tf reads
+      # with file(). Without this the plan errors out on a missing file rather than
+      # showing a diff. Regenerated here (not --check'd) so the plan reflects mcp/
+      # at this commit, matching what terraform-apply.yml will register.
+      - name: Build MCP tool spec
+        if: ${{ vars.ENABLE_CUSTOM_MCP == 'true' }}
+        run: |
+          pip install --quiet -r mcp/requirements.txt
+          python3 scripts/build_mcp_tool_spec.py
         working-directory: .
 
       - uses: google-github-actions/auth@v2

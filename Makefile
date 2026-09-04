@@ -41,16 +41,18 @@ tf-agent-plan: package-agent  ## Package agent, then terraform plan the agent st
 tf-agent-apply: package-agent  ## Package agent, then terraform apply the agent stack
 	terraform -chdir=$(AGENT_DIR) apply
 
-# ── Post-apply (gateway path) ──────────────────────────────────────────────
-register-endpoints:  ## Register Google-API + MCP endpoints in Agent Registry (both regional + multi-region, per the official codelab)
-	python3 scripts/register_endpoints.py \
-		--project $$(terraform -chdir=$(AGENT_DIR) output -raw project_a_id) \
-		--region $(REGION) --multi-region $(MREGION) --mtls-endpoints=include
+# ── Agent Registry ─────────────────────────────────────────────────────────
+# Registration itself is Terraform-managed (iac/agent/agent_registry{,_mcp}.tf) as of
+# 2026-09-04 — there is no longer a `register-endpoints` target, because `terraform
+# apply` does it. Only the custom MCP's tool-spec artifact is generated outside
+# Terraform, the same way agent.tar.gz is.
+mcp-tool-spec:  ## Generate mcp/tool_spec.json (read by Terraform via file(); run before plan/apply)
+	python3 scripts/build_mcp_tool_spec.py
 
 attach-gateway:  ## Bind the reasoning engine to the Agent Gateway
 	@bash scripts/attach_gateway_to_engine.sh
 
-post-apply: register-endpoints attach-gateway  ## Run all post-apply steps
+post-apply: attach-gateway  ## Run all post-apply steps
 
 # ── Dev / verify ───────────────────────────────────────────────────────────
 env:  ## Generate agent/.env from Terraform outputs
