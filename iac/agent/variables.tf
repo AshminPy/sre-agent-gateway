@@ -50,7 +50,26 @@ variable "additional_clusters" {
     owner              = optional(string, "")
     enabled            = optional(bool, true)
   }))
-  default = {}
+  # Phase 1: sre-lab (local kind cluster standing in for on-prem, registered
+  # into the GCP fleet — see iac/agent/onprem_fleet.tf and
+  # docs/connect-gateway-onprem.md) is a real, ongoing cluster this agent
+  # investigates via Connect Gateway, not a throwaway test fixture — it needs
+  # to survive every CI-driven apply, and CI does not pass a -var override for
+  # this variable, so it lives in the default rather than only in the
+  # (gitignored) local terraform.tfvars. A different deployment of this module
+  # overrides it via its own tfvars, same as every other var here.
+  default = {
+    "sre-lab" = {
+      aliases            = ["kind-sre-lab", "on-prem-lab", "connect-gateway-lab"]
+      project            = "sreagent-t2-demo"
+      region             = "global"
+      type               = "custom"
+      environment        = "test"
+      allowed_namespaces = ["test-incidents"]
+      owner              = "sre-platform"
+      enabled            = true
+    }
+  }
 
   # 2026-08-26: the collision guard MOVED out of this variable, into a
   # `lifecycle.precondition` on google_storage_bucket_object.clusters_json
@@ -122,6 +141,24 @@ variable "custom_mcp_image" {
   description = "Container image for the custom Cloud Run MCP fallback. Defaults to a Google placeholder so the first apply succeeds; replace by building & pushing your image (see README) or set explicitly. Only used when enable_custom_mcp = true."
   type        = string
   default     = "us-docker.pkg.dev/cloudrun/container/placeholder"
+}
+
+variable "custom_mcp_kube_context" {
+  description = "Kubeconfig context name the custom MCP's get_k8s_clients() should use for the Connect Gateway (non-GKE/on-prem) path, baked into the image at mcp/connect-gateway-kubeconfig.yaml. Empty (default) keeps the service on the direct-GKE-endpoint or local-kubeconfig branches — see mcp/server.py. Only used when enable_custom_mcp = true."
+  type        = string
+  default     = ""
+}
+
+variable "onprem_fleet_membership" {
+  description = "GKE Fleet membership name for the non-GKE/on-prem cluster registered via Connect Gateway (e.g. the Phase 1 kind cluster 'sre-lab'). Empty (default) skips onprem_fleet.tf's registration/RBAC orchestration entirely."
+  type        = string
+  default     = ""
+}
+
+variable "onprem_fleet_kubeconfig_context" {
+  description = "Local kubectl context name for the on-prem/non-GKE cluster (e.g. 'kind-sre-lab'), used only by the local-exec provisioners in onprem_fleet.tf that run the gcloud fleet registration/RBAC commands. Only meaningful when onprem_fleet_membership is set."
+  type        = string
+  default     = ""
 }
 
 variable "iap_iam_enforcement_mode" {

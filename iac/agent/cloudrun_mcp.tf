@@ -55,6 +55,14 @@ resource "google_cloud_run_v2_service" "mcp" {
         name  = "PROJECT_ID"
         value = var.project_b_id
       }
+
+      dynamic "env" {
+        for_each = var.custom_mcp_kube_context != "" ? [var.custom_mcp_kube_context] : []
+        content {
+          name  = "K8S_MCP_KUBE_CONTEXT"
+          value = env.value
+        }
+      }
     }
   }
 
