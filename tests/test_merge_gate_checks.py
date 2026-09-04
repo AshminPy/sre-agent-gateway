@@ -229,11 +229,18 @@ def test_evaluate_merge_gate_does_not_deadlock_on_no_expected_checks():
 
 
 def test_evaluate_merge_gate_stops_when_apply_triggers_but_no_plan_supplied():
+    # scripts/smoke_test.sh is in terraform-apply.yml's paths but not
+    # terraform-plan.yml's, so it triggers an apply after merge with no PR plan
+    # having run -- exactly the asymmetry the fresh-plan requirement exists for.
+    # (This used to use mcp/server.py; mcp/** was added to terraform-plan.yml when
+    # Agent Registry became Terraform-managed and mcp/ started feeding
+    # mcp/tool_spec.json into the plan, so mcp/ now gets a real PR plan of its own --
+    # see test_mcp_change_now_requires_plan_since_it_feeds_the_tool_spec below.)
     result = evaluate_merge_gate(
         comment_body=VALID_MARKER,
         pr_state=_pr_state(),
         repo_root=REPO_ROOT,
-        changed_files=["mcp/server.py"],
+        changed_files=["scripts/smoke_test.sh"],
         check_runs=[_check_run("pytest"), _check_run("mcp-pytest")],
         unresolved_thread_count=0,
         terraform_plan=None,
@@ -313,13 +320,24 @@ def test_iac_agent_change_requires_plan_only():
     assert result["terraform_apply_triggers"] is True
 
 
-def test_mcp_change_requires_python_checks_but_not_plan_yet_triggers_apply():
-    # The real asymmetry this whole gate exists for: mcp/** triggers
-    # terraform-apply.yml after merge but terraform-plan.yml never runs for
-    # it, so it must get a fresh safety plan from the merge gate itself.
+def test_mcp_change_now_requires_plan_since_it_feeds_the_tool_spec():
+    # Changed 2026-09-04 (Agent Registry -> Terraform, #33). mcp/** used to trigger
+    # terraform-apply.yml without terraform-plan.yml ever running for it. It now
+    # feeds mcp/tool_spec.json, which agent_registry_mcp.tf reads at plan time, so
+    # mcp/** was added to terraform-plan.yml's paths and a real PR plan is required.
     result = compute_required_checks(REPO_ROOT, ["mcp/server.py"])
-    assert result["required_checks"] == ["mcp-pytest", "pytest"]
+    assert result["required_checks"] == ["mcp-pytest", "plan", "pytest"]
     assert result["terraform_apply_triggers"] is True
+
+
+def test_a_path_triggering_apply_without_plan_still_exists_and_is_caught():
+    # The gate's core invariant, independent of which path happens to have the
+    # asymmetry: anything that triggers terraform-apply.yml but is not in
+    # terraform-plan.yml's paths gets no PR plan, so the merge gate must demand a
+    # fresh one itself. scripts/smoke_test.sh is that path today.
+    result = compute_required_checks(REPO_ROOT, ["scripts/smoke_test.sh"])
+    assert result["terraform_apply_triggers"] is True
+    assert "plan" not in result["required_checks"]
 
 
 def test_docs_only_change_requires_nothing_and_does_not_trigger_apply():
