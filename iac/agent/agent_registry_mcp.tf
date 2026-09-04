@@ -4,16 +4,24 @@
 #
 #   1. Dynamic content. mcp_server_spec.content is the real MCP tools/list output of
 #      mcp/server.py (27 tools, ~7.3KB), so it changes whenever mcp/ changes. It is
-#      generated to mcp/tool_spec.json before plan/apply by scripts/build_mcp_tool_spec.py
-#      -- the same "generate an artifact, then read it with a Terraform function"
-#      pattern this stack already uses for agent.tar.gz + filebase64() in
-#      agent_engine.tf. Terraform cannot introspect a Python MCP server itself.
+#      written to mcp/tool_spec.json by scripts/build_mcp_tool_spec.py -- the same
+#      "generate an artifact, then read it with a Terraform function" pattern this
+#      stack already uses for agent.tar.gz + filebase64() in agent_engine.tf.
+#      Terraform cannot introspect a Python MCP server itself.
 #
-#   2. Health-gated ordering. The registration must not point at a Cloud Run revision
-#      that has not been verified healthy: terraform-apply.yml runs its "Verify MCP
-#      Cloud Run revision is healthy" step between the Cloud Run update and this
-#      resource's apply. depends_on encodes the Cloud Run dependency for Terraform's
-#      graph; the CI step order preserves the health gate itself.
+#   2. Health-gated ordering. This resource's content must not change to describe
+#      new tools until the Cloud Run revision that actually serves them has passed
+#      verification -- otherwise the registry and the running server can disagree
+#      about what the MCP server supports, a real runtime/evidence-integrity risk.
+#      terraform-apply.yml enforces the ordering, not this file: mcp/tool_spec.json
+#      is pinned to whatever is CURRENTLY LIVE before the first two applies (Cloud
+#      Run's own update included) run, and is only regenerated to match this
+#      commit's real mcp/ code after "Verify MCP Cloud Run revision is healthy"
+#      passes -- immediately followed by a third, untargeted apply that is the only
+#      one where this resource's content can actually change. depends_on below
+#      still encodes the Cloud Run dependency for Terraform's own graph; it is the
+#      CI step order plus the content-pinning above that makes the health gate real
+#      (Terraform has no native way to await an external, imperative health check).
 #
 # The URL comes straight from the Cloud Run resource rather than a CI-side
 # `gcloud run services describe` lookup, so it can no longer drift from what is
