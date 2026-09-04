@@ -37,7 +37,26 @@ resource "google_cloud_run_v2_service" "mcp" {
   name                = "sre-k8s-mcp"
   location            = var.region
   deletion_protection = false
-  ingress             = "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER"
+  # Phase 1 fix (2026-09-04): was INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER, which
+  # requires an Internal HTTP(S) Load Balancer + Serverless NEG pointed at this
+  # service for ANYTHING to reach it -- none exists anywhere in this repo's
+  # Terraform (see docs/architecture/mcp-architecture.md's own prior finding,
+  # confirmed still true: `grep -rn serverless_neg\|forwarding_rule iac/`
+  # returns nothing). Every caller, including Agent Gateway's own real request,
+  # got a platform-level 404 -- reproduced live via a direct curl POST to
+  # /mcp and confirmed in Agent Gateway's own request log (status 404,
+  # authz result ALLOWED, correct hostname -- the request never reached the
+  # container). Agent Gateway calls the service's PUBLIC .run.app hostname
+  # with a Bearer identity token, the same pattern GKE Remote MCP's own
+  # Google-managed public endpoint uses -- INTERNAL_LOAD_BALANCER was never
+  # going to work for that call shape without also re-pointing Agent
+  # Gateway's route at an internal LB, a materially bigger change. IAM
+  # authorization is unchanged and unaffected: only the AGENT_IDENTITY
+  # principal holds roles/run.invoker (google_cloud_run_v2_service_iam_member
+  # .runtime_invoke_mcp below) -- no allUsers/allAuthenticatedUsers grant
+  # exists, and per Cloud Run's own docs, ingress and IAM authorization are
+  # enforced independently: opening ingress does not weaken or bypass IAM.
+  ingress = "INGRESS_TRAFFIC_ALL"
 
   template {
     service_account = google_service_account.mcp_runtime[0].email

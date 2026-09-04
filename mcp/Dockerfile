@@ -8,6 +8,13 @@ WORKDIR /app
 # https://docs.cloud.google.com/kubernetes-engine/docs/how-to/cluster-access-for-kubectl#install_plugin,
 # not the third-party standalone alternatives some guides suggest, since this
 # plugin sits on a security-relevant credential path.
+#
+# google-cloud-cli (the base package, not just the auth-plugin package) is
+# required too -- live-verified 2026-09-04: the auth plugin's own credential
+# resolution shells out to `gcloud config config-helper --format=json`
+# internally (confirmed via the deployed container's own error: `exec:
+# "gcloud": executable file not found in $PATH`). Installing only
+# google-cloud-cli-gke-gcloud-auth-plugin is not sufficient on its own.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       curl gnupg apt-transport-https ca-certificates \
     && echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" \
@@ -15,7 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \
       | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg \
     && apt-get update \
-    && apt-get install -y --no-install-recommends google-cloud-cli-gke-gcloud-auth-plugin \
+    && apt-get install -y --no-install-recommends google-cloud-cli google-cloud-cli-gke-gcloud-auth-plugin \
     && apt-get purge -y --auto-remove gnupg apt-transport-https curl \
     && rm -rf /var/lib/apt/lists/*
 

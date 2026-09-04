@@ -1,7 +1,7 @@
 # MCP Architecture
 
-> **Implementation Status:** PARTIALLY IMPLEMENTED — GKE Remote MCP path is IMPLEMENTED and live-verified; custom MCP is PLANNED/BLOCKED (see below)
-> **Last Verified:** 2026-08-08 — `agent/mcp_client.py`, `mcp/server.py`, `iac/agent/cloudrun_mcp.tf`
+> **Implementation Status:** IMPLEMENTED — both GKE Remote MCP and the custom MCP (non-GKE/on-prem path) are live-verified. See the 2026-09-04 update below for the custom MCP.
+> **Last Verified:** 2026-09-04 — `agent/mcp_client.py`, `mcp/server.py`, `iac/agent/cloudrun_mcp.tf`, `iac/agent/onprem_fleet.tf`
 > **Source of Truth:** `agent/mcp_client.py:98-113` (the MCP registry)
 > **Owner:** SRE Agent platform team.
 
@@ -46,13 +46,15 @@ Two MCP sources are registered in code (`MCP_REGISTRY`, `agent/mcp_client.py:98-
 - **Network path**: `ingress = INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER` (`iac/agent/cloudrun_mcp.tf:40`).
 - **Owner**: SRE Agent platform team.
 
-**STATUS: PLANNED / BLOCKED — not operational today.** This is important, so stated plainly, with the exact evidence:
+**STATUS (2026-09-04): OPERATIONAL — the 3 blockers below are resolved, each with live evidence.** The original PLANNED/BLOCKED finding (kept below for history) was accurate at the time it was written:
 
-1. `enable_custom_mcp` defaults to `false` and is **not overridden** in the live `iac/agent/terraform.tfvars` — the Cloud Run service isn't even deployed in the live project today.
-2. Even if deployed, `INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER` requires an Internal Load Balancer + Serverless NEG pointed at the service for **anything** to reach it — including the agent's own traffic. **No such Load Balancer or NEG exists anywhere in this repo's Terraform** — confirmed by an exhaustive search of `iac/` for `serverless_neg`, `forwarding_rule`, `backend_service`, `url_map`, `target_https_proxy`.
-3. Even the deployed container's own env vars (`iac/agent/cloudrun_mcp.tf:50-58`) set only `PROJECT_ID` — none of the connectivity variables `mcp/server.py`'s code needs to actually reach a cluster (`GKE_CLUSTER_ENDPOINT`, `K8S_MCP_KUBE_CONTEXT`) are set. Left unset, the server's `get_k8s_clients()` falls through to a "load local kubeconfig" branch that has no kubeconfig file to load inside a Cloud Run container.
+1. ~~`enable_custom_mcp` defaults to `false`~~ — resolved: the GitHub repo variable `ENABLE_CUSTOM_MCP=true` (confirmed via `gh variable list`) has driven every CI apply since 2026-08-07; the service is live (`sre-k8s-mcp`, revision serving 100% traffic).
+2. ~~`INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER` requires an Internal Load Balancer + Serverless NEG that doesn't exist~~ — resolved differently than originally proposed: rather than building the LB/NEG (which Agent Gateway's actual call pattern — the public `.run.app` hostname + Bearer identity token — was never going to route through anyway), `iac/agent/cloudrun_mcp.tf`'s ingress was changed to `INGRESS_TRAFFIC_ALL`. IAM authorization (`roles/run.invoker`, scoped to the agent's identity only) is unaffected — verified via Cloud Run's own docs that ingress and IAM are enforced independently, and via a live unauthenticated-request test (403/404, no content) and a live unauthorized-identity test (401) after the change.
+3. ~~Connectivity env vars (`K8S_MCP_KUBE_CONTEXT`) unset~~ — resolved: `iac/agent/cloudrun_mcp.tf` now sets `K8S_MCP_KUBE_CONTEXT` (via `var.custom_mcp_kube_context`), and `mcp/Dockerfile` bakes in the Connect Gateway kubeconfig + `gke-gcloud-auth-plugin` + the base `google-cloud-cli` package the plugin actually shells out to (a real bug found live: the plugin alone isn't self-sufficient — `docs/connect-gateway-onprem.md` and this file's own prior research didn't know this until the container's own error log showed it).
 
-**Bottom line**: the custom MCP server's *code* is complete and has been proven to work when run and tested manually/locally against a real cluster via Connect Gateway (see [GKE vs Non-GKE Access](gke-vs-nongke.md)), but the *deployed* Cloud Run service, as currently configured, cannot reach any cluster. Treat any claim that "the custom MCP is a working fallback" as inaccurate until the Load Balancer/NEG and connectivity env vars are actually built.
+**Live E2E proof (2026-09-04, run `run_20260904_215412_kiny`)**: `invoke_agent.py --scenario onprem` against the real deployed agent → Agent Gateway (`ALLOWED`, logged) → custom MCP Cloud Run (`200 OK`) → Connect Gateway → the `sre-lab` kind cluster → real pod/event data → RCA correctly identified the fixture's real broken image (`gcr.io/google-containers/nonexistent-image:v99.9.9`), confidence 1.0, zero fabrication, zero tool failures.
+
+**Known limitation, not fixed by this work**: the custom MCP is still single-cluster-per-deployment (`get_k8s_clients()`'s `@lru_cache(maxsize=1)`) — one Cloud Run revision can point at exactly one non-GKE cluster at a time via its `K8S_MCP_KUBE_CONTEXT` env var. Adding a second non-GKE cluster needs either a second Cloud Run service or a per-request context-selection code change (tracked alongside issue #86's cross-project GKE gap) — out of scope for Phase 1, which only requires one non-GKE cluster proven.
 
 ## Agent Registry — how MCP servers/tools get registered
 
