@@ -13,9 +13,7 @@ on:
       - "iac/agent/**"
       - "scripts/package_agent.sh"
       - "scripts/package_agent.py"
-      - "scripts/register_endpoints.py"
-      - "scripts/googleapis.txt"
-      - "scripts/register_custom_mcp.py"
+      - "scripts/build_mcp_tool_spec.py"
       - "scripts/smoke_test.sh"
       - ".github/workflows/terraform-*.yml"
 
@@ -59,6 +57,53 @@ jobs:
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_DEPLOYER_SA }}
+
+      # mcp/tool_spec.json is read by iac/agent/agent_registry_mcp.tf via file(), so
+      # it must exist before plan/apply — same ordering requirement as agent.tar.gz
+      # above. It is deliberately NOT regenerated from this commit's mcp/ code here:
+      # this pins it to whatever is CURRENTLY LIVE instead, so the two applies below
+      # cannot change the registry's tool-spec content before the new Cloud Run
+      # revision (built/deployed further down) has passed "Verify MCP Cloud Run
+      # revision is healthy". Without this, a broken mcp/ change could leave the
+      # registry already describing NEW tools while Cloud Run serves the OLD (or a
+      # crashed) revision — the registry and the running server would disagree,
+      # a real runtime/evidence-integrity risk, not a cosmetic one. The real
+      # regeneration happens in "Regenerate MCP tool spec now that the new revision
+      # is verified healthy", below the health check.
+      #
+      # Must run AFTER auth above (it calls gcloud), and must NOT treat every lookup
+      # failure as "service does not exist" -- confirmed live which real gcloud error
+      # signals a genuine absence vs. everything else:
+      #   $ gcloud alpha agent-registry services describe <nonexistent-id> ...
+      #   ERROR: ... NOT_FOUND: Resource '...' was not found ...
+      #   $ gcloud alpha agent-registry services describe ... --project=<bad-project>
+      #   ERROR: ... PERMISSION_DENIED: Permission denied on resource project ...
+      # Only the first (NOT_FOUND) is a valid reason to fall back to a fresh build --
+      # that means Terraform will CREATE the resource, not update a live one, so
+      # there is no existing revision to protect. Any other failure (auth, API
+      # disabled, permission, network, ...) fails the job instead of silently
+      # registering unverified content under a wrong assumption.
+      - name: Pin MCP tool spec to currently-live content
+        if: ${{ vars.ENABLE_CUSTOM_MCP == 'true' }}
+        run: |
+          pip install --quiet -r mcp/requirements.txt
+          STDERR_FILE=$(mktemp)
+          if gcloud alpha agent-registry services describe sre-k8s-mcp \
+              --project="${{ secrets.GCP_PROJECT_A_ID }}" \
+              --location="${{ secrets.GCP_REGION }}" \
+              --format=json > /tmp/live_mcp_service.json 2>"$STDERR_FILE"; then
+            python3 -c "import json; live = json.load(open('/tmp/live_mcp_service.json')); content = live['mcpServerSpec']['content']; open('mcp/tool_spec.json', 'w').write(json.dumps(content, separators=(',', ':'), sort_keys=True))"
+            echo "Pinned mcp/tool_spec.json to the currently-live registration."
+          elif grep -q "NOT_FOUND" "$STDERR_FILE"; then
+            echo "No live sre-k8s-mcp registration found (NOT_FOUND) — generating fresh (first-ever enable)."
+            cat "$STDERR_FILE"
+            python3 scripts/build_mcp_tool_spec.py
+          else
+            echo "ERROR: could not verify the currently-live custom MCP registration — refusing to guess whether it exists." >&2
+            cat "$STDERR_FILE" >&2
+            exit 1
+          fi
+        working-directory: .
 
       - uses: hashicorp/setup-terraform@v3
         with:
@@ -191,43 +236,45 @@ jobs:
             exit 1
           fi
 
-      # Post-apply: register Agent Registry endpoints (Google APIs, always; the
-      # custom Cloud Run MCP, only when enabled — no-op otherwise), then bind the
-      # gateway. Order matters for a clean first-time apply: attach_gateway_to_
-      # engine.sh's own pre-flight checks report registration status, so
-      # registering first avoids a false warning on the very first CI run.
-      #
-      # register_custom_mcp.py was added 2026-08-07 after real live end-to-end
-      # testing caught this the hard way: without it, every custom-MCP call gets
-      # HTTP 403 "endpoint... unregistered in the Agent Registry" — the plain
-      # endpoint registration below only covers Google APIs, never the custom
-      # Cloud Run MCP. It uses --mcp-server-spec-type=tool-spec (verified against
-      # Google's own codelab for external MCP servers:
-      # https://codelabs.developers.google.com/agw-cuj-arun-egress-emcp), not
-      # --endpoint-spec-type=no-spec (which the Google-API registration below
-      # uses — a deliberately different registration type, not an inconsistency).
-      # Kept as one CI step (not two) since both are "register Agent Registry" —
-      # one action, same as this repo already had for the Google-API side.
-      - name: Register Agent Registry endpoints
-        run: |
-          python3 scripts/register_endpoints.py \
-            --project="${{ secrets.GCP_PROJECT_A_ID }}" \
-            --region="${{ secrets.GCP_REGION }}" \
-            --mtls-endpoints=include
-
-          if [ "${{ vars.ENABLE_CUSTOM_MCP || 'false' }}" = "true" ]; then
-            pip install --quiet -r mcp/requirements.txt
-            MCP_URL=$(gcloud run services describe sre-k8s-mcp \
-              --project="${{ secrets.GCP_PROJECT_A_ID }}" \
-              --region="${{ secrets.GCP_REGION }}" \
-              --format="value(status.url)")
-            python3 scripts/register_custom_mcp.py \
-              --project="${{ secrets.GCP_PROJECT_A_ID }}" \
-              --region="${{ secrets.GCP_REGION }}" \
-              --url="$MCP_URL" \
-              --enabled=true
-          fi
+      # Only reached once the health check above has passed. This is the one place
+      # mcp/tool_spec.json is allowed to change to match this commit's real mcp/
+      # code — see "Pin MCP tool spec to currently-live content" earlier in this job
+      # for why it was withheld until now.
+      - name: Regenerate MCP tool spec now that the new revision is verified healthy
+        if: ${{ vars.ENABLE_CUSTOM_MCP == 'true' }}
+        run: python3 scripts/build_mcp_tool_spec.py
         working-directory: .
+
+      # Agent Registry registration is Terraform-managed as of 2026-09-04 (issue #33).
+      # The two imperative steps that used to live here — scripts/register_endpoints.py
+      # (Google APIs) and scripts/register_custom_mcp.py (the custom Cloud Run MCP) —
+      # are retired to archive/. Every registration reconciles from
+      # iac/agent/agent_registry{,_mcp}.tf on every apply now, so a hand-edited or
+      # deleted registration is corrected instead of silently persisting (the old
+      # scripts skipped any service ID that already existed, so they could never fix
+      # a wrong URL on an existing entry — the landmine that let issue #30's Model
+      # Armor .rep. hostname survive a "fix").
+      #
+      # This third apply is deliberately plain — no -target. Cloud Run, IAM, and the
+      # static Agent Registry entries already converged in the two applies above, so
+      # the only resource with a pending diff here is google_agent_registry_service.
+      # custom_mcp, and only because the tool spec was just regenerated. If mcp/
+      # didn't change this push, the regenerated content already matches what was
+      # pinned above and this apply is a genuine no-op for that resource too.
+      - name: Apply (register verified custom MCP tool spec)
+        if: ${{ vars.ENABLE_CUSTOM_MCP == 'true' }}
+        run: |
+          terraform apply -auto-approve \
+            -var="project_a_id=${{ secrets.GCP_PROJECT_A_ID }}" \
+            -var="project_b_id=${{ secrets.GCP_PROJECT_B_ID }}" \
+            -var="region=${{ secrets.GCP_REGION }}" \
+            -var="notification_email=${{ secrets.NOTIFICATION_EMAIL }}" \
+            -var="github_repo=${{ github.repository }}" \
+            -var="tfstate_bucket=${{ secrets.TFSTATE_BUCKET }}" \
+            -var="create_wif=false" \
+            -var="gemini_model=gemini-2.5-pro" \
+            -var="enable_custom_mcp=true" \
+            -var="custom_mcp_image=${{ steps.mcp_image.outputs.image || steps.current_mcp_image.outputs.image }}"
 
       # 2026-08-10: scripts/attach_gateway_to_engine.sh is no longer run
       # automatically here. The gateway binding (`agentGatewayConfig`) is now
