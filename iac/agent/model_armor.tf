@@ -215,11 +215,8 @@ resource "google_model_armor_floorsetting" "mcp" {
   # Correct form: inspect_only=true ALONE. inspect_and_block is not "the
   # other value of the same switch" -- omitting it is how you select
   # inspect-only, not setting it to false.
-  # TEMPORARY — 2026-09-04 Test 2 of the block-mode A/B comparison, combined with
-  # the HIGH confidence change on model_armor_pi_confidence (variables.tf). Reverted
-  # to inspect_only=true immediately after Test 2's scenarios run.
   google_mcp_server_floor_setting {
-    inspect_and_block    = true
+    inspect_only         = true
     enable_cloud_logging = true
   }
 
@@ -234,9 +231,8 @@ resource "google_model_armor_floorsetting" "mcp" {
   # would only move the failure. Re-enable both together, under the same three
   # conditions listed above.
   # Same fix, same reason -- see the block above.
-  # TEMPORARY — same 2026-09-04 Test 2, see comment on the block above.
   ai_platform_floor_setting {
-    inspect_and_block    = true
+    inspect_only         = true
     enable_cloud_logging = true
   }
 

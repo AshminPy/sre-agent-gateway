@@ -177,13 +177,7 @@ variable "gemini_price_output_per_1m" {
 variable "model_armor_pi_confidence" {
   description = "Model Armor prompt-injection / jailbreak detection confidence threshold."
   type        = string
-  # TEMPORARY — 2026-09-04 Test 2 of the block-mode A/B comparison (see
-  # docs/management/, PR #238/#239). CI never passes -var="model_armor_pi_confidence=..."
-  # (confirmed: grepped terraform-apply.yml, no match), so this default is the only
-  # value CI's real apply ever sees -- changing it here is the only way to reach a
-  # real deploy without touching the CI workflow itself. Reverted to MEDIUM_AND_ABOVE
-  # immediately after Test 2's scenarios run, same commit/revert pattern as before.
-  default = "HIGH"
+  default     = "MEDIUM_AND_ABOVE"
 
   validation {
     condition     = contains(["LOW_AND_ABOVE", "MEDIUM_AND_ABOVE", "HIGH"], var.model_armor_pi_confidence)
