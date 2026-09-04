@@ -53,6 +53,11 @@ jobs:
         run: bash scripts/package_agent.sh
         working-directory: .
 
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOYER_SA }}
+
       # mcp/tool_spec.json is read by iac/agent/agent_registry_mcp.tf via file(), so
       # it must exist before plan/apply — same ordering requirement as agent.tar.gz
       # above. It is deliberately NOT regenerated from this commit's mcp/ code here:
@@ -66,30 +71,39 @@ jobs:
       # regeneration happens in "Regenerate MCP tool spec now that the new revision
       # is verified healthy", below the health check.
       #
-      # Falls back to a fresh build when the service doesn't exist live yet
-      # (first-ever enable) — Terraform will CREATE it in that case, not update a
-      # live one, so there is no existing revision to protect.
+      # Must run AFTER auth above (it calls gcloud), and must NOT treat every lookup
+      # failure as "service does not exist" -- confirmed live which real gcloud error
+      # signals a genuine absence vs. everything else:
+      #   $ gcloud alpha agent-registry services describe <nonexistent-id> ...
+      #   ERROR: ... NOT_FOUND: Resource '...' was not found ...
+      #   $ gcloud alpha agent-registry services describe ... --project=<bad-project>
+      #   ERROR: ... PERMISSION_DENIED: Permission denied on resource project ...
+      # Only the first (NOT_FOUND) is a valid reason to fall back to a fresh build --
+      # that means Terraform will CREATE the resource, not update a live one, so
+      # there is no existing revision to protect. Any other failure (auth, API
+      # disabled, permission, network, ...) fails the job instead of silently
+      # registering unverified content under a wrong assumption.
       - name: Pin MCP tool spec to currently-live content
         if: ${{ vars.ENABLE_CUSTOM_MCP == 'true' }}
         run: |
           pip install --quiet -r mcp/requirements.txt
-          LIVE_JSON=$(gcloud alpha agent-registry services describe sre-k8s-mcp \
-            --project="${{ secrets.GCP_PROJECT_A_ID }}" \
-            --location="${{ secrets.GCP_REGION }}" \
-            --format=json 2>/dev/null || echo "")
-          if [ -n "$LIVE_JSON" ]; then
-            echo "$LIVE_JSON" | python3 -c "import json, sys; live = json.load(sys.stdin); content = live['mcpServerSpec']['content']; open('mcp/tool_spec.json', 'w').write(json.dumps(content, separators=(',', ':'), sort_keys=True))"
+          STDERR_FILE=$(mktemp)
+          if gcloud alpha agent-registry services describe sre-k8s-mcp \
+              --project="${{ secrets.GCP_PROJECT_A_ID }}" \
+              --location="${{ secrets.GCP_REGION }}" \
+              --format=json > /tmp/live_mcp_service.json 2>"$STDERR_FILE"; then
+            python3 -c "import json; live = json.load(open('/tmp/live_mcp_service.json')); content = live['mcpServerSpec']['content']; open('mcp/tool_spec.json', 'w').write(json.dumps(content, separators=(',', ':'), sort_keys=True))"
             echo "Pinned mcp/tool_spec.json to the currently-live registration."
-          else
-            echo "No live sre-k8s-mcp registration found — generating fresh (first-ever enable)."
+          elif grep -q "NOT_FOUND" "$STDERR_FILE"; then
+            echo "No live sre-k8s-mcp registration found (NOT_FOUND) — generating fresh (first-ever enable)."
+            cat "$STDERR_FILE"
             python3 scripts/build_mcp_tool_spec.py
+          else
+            echo "ERROR: could not verify the currently-live custom MCP registration — refusing to guess whether it exists." >&2
+            cat "$STDERR_FILE" >&2
+            exit 1
           fi
         working-directory: .
-
-      - uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
-          service_account: ${{ secrets.GCP_DEPLOYER_SA }}
 
       - uses: hashicorp/setup-terraform@v3
         with:
