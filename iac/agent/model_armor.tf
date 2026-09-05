@@ -283,28 +283,54 @@ resource "google_model_armor_floorsetting" "mcp" {
 
 # ── CONTENT_AUTHZ egress IAM — Service Extensions service agent ────────────
 #
-# Verified live 2026-09-05 (per Model Armor's own Agent Gateway integration
-# docs, fetched from docs.cloud.google.com/model-armor/model-armor-agent-
-# gateway-integration): these 3 roles belong on the Service Extensions
-# service agent (service-{project_number}@gcp-sa-dep.iam.gserviceaccount.com,
-# auto-provisioned by Google when the AuthzExtension resource above was
-# created -- confirmed live via `gcloud projects get-iam-policy`, it already
-# holds the default roles/serviceextensions.serviceAgent). NOT the agent
-# runtime identity (AGENT_IDENTITY / principalSet://agents.global.org-...) --
-# that identity is the CALLER Agent Gateway authorizes via REQUEST_AUTHZ, a
-# completely different principal from the gateway's OWN service agent that
-# performs the Model Armor callout on the gateway's behalf. Granting this to
-# AGENT_IDENTITY instead (an earlier, incorrect plan from this same
-# investigation) would have been the wrong principal entirely.
+# CORRECTED 2026-09-05 -- this was the actual root cause of CONTENT_AUTHZ
+# never invoking Model Armor (benign traffic passed, but two independent
+# malicious test payloads, including Google's own guaranteed-detection URL,
+# were never blocked and never appeared in any Model Armor log).
 #
-# Gateway project and template project are the same project in this
-# single-project deployment (var.project_a_id), so all 3 roles land there.
+# The IAM roles below were originally granted to
+# service-{var.project_a_id's own project number}@gcp-sa-dep.iam.gserviceaccount.com
+# -- the WRONG principal. Direct REST proof: GET on the agent gateway
+# resource itself (networkservices.googleapis.com/v1/.../agentGateways/
+# sre-agent-egress) returns `agentGatewayCard.serviceExtensionsServiceAccount
+# = service-193870061732@gcp-sa-dep.iam.gserviceaccount.com` -- a DIFFERENT
+# project number than sreagent-t2-demo's own (327234009108). This is Google's
+# own internal tenant project for this "google_managed { governed_access_path
+# = AGENT_TO_ANYWHERE }" gateway (`gcloud projects describe 193870061732`
+# returns a permission-denied/not-visible error for our own identity --
+# confirming it's a Google-internal project, not a customer-visible one).
+# The Agent Gateway's own request logs corroborate this: every
+# authzPolicyInfo.policies[].name this session was
+# "projects/193870061732/locations/.../authzPolicies/..." -- the SAME
+# non-customer project number, missed earlier because it was assumed to be
+# a display quirk rather than checked.
+#
+# Fixed by referencing the gateway resource's own computed
+# agent_gateway_card.service_extensions_service_account attribute instead of
+# assuming it matches var.project_a_id's project number -- this is the
+# correct, Terraform-native way to get this value and stays correct if
+# Google ever changes the internal tenant project.
+#
+# Per Model Armor's own Agent Gateway integration docs
+# (docs.cloud.google.com/model-armor/model-armor-agent-gateway-integration):
+# roles/modelarmor.calloutUser + roles/serviceusage.serviceUsageConsumer in
+# the gateway's project, roles/modelarmor.user in the template's project --
+# both are var.project_a_id here (single-project deployment), but the
+# PRINCIPAL receiving them is Google's own service agent, not ours. NOT the
+# agent runtime identity (AGENT_IDENTITY / principalSet://agents.global.org-...)
+# either -- that identity is the CALLER Agent Gateway authorizes via
+# REQUEST_AUTHZ, a different principal from the gateway's OWN service agent
+# that performs the Model Armor callout on the gateway's behalf.
+locals {
+  gateway_service_extensions_sa = local.gw_count > 0 ? "serviceAccount:${google_network_services_agent_gateway.sre_egress[0].agent_gateway_card[0].service_extensions_service_account}" : null
+}
+
 resource "google_project_iam_member" "gateway_service_agent_model_armor_callout" {
   count = local.gw_count
 
   project = var.project_a_id
   role    = "roles/modelarmor.calloutUser"
-  member  = "serviceAccount:service-${data.google_project.a.number}@gcp-sa-dep.iam.gserviceaccount.com"
+  member  = local.gateway_service_extensions_sa
 }
 
 resource "google_project_iam_member" "gateway_service_agent_serviceusage" {
@@ -312,7 +338,7 @@ resource "google_project_iam_member" "gateway_service_agent_serviceusage" {
 
   project = var.project_a_id
   role    = "roles/serviceusage.serviceUsageConsumer"
-  member  = "serviceAccount:service-${data.google_project.a.number}@gcp-sa-dep.iam.gserviceaccount.com"
+  member  = local.gateway_service_extensions_sa
 }
 
 resource "google_project_iam_member" "gateway_service_agent_model_armor_user" {
@@ -320,5 +346,10 @@ resource "google_project_iam_member" "gateway_service_agent_model_armor_user" {
 
   project = var.project_a_id # the Model Armor template's project
   role    = "roles/modelarmor.user"
-  member  = "serviceAccount:service-${data.google_project.a.number}@gcp-sa-dep.iam.gserviceaccount.com"
+  member  = local.gateway_service_extensions_sa
 }
+
+# Changing `member` on these existing resource addresses (not renaming them)
+# means `terraform apply` revokes the old, wrong-principal grant and adds the
+# correct one in the same operation -- confirmed via `terraform plan` showing
+# these 3 resources as in-place updates, not new resources.

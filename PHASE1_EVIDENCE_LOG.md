@@ -80,3 +80,37 @@ Found via official docs: Model Armor templates need an explicit `template_metada
 **Further diagnosis attempted, hit a real tooling gap**: `gcloud network-services authz-extensions` / `authz-policies` do not exist as command groups in either GA or alpha gcloud (confirmed — `gcloud alpha network-services` lists dozens of other resource types but not these two). A raw REST GET on the extension resource (`networkservices.googleapis.com/v1/.../authzExtensions/...`) shows the resource exactly as configured (service, timeout, metadata all correct) with no error/status field indicating a problem.
 
 **Final status on this specific question — genuinely unresolved, not glossed over**: the Terraform-managed CONTENT_AUTHZ wiring is real, live, IAM-correct, and does not break any proven Phase 1 traffic path (kept on the branch for that reason — reverting would leave *less* evidence-backed infrastructure, not more). But after two independent test payloads (a clear prompt-injection string and Google's own guaranteed-detection Safe Browsing test URL) and one real configuration fix (enforcement_type), there is still **no evidence Model Armor is actually being invoked through this specific gateway extension for MCP traffic** — every real detection observed this session came from the separate, pre-existing floor-setting mechanism. This may be a genuine current limitation of this very new feature (no gcloud CLI support yet is one independent signal of platform immaturity), an additional undocumented wiring step, or a data-plane propagation delay longer than tested. **Do not report CONTENT_AUTHZ as a proven, working content-inspection control in the management report — report it as built, IAM-correct, non-regressive, and functionally unverified.**
+
+## 2026-09-05 — REAL root cause #2 found: wrong Service Extensions service agent (user-directed re-investigation)
+
+User directly challenged the "unresolved" conclusion above and required verifying the exact Google-documented principal via runtime evidence rather than assumption. Correct call — this surfaced a second, real, independent bug:
+
+**Evidence**: `GET networkservices.googleapis.com/v1/.../agentGateways/sre-agent-egress` (raw REST, not Terraform state) returns `agentGatewayCard.serviceExtensionsServiceAccount = service-193870061732@gcp-sa-dep.iam.gserviceaccount.com` — a **different project number** than `sreagent-t2-demo`'s own (327234009108). `gcloud projects describe 193870061732` returns a permission-denied/not-visible error for our own identity, confirming this is a Google-internal tenant project for this "google_managed { governed_access_path = AGENT_TO_ANYWHERE }" gateway, not a customer-visible one. Every gateway log entry's `authzPolicyInfo.policies[].name` this whole session was under `projects/193870061732/...` too — the same number, present in every log line captured all session and never investigated until directed to.
+
+**The 3 IAM roles had been granted to the WRONG principal** (`service-327234009108@...`, derived from assuming the gateway's project number matched our own). **Fixed**: `iac/agent/model_armor.tf` now references the gateway resource's own computed `agent_gateway_card[0].service_extensions_service_account` attribute instead of assuming it equals `data.google_project.a.number`. `terraform plan`: 3 to add, 3 to destroy (IAM member resources re-key on `member` change) — confirmed isolated, applied clean. Live re-check: the correct SA (`service-193870061732@...`) now holds `modelarmor.calloutUser`, `modelarmor.user`, `serviceusage.serviceUsageConsumer`.
+
+## 2026-09-05 — REAL root cause #3 found: stale warm container bypassing the gateway entirely
+
+Retested immediately after the IAM fix — still not blocked, still zero Model Armor log entries under the new templates. Checked every gateway log entry for the custom MCP hostname (`sre-k8s-mcp-afuc5y63sa-uc.a.run.app`) across the entire session, chronologically. **Found it stopped appearing in gateway logs entirely after `2026-09-05T04:31:14Z`**, while other traffic (Vertex AI, Storage, Cloud Trace) kept logging normally in the same window, and the reasoning-engine's own logs confirmed the MCP calls were still succeeding (`200 OK`). Conclusion: the reasoning-engine container had been warm since its last real redeploy (~03:52) and its connection to the custom MCP had become long-lived enough to bypass fresh per-request gateway interception.
+
+**Forced a fresh container** by adding a temporary, clearly-labeled diagnostic env var (`PHASE1_CONTENT_AUTHZ_FORCE_FRESH_CONTAINER`) to `agent_engine.tf`, applied (forces a real reasoning-engine redeploy), retested immediately.
+
+## 2026-09-05 — Definitive mechanism found: RESPONSE_BODY is never sent to the extension
+
+With a genuinely fresh container, the exact `get_current_logs` MCP call carrying the malicious URL **did** appear in the gateway log this time, with a real `serviceExtensionInfo` block:
+
+```json
+{
+  "backendTargetName": "modelarmor.us-central1.rep.googleapis.com",
+  "grpcStatus": "OK",
+  "perProcessingRequestInfo": [
+    {"eventType": "REQUEST_HEADERS",  "processingEffect": "NONE"},
+    {"eventType": "REQUEST_BODY",     "processingEffect": "CONTENT_MODIFIED"},
+    {"eventType": "RESPONSE_HEADERS", "processingEffect": "NONE"}
+  ]
+}
+```
+
+**`RESPONSE_BODY` is not in this list.** The extension callout to Model Armor is genuinely happening (`grpcStatus: OK`, real latencies, a real backend target) — this is NOT a permission or wiring failure anymore. But for this specific MCP `tools/call` response — where the malicious content actually lives — the response body is never forwarded to the extension for inspection at all. `REQUEST_BODY` gets a real `CONTENT_MODIFIED` processing effect (the request side is genuinely being processed), but the response side, containing the tool's actual output, is not.
+
+**This directly contradicts** Model Armor's own documented claim that Agent-to-Anywhere Model Armor protection inspects "incoming responses from MCP servers" and "MCP tools/call responses" — the raw ext_proc event log for this exact real request proves that specific event type is not being invoked, for this traffic, on this gateway, today.
