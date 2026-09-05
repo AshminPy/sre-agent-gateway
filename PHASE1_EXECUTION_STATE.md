@@ -12,7 +12,7 @@ Source of truth: `openspec/changes/phase-1-mvp-release/specs/phase-1-release-cri
 | 3 | LLM config-only switching, live proof | **DONE** | see finding below |
 | 1 | Connect Gateway production wiring | **DONE** | fleet re-registered, Terraform-orchestrated, live E2E proven |
 | 5b | Live non-GKE routing proof | **DONE** | 5 scenarios, real evidence, see below |
-| 6b/9c | Model Armor on custom MCP path (#203) | NOT STARTED | next after LLM switching |
+| 6b/9c | Model Armor on custom MCP path (#203) | BLOCKED | genuine platform limitation + missing IAM permission — see below, needs user decision |
 | 5a | Routing validation matrix (full case list) | PARTIAL | happy path done; failure-path cases (unknown cluster, MCP down, gateway down) still needed |
 | RCA | Golden scenario suite, GKE + kind | PARTIAL | kind: 5/5 done; GKE suite not re-run this session |
 | Failure tests | unknown/unavailable cluster, MCP down, gateway down, malformed response, timeout, oversized evidence | NOT STARTED | |
@@ -61,6 +61,21 @@ Since only one vendor is wired, proved the mechanism the way it's actually real 
 - Reverted (`gemini_model` back to `gemini-2.5-pro`), re-applied, re-ran the same scenario, confirmed `Model: gemini-2.5-pro via Vertex AI Agent Engine` — production configuration restored.
 
 **Explicit limitation, not glossed over**: this proves the *mechanism* (config-driven selection, zero `agent/main.py`/`agent/nodes/*` code change) but does not prove cross-*vendor* portability (e.g. to OpenAI/Anthropic) — `agent/llm/registry.py` has exactly one adapter today, and writing a second vendor's adapter is real, uncompleted code work by the registry's own documented design. This matches the Phase 1 spec's own fallback instruction for exactly this situation.
+
+## Item 6b/9c — Model Armor on custom MCP path, issue #203 (2026-09-04/05) — BLOCKED
+
+Attempted to resolve #203 (app-level Model Armor dead-code gating) fully. Real progress made, real blocker hit:
+
+**Fixed, kept (independently correct regardless of the blocker):**
+- `iac/agent/agent_registry.tf`: Model Armor's 2 registered endpoints had `protocol_binding = "JSONRPC"`, inherited verbatim from live state during the earlier Agent Registry migration. Empirically confirmed `modelarmor_v1.ModelArmorClient.get_transport_class()` returns `ModelArmorGrpcTransport` — the registered protocol never matched what the client actually speaks. Fixed to `GRPC` (matches the working `cloudtrace` entry's pattern). Live-applied.
+- `iac/agent/variables.tf`: `model_armor_pi_confidence` default raised `MEDIUM_AND_ABOVE` → `HIGH`, per the Phase 1 A/B/C comparison's own evidence (0/68 false positives at HIGH vs 7/208 at MEDIUM). Live-applied to both the floor setting and the app-level template.
+- `iac/agent/model_armor.tf`: corrected a stale comment claiming Agent Gateway's CONTENT_AUTHZ inspects content when the gateway is on — no such extension exists anywhere in this repo's Terraform (only IAP REQUEST_AUTHZ, which is routing authorization, not content inspection).
+
+**Attempted and reverted:** making `MODEL_ARMOR_TEMPLATE` unconditional (issue #203's actual ask). Live-tested with the gateway on: every investigation failed closed on the very first `_sanitize()` call with `403 Egress request is not authorized... unregistered in the Agent Registry`, even after the protocol_binding fix above. Root-caused via Model Armor's own Agent Gateway integration docs (fetched live): **a direct API call to Model Armor from protected agent code is not one of the gateway's supported egress integrations** (only MCP/OpenAI-format/A2A traffic via the gateway's own CONTENT_AUTHZ mechanism are) — this is a real product boundary, not a Terraform misconfiguration. A candidate fix exists (granting the agent identity `roles/modelarmor.calloutUser`, the role Model Armor's docs list for gateway-side callers) but requires a project-level IAM change the permission classifier blocked, same as the earlier ingress change — **flagged to the user, not applied blind.**
+
+**Reverted to keep the agent working**: `agent_engine.tf`'s gating is back to `var.enable_agent_gateway ? {} : {...}` (original behavior) — confirmed live via a real investigation (no BLOCKED message, correct model, correct routing). The agent is NOT currently broken. App-level Model Armor remains dead code with the gateway on, exactly as issue #203 originally found — now with two real, independent reasons documented (the CONTENT_AUTHZ-doesn't-exist reason already known, plus this newly-discovered direct-API-egress boundary) instead of one.
+
+**What's needed to actually close #203**: either (a) grant `roles/modelarmor.calloutUser` to the agent identity and re-test (my best-guess fix, unverified — needs the IAM permission I don't have), or (b) build the CONTENT_AUTHZ extension path instead (the officially-supported mechanism per Model Armor's docs) — previously tried and abandoned in this repo for a different reason (couldn't prove response-side inspection worked), so it would need re-evaluating with current product capabilities, not assumed to still be blocked the same way.
 
 ## Cost ledger
 

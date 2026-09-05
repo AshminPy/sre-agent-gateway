@@ -212,9 +212,9 @@ variable "gemini_price_output_per_1m" {
 
 
 variable "model_armor_pi_confidence" {
-  description = "Model Armor prompt-injection / jailbreak detection confidence threshold."
+  description = "Model Armor prompt-injection / jailbreak detection confidence threshold. HIGH per the Phase 1 A/B/C comparison (2026-08/09): MEDIUM_AND_ABOVE false-positived on ordinary SRE text (7/208 test calls, matching issue #202's 3 real false positives in one evening); HIGH found the same real malicious payloads with 0/68 false positives. Raised from MEDIUM_AND_ABOVE specifically because issue #203 makes app-level Model Armor live for the first time -- a false-positive block here corrupts a real RCA summary, not just a tool call."
   type        = string
-  default     = "MEDIUM_AND_ABOVE"
+  default     = "HIGH"
 
   validation {
     condition     = contains(["LOW_AND_ABOVE", "MEDIUM_AND_ABOVE", "HIGH"], var.model_armor_pi_confidence)

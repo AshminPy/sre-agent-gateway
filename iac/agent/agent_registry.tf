@@ -275,15 +275,24 @@ locals {
       url              = "https://logging.mtls.googleapis.com"
     }
     "us-central1-modelarmor-us-central1" = {
-      location         = "us-central1"
-      display_name     = "modelarmor.us-central1.googleapis.com"
-      protocol_binding = "JSONRPC"
+      location     = "us-central1"
+      display_name = "modelarmor.us-central1.googleapis.com"
+      # Fixed 2026-09-05 (issue #203 live test): was "JSONRPC", inherited
+      # verbatim from live state when this file was generated (item 1). Real
+      # first use of this endpoint (MODEL_ARMOR_TEMPLATE was always unset
+      # before #203) failed with a 403 "unregistered in the Agent Registry"
+      # egress error -- root-caused by comparing against a WORKING entry
+      # (cloudtrace, protocol_binding=GRPC) and confirming empirically that
+      # modelarmor_v1.ModelArmorClient.get_transport_class() returns
+      # ModelArmorGrpcTransport, not a JSON-RPC transport. The registered
+      # protocol didn't match what the client actually speaks.
+      protocol_binding = "GRPC"
       url              = "https://modelarmor.us-central1.rep.googleapis.com"
     }
     "us-central1-modelarmor-us-central1-mtls" = {
       location         = "us-central1"
       display_name     = "modelarmor.us-central1.mtls.googleapis.com"
-      protocol_binding = "JSONRPC"
+      protocol_binding = "GRPC"
       url              = "https://modelarmor.us-central1.mtls.googleapis.com"
     }
     "us-central1-monitoring" = {

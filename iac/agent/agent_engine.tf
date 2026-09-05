@@ -99,10 +99,28 @@ locals {
       # turn as a broken-stream TaskGroup/TimeoutError.
       ADK_ENABLE_MCP_GRACEFUL_ERROR_HANDLING = "true"
     },
-    # ── App-level Model Armor: gateway-OFF only ─────────────────────────────
-    # Under the gateway the Model Armor CONTENT_AUTHZ extension inspects egress,
-    # so app-level sanitize would be a redundant second (gateway-routed) call.
-    # The codelab agent does not set it under the gateway; agent code skips it.
+    # ── App-level Model Armor: gateway-OFF only (issue #203, PARTIALLY reverted 2026-09-05) ──
+    # Attempted to make this unconditional (issue #203's original ask) now that
+    # #30 (endpoint hostname) is fixed. Live-tested with the gateway ON: every
+    # investigation failed closed with "403 Egress request is not authorized...
+    # unregistered in the Agent Registry" on the FIRST _sanitize() call, even
+    # after (a) confirming the Model Armor endpoint is genuinely registered
+    # with the correct URL, and (b) fixing a real, separate bug found along the
+    # way -- the registered protocol_binding was JSONRPC but
+    # modelarmor_v1.ModelArmorClient.get_transport_class() is actually GRPC
+    # (fixed in agent_registry.tf regardless, since it was wrong either way).
+    # Neither fix resolved the 403. Research points to a real product
+    # limitation, not a config mistake: per Model Armor's own Agent Gateway
+    # integration docs, direct API calls from protected agent code bypass the
+    # gateway's supported egress integrations (MCP/OpenAI-format/A2A via
+    # CONTENT_AUTHZ) entirely -- a plain google-cloud-modelarmor client call is
+    # not one of them. A candidate fix (granting the agent identity
+    # roles/modelarmor.calloutUser, the role Model Armor's own docs list for
+    # gateway-side callers) needs a project IAM change outside this session's
+    # pre-approved scope -- flagged to the user rather than applied blind.
+    # Reverted the ENABLEMENT only; the corrected protocol_binding and the
+    # HIGH confidence default both stay, since both are correct independent of
+    # this blocker.
     var.enable_agent_gateway ? {} : {
       MODEL_ARMOR_TEMPLATE = google_model_armor_template.sre_agent_request.name
     },

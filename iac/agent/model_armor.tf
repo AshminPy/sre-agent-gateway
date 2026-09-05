@@ -6,11 +6,18 @@
 # CONTENT_AUTHZ extension (agent_gateway.tf) passes request_template_id =
 # sre_agent_request and response_template_id = sre_agent_response.
 #
-# Used two ways:
-#   1. App layer (gateway OFF) — the agent code calls sanitize_user_prompt /
-#      sanitize_model_response (agent/main.py); it uses the request template.
-#   2. Gateway layer (gateway ON) — the CONTENT_AUTHZ authz extension inspects
-#      traffic at the Agent Gateway. Defense in depth.
+# Used one way today (issue #203 correction, 2026-09-05): the app layer —
+# agent code calls sanitize_user_prompt / sanitize_model_response
+# (agent/main.py) using the request template, unconditionally, regardless of
+# whether Agent Gateway is on. The gateway's own IAP REQUEST_AUTHZ extension
+# (agent_gateway.tf) is header/attribute-based routing authorization, NOT
+# content inspection — no CONTENT_AUTHZ extension wiring exists or has ever
+# been proven to work here (see agent_gateway.tf's own note and
+# archive/RESOLVED_2026-08-08_MODEL_ARMOR_CONTENT_AUTHZ_TEST.md). The
+# "defense in depth" claim this comment previously made was never real; only
+# this app layer actually inspects the agent's own input/output text. Floor
+# settings (a separate mechanism) cover AI_PLATFORM/GOOGLE_MCP_SERVER traffic,
+# not this.
 
 # Request-side: prompt injection / jailbreak + malicious URI + RAI. SRE agents
 # ingest raw k8s logs, so input inspection is the high-risk path.
