@@ -27,6 +27,24 @@ resource "google_model_armor_template" "sre_agent_request" {
   location    = var.region
   template_id = "sre-agent-request-guard"
 
+  # Found live 2026-09-05: without this block, CONTENT_AUTHZ traffic through
+  # the gateway showed as "ALLOWED" for every call regardless of content, and
+  # zero sanitize_operations log entries appeared under this template at all
+  # -- a Google-documented guaranteed-detection test URL
+  # (testsafebrowsing.appspot.com/s/malware.html) passed through completely
+  # unblocked and unlogged under this template (the only detection came from
+  # a separate, pre-existing floor-setting mechanism). Per Model Armor's own
+  # docs (docs.cloud.google.com/gemini-enterprise-agent-platform/govern/
+  # configure-model-armor): "Set the enforcement type on the Model Armor
+  # template to INSPECT_AND_BLOCK" for CONTENT_AUTHZ to actually act on
+  # detections -- a template-level setting, independent of each filter's own
+  # filter_enforcement=ENABLED. log_sanitize_operations=true is what actually
+  # produces the log evidence needed to prove this is working at all.
+  template_metadata {
+    enforcement_type        = "INSPECT_AND_BLOCK"
+    log_sanitize_operations = true
+  }
+
   filter_config {
     pi_and_jailbreak_filter_settings {
       filter_enforcement = "ENABLED"
@@ -58,7 +76,24 @@ resource "google_model_armor_template" "sre_agent_response" {
   location    = var.region
   template_id = "sre-agent-response-guard"
 
+  # Same fix, same reason as sre_agent_request above.
+  template_metadata {
+    enforcement_type        = "INSPECT_AND_BLOCK"
+    log_sanitize_operations = true
+  }
+
   filter_config {
+    # Added 2026-09-05: switching to INSPECT_AND_BLOCK triggered a real API
+    # conformance check this template previously never had to satisfy --
+    # "not conformant with the effective floor setting... piAndJailbreak
+    # FilterSettings: floorSettings: ENABLED, templateSettings:
+    # UNSPECIFIED". The project's floor setting requires pi_and_jailbreak on
+    # every enforcing template; this template never declared it (only the
+    # request-side template did). Matches the request template's setting.
+    pi_and_jailbreak_filter_settings {
+      filter_enforcement = "ENABLED"
+      confidence_level   = var.model_armor_pi_confidence
+    }
     malicious_uri_filter_settings {
       filter_enforcement = "ENABLED"
     }
