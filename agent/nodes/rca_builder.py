@@ -212,6 +212,10 @@ def _write_observability_log(
             # first, regardless of which happens first in practice.
             "error_type":         None,
             "error":              None,
+            # True here: this node genuinely ran, so tokens/tools/evidence
+            # below are real, not the crash path's honest "unknown" (see
+            # agent/main.py's _write_crash_investigation_event()).
+            "partial_metrics_available": True,
 
             # Run identity
             "run_id":             state["run_id"],

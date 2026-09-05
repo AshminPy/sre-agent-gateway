@@ -111,6 +111,7 @@ def test_A_successful_investigation_produces_completion_terminal_event(monkeypat
     assert entry["terminal_kind"] == "completion"
     assert entry["error_type"] is None
     assert entry["error"] is None
+    assert entry["partial_metrics_available"] is True
     assert entry["run_id"] == "run_test_crash_telemetry"
 
 
@@ -170,13 +171,31 @@ def test_B_crashed_investigation_produces_error_terminal_event(monkeypatch):
     assert entry["error_type"] == "RuntimeError"
     assert entry["error"] == "boom"
     assert entry["loop_exit_reason"] == "runtime_exception"
-    # Truthful zero counts -- LangGraph never mutated the caller's local state.
-    assert entry["tokens_total"] == 0
-    assert entry["tools_called"] == []
-    assert entry["evidence_ids"] == []
     # Real, non-fabricated request-time context.
     assert entry["cluster_requested"] == "c"
     assert entry["namespace_requested"] == "n"
+
+
+def test_B2_crash_metrics_are_unknown_not_fabricated_zero(monkeypatch):
+    """The graph can genuinely execute tools / spend tokens / collect evidence
+    internally, then raise before ever returning that state to the caller.
+    Reporting 0 in that case would be a fabricated fact, not an honest
+    "don't know" — and would silently drag down average tokens/cost/tool-calls
+    for every dashboard aggregate. These four fields must be None/NULL, with
+    partial_metrics_available=false marking the row as having no usable
+    metrics, so a consuming view can exclude it from averages instead of
+    treating a NULL as a real zero reading."""
+    sink = _patch_cloud_logging(monkeypatch)
+    monkeypatch.setattr(main_mod, "_get_graph", lambda: _RaisingGraph(RuntimeError("boom")))
+
+    main_mod.investigate({"query": "Pod x OOMKilled", "cluster": "c", "namespace": "n"})
+
+    entry = sink[0]["entry"]
+    assert entry["tools_called"] is None
+    assert entry["evidence_ids"] is None
+    assert entry["tokens_total"] is None
+    assert entry["estimated_cost_usd"] is None
+    assert entry["partial_metrics_available"] is False
 
 
 def test_C_telemetry_write_failure_does_not_mask_original_exception(monkeypatch):

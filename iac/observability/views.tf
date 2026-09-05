@@ -66,9 +66,20 @@ resource "google_bigquery_table" "v_investigations" {
         -- official Gemini 2.5 Pro pricing (exact match) — no second,
         -- independently-computed cost exists anywhere in this stack.
         jsonPayload.estimated_cost_usd                  AS estimated_llm_cost_usd,
+        -- ARRAY_LENGTH(NULL) correctly returns NULL, not 0 — a crash row's
+        -- tools_called/evidence_ids are None (unknown), never a fabricated
+        -- empty list, so this naturally preserves "unknown" through to here.
         ARRAY_LENGTH(jsonPayload.tools_called)          AS tool_call_count,
         jsonPayload.failed_tools_count                  AS failed_tool_count,
         ARRAY_LENGTH(jsonPayload.evidence_ids)          AS evidence_count,
+        -- False on a crash row (agent/main.py's _write_crash_investigation_event()),
+        -- True on a normal completion. Looker Studio calculated fields for
+        -- averages (tokens/cost/tool-calls/evidence) MUST filter on this
+        -- being true — BigQuery/Looker Studio silently skip NULLs in AVG()
+        -- by default, which is already correct, but any SUM()/COUNT()-based
+        -- "average" built by hand must not divide by a row count that
+        -- includes rows with no real metric to contribute.
+        jsonPayload.partial_metrics_available           AS partial_metrics_available,
         jsonPayload.investigation_completeness_score     AS investigation_completeness_score,
         jsonPayload.root_cause_confidence_score          AS root_cause_confidence_score,
         -- Raw, unmodified Agent classification — never discarded.

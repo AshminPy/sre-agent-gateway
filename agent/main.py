@@ -709,10 +709,22 @@ def _write_crash_investigation_event(
     exception the caller is already handling. MUST NEVER fabricate a field
     that was never actually resolved at crash time (cluster/namespace/pod here
     are the raw REQUESTED hints, not a resolved cluster -- routing may never
-    have completed). Token/tool/evidence counts are always 0 here because
-    LangGraph's invoke()/stream() never mutates the caller's own local state
-    object in place -- if we're here, nothing was returned to mutate it with,
-    so 0 is the true count, not a placeholder.
+    have completed).
+
+    Token/tool/evidence/cost counts are recorded as unknown (None / NULL),
+    NOT zero. A graph can genuinely execute tools, collect evidence, and
+    spend model tokens internally, then raise before graph.invoke()/stream()
+    ever returns a final state to this caller -- the caller's own local
+    `state` variable is never mutated in place by LangGraph, so its absence
+    of visibility into what happened does not mean nothing happened. Reporting
+    0 here would be a fabricated fact, not an honest "don't know" -- and would
+    silently drag down average tokens/cost/tool-calls/evidence-count for every
+    dashboard aggregate that doesn't explicitly exclude crash rows. Recovering
+    the graph's actual partial state at crash time is out of scope for this
+    fix (LangGraph state recovery, not observability) -- `partial_metrics_available`
+    records plainly that this row simply has no metrics to offer, so a
+    consuming view/dashboard can choose to exclude it from cost/token/count
+    averages instead of averaging in a NULL as if it were a real reading.
     """
     try:
         from datetime import datetime, timezone
@@ -753,10 +765,19 @@ def _write_crash_investigation_event(
                 # agent/nodes/rca_builder.py's own "model_name" field uses.
                 "model_name": _deployed_model_name,
                 "total_latency_s": round(duration_s, 3),
-                "tools_called": [],
-                "evidence_ids": [],
-                "tokens_total": 0,
-                "estimated_cost_usd": 0.0,
+                # Unknown, not zero -- see the docstring above. None serializes
+                # to JSON null; BigQuery's schema auto-detection will type
+                # these columns from whatever value first arrives non-null
+                # (the completion path's real data), not from this row.
+                "tools_called": None,
+                "evidence_ids": None,
+                "tokens_total": None,
+                "estimated_cost_usd": None,
+                # Explicit, queryable marker -- a consuming view/dashboard
+                # should exclude rows where this is false from any
+                # token/cost/tool-call/evidence-count average, rather than
+                # trust a bare NULL to be handled correctly everywhere.
+                "partial_metrics_available": False,
             },
             severity="ERROR",
         )
