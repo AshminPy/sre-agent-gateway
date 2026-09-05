@@ -103,6 +103,15 @@ jobs:
       # if applied, downgrades the model AND wipes agentGatewayConfig (Terraform
       # apply on this resource clears any out-of-band field it doesn't manage,
       # see archive/RESOLVED_2026-07-17_TROUBLESHOOTING_LOG.md). Keep this in sync with terraform.tfvars.
+      #
+      # onprem_fleet_membership/custom_mcp_kube_context added 2026-09-05 (real
+      # regression found and fixed the same day): this plan previously omitted
+      # both, so every PR's plan showed a phantom destroy of the Connect
+      # Gateway IAM binding and Cloud Run env var that the real apply (see
+      # terraform-apply.yml) actually keeps — plan and apply must use the same
+      # variable set, or plan is misleading. Both are plain repo Variables
+      # (Settings > Variables), not secrets — neither value is sensitive; the
+      # actual Google IAM authorization is the real control, not these strings.
       - name: Plan
         run: |
           terraform plan -no-color \
@@ -115,4 +124,6 @@ jobs:
             -var="create_wif=false" \
             -var="gemini_model=gemini-2.5-pro" \
             -var="enable_custom_mcp=${{ vars.ENABLE_CUSTOM_MCP || 'false' }}" \
-            -var="custom_mcp_image=${{ steps.current_mcp_image.outputs.image }}"
+            -var="custom_mcp_image=${{ steps.current_mcp_image.outputs.image }}" \
+            -var="onprem_fleet_membership=${{ vars.ONPREM_FLEET_MEMBERSHIP || '' }}" \
+            -var="custom_mcp_kube_context=${{ vars.CUSTOM_MCP_KUBE_CONTEXT || '' }}"

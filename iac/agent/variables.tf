@@ -150,13 +150,7 @@ variable "custom_mcp_kube_context" {
 }
 
 variable "onprem_fleet_membership" {
-  description = "GKE Fleet membership name for the non-GKE/on-prem cluster registered via Connect Gateway (e.g. the Phase 1 kind cluster 'sre-lab'). Empty (default) skips onprem_fleet.tf's registration/RBAC orchestration entirely."
-  type        = string
-  default     = ""
-}
-
-variable "onprem_fleet_kubeconfig_context" {
-  description = "Local kubectl context name for the on-prem/non-GKE cluster (e.g. 'kind-sre-lab'), used only by the local-exec provisioners in onprem_fleet.tf that run the gcloud fleet registration/RBAC commands. Only meaningful when onprem_fleet_membership is set."
+  description = "GKE Fleet membership name for an already-onboarded non-GKE/on-prem cluster (e.g. the Phase 1 kind cluster 'sre-lab'). This is a plain reference, not an orchestrator — fleet registration/Connect Agent install is a manual, authorized-operator action (see docs/connect-gateway-onprem.md), and Kubernetes RBAC lives in the separate AshminPy/sre-k8s-rbac repo. Empty (default) skips granting the Google IAM binding in onprem_fleet.tf entirely."
   type        = string
   default     = ""
 }

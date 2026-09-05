@@ -1,30 +1,32 @@
 # Phase 1: on-prem / non-GKE cluster access via GKE Fleet Connect Gateway.
 #
-# Google's fleet membership registration for a non-GKE (kind/k3s/on-prem)
-# cluster is NOT fully Terraform-native: `gcloud container fleet memberships
-# register --context=...` both creates the Hub-side membership object AND
-# installs the Connect Agent workload onto the target cluster in one command
-# (verified against docs.cloud.google.com/kubernetes-engine/fleet-management —
-# "Connect agent will always be installed" for third-party cluster
-# registration). There is no equivalent single Terraform resource: an
-# in-isolation `google_gke_hub_membership` only manages the Hub-API object,
-# not the in-cluster agent install, and mixing the two management planes for
-# the same membership ID is unverified. The smallest safe design is to keep
-# `gcloud` as the actual mechanism, orchestrated by Terraform (idempotent,
-# triggers on the inputs below, torn down on destroy) — the same
-# generate-before-plan / pin-to-live pattern already used elsewhere in this
-# repo (see scripts/build_mcp_tool_spec.py's header comment) for a capability
-# the provider doesn't expose declaratively.
+# REVISED 2026-09-05 — separated three concerns that were previously bundled
+# into one Terraform resource with a kubeconfig-dependent local-exec
+# provisioner. That provisioner ran `gcloud ... register` / `generate-gateway-rbac`
+# against `$HOME/.kube/config` on whatever machine ran `terraform apply` —
+# harmless from a trusted operator's laptop, but a real landmine the moment
+# CI ran it: GitHub Actions has no legitimate cluster-admin kubeconfig, so
+# every CI apply silently tore this down (real regression, found and fixed
+# this date — see PHASE1_EVIDENCE_LOG.md).
 #
-# Read-only RBAC (clusterrole/view) is granted to the custom MCP's OWN runtime
-# SA (google_service_account.mcp_runtime), not the AGENT_IDENTITY principal —
-# Connect Gateway's documented impersonation model uses plain SA/user
-# identities, a different WIF pool family than Agent Identity's
-# agents.global.org-*.system.id.goog pool, and mixing the two is unverified.
+# The three concerns, now separated to match the same operational boundary
+# used at work (infra vs. Kubernetes RBAC are different lifecycles, owned
+# and reviewed independently):
 #
-# Set var.onprem_fleet_membership to activate. Empty (default) = these
-# resources don't exist, matching every other environment that doesn't have
-# an on-prem cluster to register.
+#   1. Google IAM (WHO may call Connect Gateway at all) — stays here, in
+#      Terraform. Plain google_project_iam_member, no kubeconfig involved.
+#   2. Fleet membership registration + Connect Agent install — an explicit,
+#      one-time (or rare) onboarding action performed by an authorized
+#      operator with their own temporary kubeconfig access. NOT a Terraform
+#      resource, NOT run by CI. See docs/connect-gateway-onprem.md.
+#   3. Kubernetes RBAC (WHAT that identity can do once inside the cluster)
+#      — moved entirely to the separate AshminPy/sre-k8s-rbac repo. Applied
+#      by an authorized operator via plain `kubectl apply`, never by this
+#      Terraform, never by CI here.
+#
+# Set var.onprem_fleet_membership to activate item 1 below. Empty (default)
+# = this resource doesn't exist, matching every environment without an
+# on-prem cluster registered.
 
 resource "google_project_iam_member" "mcp_runtime_gateway_reader" {
   count = var.enable_custom_mcp && var.onprem_fleet_membership != "" ? 1 : 0
@@ -32,58 +34,4 @@ resource "google_project_iam_member" "mcp_runtime_gateway_reader" {
   project = var.project_a_id
   role    = "roles/gkehub.gatewayReader" # read-only: gateway.generateCredentials, gateway.get, memberships.get — no gatewayAdmin/Editor
   member  = "serviceAccount:${google_service_account.mcp_runtime[0].email}"
-}
-
-resource "terraform_data" "onprem_fleet_registration" {
-  count = var.enable_custom_mcp && var.onprem_fleet_membership != "" ? 1 : 0
-
-  triggers_replace = {
-    project          = var.project_a_id
-    membership       = var.onprem_fleet_membership
-    kubeconfig_ctx   = var.onprem_fleet_kubeconfig_context
-    runtime_sa_email = google_service_account.mcp_runtime[0].email
-  }
-
-  provisioner "local-exec" {
-    command = <<-EOT
-      set -euo pipefail
-      STATE=$(gcloud container fleet memberships describe "${self.triggers_replace.membership}" \
-        --project="${self.triggers_replace.project}" --format="value(state.code)" 2>/dev/null || echo "MISSING")
-      if [ "$STATE" != "READY" ]; then
-        gcloud container fleet memberships register "${self.triggers_replace.membership}" \
-          --project="${self.triggers_replace.project}" \
-          --context="${self.triggers_replace.kubeconfig_ctx}" \
-          --kubeconfig="$HOME/.kube/config" \
-          --enable-workload-identity \
-          --has-private-issuer
-      fi
-      gcloud container fleet memberships generate-gateway-rbac \
-        --project="${self.triggers_replace.project}" \
-        --membership="${self.triggers_replace.membership}" \
-        --users="${self.triggers_replace.runtime_sa_email}" \
-        --role=clusterrole/view \
-        --context="${self.triggers_replace.kubeconfig_ctx}" \
-        --kubeconfig="$HOME/.kube/config" \
-        --apply
-    EOT
-  }
-
-  provisioner "local-exec" {
-    when    = destroy
-    command = <<-EOT
-      set -euo pipefail
-      gcloud container fleet memberships generate-gateway-rbac \
-        --project="${self.triggers_replace.project}" \
-        --membership="${self.triggers_replace.membership}" \
-        --users="${self.triggers_replace.runtime_sa_email}" \
-        --role=clusterrole/view \
-        --context="${self.triggers_replace.kubeconfig_ctx}" \
-        --kubeconfig="$HOME/.kube/config" \
-        --revoke || true
-      gcloud container fleet memberships unregister "${self.triggers_replace.membership}" \
-        --project="${self.triggers_replace.project}" \
-        --context="${self.triggers_replace.kubeconfig_ctx}" \
-        --kubeconfig="$HOME/.kube/config" || true
-    EOT
-  }
 }
