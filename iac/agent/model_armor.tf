@@ -245,3 +245,45 @@ resource "google_model_armor_floorsetting" "mcp" {
 
   depends_on = [google_project_service.apis]
 }
+
+# ── CONTENT_AUTHZ egress IAM — Service Extensions service agent ────────────
+#
+# Verified live 2026-09-05 (per Model Armor's own Agent Gateway integration
+# docs, fetched from docs.cloud.google.com/model-armor/model-armor-agent-
+# gateway-integration): these 3 roles belong on the Service Extensions
+# service agent (service-{project_number}@gcp-sa-dep.iam.gserviceaccount.com,
+# auto-provisioned by Google when the AuthzExtension resource above was
+# created -- confirmed live via `gcloud projects get-iam-policy`, it already
+# holds the default roles/serviceextensions.serviceAgent). NOT the agent
+# runtime identity (AGENT_IDENTITY / principalSet://agents.global.org-...) --
+# that identity is the CALLER Agent Gateway authorizes via REQUEST_AUTHZ, a
+# completely different principal from the gateway's OWN service agent that
+# performs the Model Armor callout on the gateway's behalf. Granting this to
+# AGENT_IDENTITY instead (an earlier, incorrect plan from this same
+# investigation) would have been the wrong principal entirely.
+#
+# Gateway project and template project are the same project in this
+# single-project deployment (var.project_a_id), so all 3 roles land there.
+resource "google_project_iam_member" "gateway_service_agent_model_armor_callout" {
+  count = local.gw_count
+
+  project = var.project_a_id
+  role    = "roles/modelarmor.calloutUser"
+  member  = "serviceAccount:service-${data.google_project.a.number}@gcp-sa-dep.iam.gserviceaccount.com"
+}
+
+resource "google_project_iam_member" "gateway_service_agent_serviceusage" {
+  count = local.gw_count
+
+  project = var.project_a_id
+  role    = "roles/serviceusage.serviceUsageConsumer"
+  member  = "serviceAccount:service-${data.google_project.a.number}@gcp-sa-dep.iam.gserviceaccount.com"
+}
+
+resource "google_project_iam_member" "gateway_service_agent_model_armor_user" {
+  count = local.gw_count
+
+  project = var.project_a_id # the Model Armor template's project
+  role    = "roles/modelarmor.user"
+  member  = "serviceAccount:service-${data.google_project.a.number}@gcp-sa-dep.iam.gserviceaccount.com"
+}
