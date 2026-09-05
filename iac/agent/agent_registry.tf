@@ -277,22 +277,30 @@ locals {
     "us-central1-modelarmor-us-central1" = {
       location     = "us-central1"
       display_name = "modelarmor.us-central1.googleapis.com"
-      # Fixed 2026-09-05 (issue #203 live test): was "JSONRPC", inherited
-      # verbatim from live state when this file was generated (item 1). Real
-      # first use of this endpoint (MODEL_ARMOR_TEMPLATE was always unset
-      # before #203) failed with a 403 "unregistered in the Agent Registry"
-      # egress error -- root-caused by comparing against a WORKING entry
-      # (cloudtrace, protocol_binding=GRPC) and confirming empirically that
-      # modelarmor_v1.ModelArmorClient.get_transport_class() returns
-      # ModelArmorGrpcTransport, not a JSON-RPC transport. The registered
-      # protocol didn't match what the client actually speaks.
-      protocol_binding = "GRPC"
+      # REVERTED 2026-09-05: briefly changed to "GRPC" during the #203
+      # investigation on the theory that modelarmor_v1.ModelArmorClient's
+      # DEFAULT transport (get_transport_class() with no args) is gRPC, so
+      # the registration should match. That evidence was incomplete and the
+      # conclusion was wrong -- see PHASE1_EXECUTION_STATE.md's "Protocol
+      # binding finding" for the full re-investigation. Summary: Model Armor
+      # genuinely supports REST too (ModelArmorRestTransport exists), Google's
+      # own docs state REST is the PREFERRED transport for this exact
+      # regional-endpoint (.rep.) API shape, and this codebase's own
+      # convention (register_endpoints.py's protocol_binding_for(), issue
+      # #130/#139) only overrides to GRPC for hosts PROVEN to have no REST
+      # option at all (Cloud Trace) -- Model Armor does not qualify. JSONRPC
+      # is the same default already used for Gemini/Vertex AI and GKE Remote
+      # MCP, both confirmed as real working REST calls. The 403 "unregistered
+      # in the Agent Registry" error this investigation was chasing is NOT a
+      # protocol_binding problem -- see the separate Model Armor architecture
+      # finding (item 6b/9c) for its real, independently-confirmed cause.
+      protocol_binding = "JSONRPC"
       url              = "https://modelarmor.us-central1.rep.googleapis.com"
     }
     "us-central1-modelarmor-us-central1-mtls" = {
       location         = "us-central1"
       display_name     = "modelarmor.us-central1.mtls.googleapis.com"
-      protocol_binding = "GRPC"
+      protocol_binding = "JSONRPC"
       url              = "https://modelarmor.us-central1.mtls.googleapis.com"
     }
     "us-central1-monitoring" = {
