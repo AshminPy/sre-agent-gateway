@@ -221,3 +221,51 @@ Verdict: accept this as a proven, documented Google platform limitation. Record 
 **Cleanup verification**: `kubectl get pods -n test-incidents` on both `kind-sre-lab` and `gke_sreagent-demo_us-central1_sre-test-cluster` → "No resources found" on both. No leftover test fixtures.
 
 **Regression verdict**: no regressions introduced by this session's work. Both dependency-drift findings (fastmcp, Terraform test-format mismatch) are real, pre-existing, unrelated gaps — disclosed here, not silently absorbed into a "all green" claim.
+
+---
+## 2026-09-05 — Kubernetes RBAC / CI ownership separation (real regression fix)
+
+**Regression discovered during post-merge validation of PR #242**: CI's `terraform-apply` didn't pass `onprem_fleet_membership`/`custom_mcp_kube_context`, so the first CI apply on `main` destroyed the Connect Gateway IAM binding (`roles/gkehub.gatewayReader`) and removed `K8S_MCP_KUBE_CONTEXT` from the custom MCP's Cloud Run service. Root cause was deeper than a missing CLI flag: `onprem_fleet.tf` bundled Kubernetes RBAC application (`gcloud generate-gateway-rbac`) and Fleet/Connect Agent bootstrap (`gcloud fleet memberships register`) into one Terraform resource requiring `$HOME/.kube/config` — something CI never legitimately has.
+
+### Design (user-approved before implementation)
+Separated three previously-coupled concerns, matching the work-side operational model:
+1. Google IAM (`roles/gkehub.gatewayReader`) — stays in `sre-agent-gateway`'s Terraform. No kubeconfig involved.
+2. Fleet registration/Connect Agent install — manual, authorized-operator action, never run by CI.
+3. Kubernetes RBAC — moved to a new, separate repo, `AshminPy/sre-k8s-rbac`.
+
+### RBAC capability audit (before finalizing the role)
+Compared every Kubernetes API call in `mcp/tools/*.py` against the built-in `view` ClusterRole's real rule set (confirmed via `kubectl get clusterrole view -o json` on the live `sre-lab` cluster, not assumed). **Found a real, pre-existing gap, independently confirmed against `PRODUCTION-LAUNCH-PLAN.md`'s own historical note** ("`list_nodes` correctly surfaced the documented `view`-role 403"): `view` does not grant `nodes` (get/list), but `list_nodes`/`describe_node` require it. New `sre-agent-reader` ClusterRole (`sre-k8s-rbac/global/roles/sre-agent-reader.yaml`) = `view`'s rules for exactly the resources our tools call, plus one added rule for `nodes` (get/list only). No `watch` verb (confirmed no tool code uses `.watch()`) — narrower than `view`, not broader.
+
+### sre-k8s-rbac repo
+Created `AshminPy/sre-k8s-rbac` (private): `global/roles/sre-agent-reader.yaml`, `clusters/sre-lab/cluster/sre-agent-mcp.yaml` (ClusterRoleBinding, `sre-k8s-mcp-runtime@sreagent-t2-demo.iam.gserviceaccount.com` → `sre-agent-reader`), `.github/workflows/validate.yml` (kubeconform schema validation + a custom `check_rbac.py` static checker: no mutating verbs, no secrets/exec/attach/portforward, no wildcards). CI never touches a real cluster and never holds a kubeconfig, by design. Validated locally before push: `check_rbac.py` passed, `kubeconform -strict` passed, `kubectl apply --dry-run=client` succeeded. Repo's own CI: **pass** (https://github.com/AshminPy/sre-k8s-rbac, run 33973484551).
+
+### Applied to sre-lab (authorized-operator step, local kubectl access)
+`kubectl apply -f global/roles/sre-agent-reader.yaml -f clusters/sre-lab/cluster/sre-agent-mcp.yaml` — real apply, not dry-run. Old binding (`gateway-permission-...`, bound to `view`) deliberately left in place alongside the new one until proven (both coexist harmlessly — Kubernetes RBAC is additive).
+
+### Proof — read succeeds (including the new capability), writes/secrets denied
+Real enforcement test via `kubectl --as=<exact SA email>` against the live API server (not just an `auth can-i` policy query — this actually executes the impersonated request):
+```
+get nodes                          → 3 real nodes returned (proves the new role + binding are live and honored)
+delete pod nonexistent-pod         → Forbidden
+create namespace rbac-write-test   → Forbidden
+get secrets -n test-incidents      → Forbidden
+```
+A clean single-shot proof of the exact same capability through the full Agent→Connect Gateway path specifically for `list_nodes` was attempted three times and blocked by an unrelated, pre-existing agent bug (the LangGraph agent's tool-calling layer injects a `namespace` argument into every K8s tool call regardless of the tool's real signature — confirmed reproducible, flagged as a separate finding, NOT fixed here, out of scope). Composed evidence instead: (a) the K8s-side RBAC object is definitively honored by the real API server for this exact identity (above), and (b) Connect Gateway's identity-forwarding for this exact SA was already proven live multiple times earlier today via successful real investigations using the OLD binding. Kubernetes RBAC objects are provider-agnostic — the API server enforces whatever is in etcd regardless of whether `kubectl` or `generate-gateway-rbac` created it.
+
+### sre-agent-gateway changes (PR #243, merged)
+- `iac/agent/onprem_fleet.tf`: removed the kubeconfig-dependent `local-exec` provisioner entirely. Only `google_project_iam_member.mcp_runtime_gateway_reader` remains.
+- `iac/agent/variables.tf`: removed the now-dead `onprem_fleet_kubeconfig_context` variable.
+- `.github/workflows/terraform-plan.yml` / `terraform-apply.yml`: added `onprem_fleet_membership`/`custom_mcp_kube_context` to all 4 plan/apply invocations, sourced from new repo Variables `ONPREM_FLEET_MEMBERSHIP`/`CUSTOM_MCP_KUBE_CONTEXT` (not secrets — neither value is sensitive).
+
+### Restore + verification sequence
+1. `terraform state rm 'terraform_data.onprem_fleet_registration[0]'` — removed from state only, no provisioner ran, zero real-world side effect (confirmed: fleet membership, old RBAC binding, new RBAC binding all untouched immediately after).
+2. `terraform plan` with the exact restore vars: `1 to add (mcp_runtime_gateway_reader), 2 to change (Cloud Run env restore + known-harmless reasoning-engine source-archive diff), 0 to destroy` — reviewed in full before applying, no unexpected resource touched.
+3. Applied. Verified live: `roles/gkehub.gatewayReader` restored, `K8S_MCP_KUBE_CONTEXT` restored.
+4. PR #243 CI (`plan`): **pass**, `Plan: 0 to add, 1 to change, 0 to destroy` (only the source-archive diff) — confirmed no unintended removal of Connect Gateway config before merging.
+5. Merged PR #243. Real `terraform-apply` on `main` (run 33974971561): **success**.
+6. Post-CI live verification: `roles/gkehub.gatewayReader` present, `K8S_MCP_KUBE_CONTEXT` present, fleet membership `READY` — all confirmed directly against real GCP/K8s state after the real CI apply, not inferred from CI's own success status.
+7. Live non-GKE investigation through the full path (Agent → Agent Gateway → Custom MCP → Connect Gateway → sre-lab): first attempt hit a transient Gemini/Vertex AI `500 Internal Server Error` on the very first LLM call, before ever reaching the custom MCP — unrelated to this fix, confirmed via reasoning-engine logs showing the failure inside `google.genai`'s own retry-exhausted call, not inside any tool/routing code. Retried: **succeeded**, `run_id: run_20260905_154124_fdvw`, 3 real tool calls (`list_events`, `describe_pod_detail`, `get_current_logs`), evidence completeness 1.0 (3/3 domains), correct grounded conclusion (healthy pod, false alarm). Gateway logs for this exact window confirm 2 real `ALLOWED` calls to `sre-k8s-mcp-afuc5y63sa-uc.a.run.app`.
+8. Final `terraform plan`: `0 to add, 1 to change (source-archive diff only), 0 to destroy`.
+
+### Verdict
+CI-caused regression fully repaired, root cause structurally eliminated (not just patched with the right CLI flags), Kubernetes RBAC ownership now matches the work-side operational model, and the fix is proven — not assumed — via a real post-CI live investigation through the exact required path.

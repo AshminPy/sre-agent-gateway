@@ -54,7 +54,7 @@ This re-registers the fleet membership, re-applies RBAC, and restores everything
 
 | # | Item | Status | Notes |
 |---|---|---|---|
-| 1 | Connect Gateway production wiring | **DONE** (code/config); live registration currently torn down for cost, re-applies cleanly | see above |
+| 1 | Connect Gateway production wiring | **DONE** — live, CI-proven, RBAC ownership corrected | Real regression found (PR #242's merge silently reverted this via a missing CI variable + a kubeconfig-dependent Terraform resource CI could never legitimately run) — fixed structurally, not patched: Kubernetes RBAC moved to separate repo `AshminPy/sre-k8s-rbac`, Fleet bootstrap is now a manual operator step, CI needs zero kubeconfig access. Fixed in PR #243 (merged), live-verified after a REAL CI apply, and proven with a real post-CI investigation through the full path. See evidence log. |
 | 2b | GKE cross-project onboarding | **DONE** | re-read the actual OpenSpec wording — it requires ONE additional cluster via config only, not simultaneous multi-project; already satisfied, no further work needed |
 | 3 | LLM config-only switching | **DONE** | live-proven, reverted to production default |
 | 4 | Custom MCP tool parity | **DONE** | volumes/mounts fix, 26/26 tests |
@@ -63,7 +63,7 @@ This re-registers the fleet membership, re-applies RBAC, and restores everything
 | 6a | Agent Gateway REQUEST_AUTHZ enforcement | **DONE — PASS, caveat resolved** | 2026-09-05 bounded revoke/retry/restore test proved real-time enforcement, no staleness, no bypass, even on a container past the 40-min mark. See evidence log. |
 | 6b/9c | Model Armor CONTENT_AUTHZ on custom MCP path (#203) | **PARTIAL — ACCEPTED PLATFORM LIMITATION** (user decision 2026-09-05) | Exact spec wording (`specs/phase-1-release-criteria/spec.md` scenario "Custom MCP path covered (issue #203)"): "THEN that path has the same Model Armor coverage as the GKE Remote MCP path, **or the gap is explicitly named as unresolved**." Both disjuncts are factually satisfied (custom MCP and GKE Remote MCP show identical coverage gaps; the gap is now explicitly named and documented). Recorded as PARTIAL per explicit user instruction — NOT converted to PASS despite the literal wording match, because the underlying protection (response-body content blocking) is still genuinely absent. See evidence log for full platform-limitation case. |
 | — | Final regression | **DONE** | Agent suite 480/480 passed, ruff clean, both Terraform stacks clean plan. 2 pre-existing unrelated gaps found and disclosed (not fixed, not caused by this branch): MCP test suite 7/68 fail on a `fastmcp` floating-version drift; `terraform test` can't run this repo's `.tftest.hcl` files under the company-pinned Terraform 1.4.7. See evidence log. |
-| — | Merge | **AWAITING FINAL USER GO/NO-GO** — 8/9 PASS, 1/9 PARTIAL (accepted platform limitation, user-approved 2026-09-05) | |
+| — | Merge | **DONE (2026-09-05, PR #242).** Post-merge regression found, fixed, and live-proven (PR #243). Final status: **Phase 1 COMPLETE — 8 requirements PASS, 1 PARTIAL — ACCEPTED GOOGLE PLATFORM LIMITATION, 0 unresolved implementation release blockers.** | |
 
 ## RESOLVED — REQUEST_AUTHZ staleness finding (was open, now closed 2026-09-05)
 
