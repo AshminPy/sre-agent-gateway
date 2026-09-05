@@ -1,0 +1,10 @@
+# Copy to terraform.tfvars and fill in your values. terraform.tfvars itself
+# is gitignored (see repo root .gitignore) — never commit real values there.
+
+project_a_id           = "your-gcp-project-id"
+region                 = "us-central1"
+dashboard_viewer_email = "you@example.com"
+
+# Optional overrides (shown at their defaults):
+# bigquery_dataset_id       = "sre_agent_investigations"
+# partition_expiration_days = 90
