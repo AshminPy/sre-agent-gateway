@@ -1,13 +1,23 @@
 # Agent Gateway — egress governance for the agent (AGENT_TO_ANYWHERE).
 #
 # All resources here are gated on var.enable_agent_gateway. When enabled, the
-# gateway decodes and authorizes the agent's outbound MCP tool calls via IAP
-# REQUEST_AUTHZ (header/attribute-based). It does NOT inspect content via
-# Model Armor -- no working Terraform path exists to wire CONTENT_AUTHZ to
-# this gateway (confirmed by a real API rejection, see
-# archive/RESOLVED_2026-08-08_MODEL_ARMOR_CONTENT_AUTHZ_TEST.md). The engine is attached to the gateway by a
-# post-apply script (scripts/attach_gateway_to_engine.sh) because the reasoning
-# engine's agent_gateway_config field is not yet exposed by the Terraform provider.
+# gateway authorizes the agent's outbound MCP tool calls two ways:
+#   - REQUEST_AUTHZ (IAP): is this caller/request allowed to reach this
+#     destination at all -- header/attribute-based, no content inspection.
+#   - CONTENT_AUTHZ (Model Armor): is the content passing through acceptable --
+#     inspects MCP request/response payloads for prompt injection etc.
+# CONTENT_AUTHZ via Model Armor was previously believed unsupported by this
+# provider (archive/RESOLVED_2026-08-08_MODEL_ARMOR_CONTENT_AUTHZ_TEST.md) --
+# that test used `service = "modelarmor.googleapis.com"` (the generic,
+# non-regional form) and got a real API rejection. Re-checked 2026-09-05
+# against the actual installed provider (google-beta 7.43.0) via
+# `terraform providers schema -json`: the CURRENT schema explicitly documents
+# `modelarmor.{{region}}.rep.googleapis.com` (the REGIONAL form, same format
+# `agent/main.py`'s app-level client already uses) as a supported CONTENT_AUTHZ
+# service value -- this is what model_armor.tf's CONTENT_AUTHZ resources below
+# use. The engine is attached to the gateway by a post-apply script
+# (scripts/attach_gateway_to_engine.sh) because the reasoning engine's
+# agent_gateway_config field is not yet exposed by the Terraform provider.
 #
 # Data-plane provisioning of a new gateway is asynchronous on Google's side and
 # can take a while before traffic flows — this is expected (see docs/ADR-002).
@@ -120,6 +130,66 @@ resource "google_network_security_authz_policy" "iap" {
   # The gateway's id string is stable across a destroy+recreate (same name),
   # so Terraform can't see that this policy must be detached first. Without
   # this, a gateway replace hits "already being used by" (see docs/ADR-002).
+  lifecycle {
+    replace_triggered_by = [google_network_services_agent_gateway.sre_egress]
+  }
+
+  depends_on = [time_sleep.wait_for_gateway]
+}
+
+# ── Content authorization (CONTENT_AUTHZ) — Model Armor inspects MCP traffic ──
+#
+# Re-attempted 2026-09-05 after confirming the current provider (google-beta
+# 7.43.0) explicitly supports this -- see this file's header comment. Uses the
+# REGIONAL Model Armor service form, the fix for the 2026-08-08 API rejection.
+# Templates referenced: google_model_armor_template.sre_agent_request/response
+# (model_armor.tf) -- the SAME templates the app-level _sanitize() path uses,
+# so one confidence-level variable (var.model_armor_pi_confidence) governs
+# both layers consistently.
+resource "google_network_services_authz_extension" "model_armor" {
+  count    = local.gw_count
+  provider = google-beta
+
+  project  = var.project_a_id
+  name     = "sre-agent-model-armor-authz"
+  location = var.region
+  service  = "modelarmor.${var.region}.rep.googleapis.com"
+  timeout  = "2s"
+  # Fail CLOSED, deliberately different from the IAP extension's
+  # var.authz_fail_open: a content-inspection extension that fails open on
+  # error would silently pass uninspected MCP traffic through, defeating the
+  # entire point of adding it. A fail-closed content check blocking a real
+  # investigation on a transient Model Armor outage is the safer failure mode.
+  fail_open = false
+
+  metadata = {
+    request_template_id  = google_model_armor_template.sre_agent_request.template_id
+    response_template_id = google_model_armor_template.sre_agent_response.template_id
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_network_security_authz_policy" "model_armor" {
+  count    = local.gw_count
+  provider = google-beta
+
+  project        = var.project_a_id
+  name           = "sre-agent-model-armor-gateway-policy"
+  location       = var.region
+  policy_profile = "CONTENT_AUTHZ"
+  action         = "CUSTOM"
+
+  target {
+    resources = [google_network_services_agent_gateway.sre_egress[0].id]
+  }
+
+  custom_provider {
+    authz_extension {
+      resources = [google_network_services_authz_extension.model_armor[0].id]
+    }
+  }
+
   lifecycle {
     replace_triggered_by = [google_network_services_agent_gateway.sre_egress]
   }

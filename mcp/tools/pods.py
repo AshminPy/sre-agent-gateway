@@ -63,6 +63,10 @@ def describe_pod(v1: client.CoreV1Api, namespace: str, pod_name: str) -> dict:
             "resources": resources,
             "command": c.command,
             "args": c.args,
+            "volume_mounts": [
+                {"name": vm.name, "mount_path": vm.mount_path, "read_only": bool(vm.read_only)}
+                for vm in (c.volume_mounts or [])
+            ],
         })
 
     container_statuses = []
@@ -78,13 +82,28 @@ def describe_pod(v1: client.CoreV1Api, namespace: str, pod_name: str) -> dict:
                     "finished_at": str(t.finished_at),
                     "started_at": str(t.started_at),
                 }
+            state = {}
+            if cs.state:
+                if cs.state.waiting:
+                    state = {"phase": "waiting", "reason": cs.state.waiting.reason, "message": cs.state.waiting.message}
+                elif cs.state.running:
+                    state = {"phase": "running", "started_at": str(cs.state.running.started_at)}
+                elif cs.state.terminated:
+                    t = cs.state.terminated
+                    state = {"phase": "terminated", "exit_code": t.exit_code, "reason": t.reason, "message": t.message}
             container_statuses.append({
                 "name": cs.name,
                 "ready": cs.ready,
                 "restart_count": cs.restart_count,
                 "image": cs.image,
+                "state": state,
                 "last_state": last_state,
             })
+
+    volumes = [
+        {"name": v.name, "source": _volume_source(v)}
+        for v in (pod.spec.volumes or [])
+    ]
 
     return {
         "name": pod.metadata.name,
@@ -93,6 +112,25 @@ def describe_pod(v1: client.CoreV1Api, namespace: str, pod_name: str) -> dict:
         "node_name": pod.spec.node_name,
         "containers": containers,
         "container_statuses": container_statuses,
+        "volumes": volumes,
         "labels": pod.metadata.labels or {},
         "annotations": pod.metadata.annotations or {},
+        "owner_references": [
+            {"kind": o.kind, "name": o.name} for o in (pod.metadata.owner_references or [])
+        ],
     }
+
+
+def _volume_source(volume) -> str:
+    """Identify a pod volume's backing type without exposing secret values."""
+    if volume.secret:
+        return f"secret:{volume.secret.secret_name}"
+    if volume.config_map:
+        return f"configMap:{volume.config_map.name}"
+    if volume.persistent_volume_claim:
+        return f"pvc:{volume.persistent_volume_claim.claim_name}"
+    if volume.empty_dir:
+        return "emptyDir"
+    if volume.host_path:
+        return f"hostPath:{volume.host_path.path}"
+    return "other"

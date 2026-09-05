@@ -50,7 +50,26 @@ variable "additional_clusters" {
     owner              = optional(string, "")
     enabled            = optional(bool, true)
   }))
-  default = {}
+  # Phase 1: sre-lab (local kind cluster standing in for on-prem, registered
+  # into the GCP fleet — see iac/agent/onprem_fleet.tf and
+  # docs/connect-gateway-onprem.md) is a real, ongoing cluster this agent
+  # investigates via Connect Gateway, not a throwaway test fixture — it needs
+  # to survive every CI-driven apply, and CI does not pass a -var override for
+  # this variable, so it lives in the default rather than only in the
+  # (gitignored) local terraform.tfvars. A different deployment of this module
+  # overrides it via its own tfvars, same as every other var here.
+  default = {
+    "sre-lab" = {
+      aliases            = ["kind-sre-lab", "on-prem-lab", "connect-gateway-lab"]
+      project            = "sreagent-t2-demo"
+      region             = "global"
+      type               = "custom"
+      environment        = "test"
+      allowed_namespaces = ["test-incidents"]
+      owner              = "sre-platform"
+      enabled            = true
+    }
+  }
 
   # 2026-08-26: the collision guard MOVED out of this variable, into a
   # `lifecycle.precondition` on google_storage_bucket_object.clusters_json
@@ -124,6 +143,24 @@ variable "custom_mcp_image" {
   default     = "us-docker.pkg.dev/cloudrun/container/placeholder"
 }
 
+variable "custom_mcp_kube_context" {
+  description = "Kubeconfig context name the custom MCP's get_k8s_clients() should use for the Connect Gateway (non-GKE/on-prem) path, baked into the image at mcp/connect-gateway-kubeconfig.yaml. Empty (default) keeps the service on the direct-GKE-endpoint or local-kubeconfig branches — see mcp/server.py. Only used when enable_custom_mcp = true."
+  type        = string
+  default     = ""
+}
+
+variable "onprem_fleet_membership" {
+  description = "GKE Fleet membership name for the non-GKE/on-prem cluster registered via Connect Gateway (e.g. the Phase 1 kind cluster 'sre-lab'). Empty (default) skips onprem_fleet.tf's registration/RBAC orchestration entirely."
+  type        = string
+  default     = ""
+}
+
+variable "onprem_fleet_kubeconfig_context" {
+  description = "Local kubectl context name for the on-prem/non-GKE cluster (e.g. 'kind-sre-lab'), used only by the local-exec provisioners in onprem_fleet.tf that run the gcloud fleet registration/RBAC commands. Only meaningful when onprem_fleet_membership is set."
+  type        = string
+  default     = ""
+}
+
 variable "iap_iam_enforcement_mode" {
   description = "Agent Gateway IAP REQUEST_AUTHZ mode. \"DRY_RUN\" logs allow/deny decisions without blocking; null enforces (blocks unauthorized egress). Defaults to enforce — validated live 2026-07-14: enforce mode passed the same end-to-end smoke test as DRY_RUN with zero behavior difference for legitimate traffic (fail_open=true still protects against IAP itself being unreachable). Set to \"DRY_RUN\" to go back to audit-only."
   type        = string
@@ -175,9 +212,9 @@ variable "gemini_price_output_per_1m" {
 
 
 variable "model_armor_pi_confidence" {
-  description = "Model Armor prompt-injection / jailbreak detection confidence threshold."
+  description = "Model Armor prompt-injection / jailbreak detection confidence threshold. HIGH per the Phase 1 A/B/C comparison (2026-08/09): MEDIUM_AND_ABOVE false-positived on ordinary SRE text (7/208 test calls, matching issue #202's 3 real false positives in one evening); HIGH found the same real malicious payloads with 0/68 false positives. Raised from MEDIUM_AND_ABOVE specifically because issue #203 makes app-level Model Armor live for the first time -- a false-positive block here corrupts a real RCA summary, not just a tool call."
   type        = string
-  default     = "MEDIUM_AND_ABOVE"
+  default     = "HIGH"
 
   validation {
     condition     = contains(["LOW_AND_ABOVE", "MEDIUM_AND_ABOVE", "HIGH"], var.model_armor_pi_confidence)

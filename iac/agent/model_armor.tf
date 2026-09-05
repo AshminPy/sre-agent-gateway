@@ -6,11 +6,18 @@
 # CONTENT_AUTHZ extension (agent_gateway.tf) passes request_template_id =
 # sre_agent_request and response_template_id = sre_agent_response.
 #
-# Used two ways:
-#   1. App layer (gateway OFF) — the agent code calls sanitize_user_prompt /
-#      sanitize_model_response (agent/main.py); it uses the request template.
-#   2. Gateway layer (gateway ON) — the CONTENT_AUTHZ authz extension inspects
-#      traffic at the Agent Gateway. Defense in depth.
+# Used one way today (issue #203 correction, 2026-09-05): the app layer —
+# agent code calls sanitize_user_prompt / sanitize_model_response
+# (agent/main.py) using the request template, unconditionally, regardless of
+# whether Agent Gateway is on. The gateway's own IAP REQUEST_AUTHZ extension
+# (agent_gateway.tf) is header/attribute-based routing authorization, NOT
+# content inspection — no CONTENT_AUTHZ extension wiring exists or has ever
+# been proven to work here (see agent_gateway.tf's own note and
+# archive/RESOLVED_2026-08-08_MODEL_ARMOR_CONTENT_AUTHZ_TEST.md). The
+# "defense in depth" claim this comment previously made was never real; only
+# this app layer actually inspects the agent's own input/output text. Floor
+# settings (a separate mechanism) cover AI_PLATFORM/GOOGLE_MCP_SERVER traffic,
+# not this.
 
 # Request-side: prompt injection / jailbreak + malicious URI + RAI. SRE agents
 # ingest raw k8s logs, so input inspection is the high-risk path.
@@ -19,6 +26,24 @@ resource "google_model_armor_template" "sre_agent_request" {
   project     = var.project_a_id
   location    = var.region
   template_id = "sre-agent-request-guard"
+
+  # Found live 2026-09-05: without this block, CONTENT_AUTHZ traffic through
+  # the gateway showed as "ALLOWED" for every call regardless of content, and
+  # zero sanitize_operations log entries appeared under this template at all
+  # -- a Google-documented guaranteed-detection test URL
+  # (testsafebrowsing.appspot.com/s/malware.html) passed through completely
+  # unblocked and unlogged under this template (the only detection came from
+  # a separate, pre-existing floor-setting mechanism). Per Model Armor's own
+  # docs (docs.cloud.google.com/gemini-enterprise-agent-platform/govern/
+  # configure-model-armor): "Set the enforcement type on the Model Armor
+  # template to INSPECT_AND_BLOCK" for CONTENT_AUTHZ to actually act on
+  # detections -- a template-level setting, independent of each filter's own
+  # filter_enforcement=ENABLED. log_sanitize_operations=true is what actually
+  # produces the log evidence needed to prove this is working at all.
+  template_metadata {
+    enforcement_type        = "INSPECT_AND_BLOCK"
+    log_sanitize_operations = true
+  }
 
   filter_config {
     pi_and_jailbreak_filter_settings {
@@ -51,7 +76,24 @@ resource "google_model_armor_template" "sre_agent_response" {
   location    = var.region
   template_id = "sre-agent-response-guard"
 
+  # Same fix, same reason as sre_agent_request above.
+  template_metadata {
+    enforcement_type        = "INSPECT_AND_BLOCK"
+    log_sanitize_operations = true
+  }
+
   filter_config {
+    # Added 2026-09-05: switching to INSPECT_AND_BLOCK triggered a real API
+    # conformance check this template previously never had to satisfy --
+    # "not conformant with the effective floor setting... piAndJailbreak
+    # FilterSettings: floorSettings: ENABLED, templateSettings:
+    # UNSPECIFIED". The project's floor setting requires pi_and_jailbreak on
+    # every enforcing template; this template never declared it (only the
+    # request-side template did). Matches the request template's setting.
+    pi_and_jailbreak_filter_settings {
+      filter_enforcement = "ENABLED"
+      confidence_level   = var.model_armor_pi_confidence
+    }
     malicious_uri_filter_settings {
       filter_enforcement = "ENABLED"
     }
@@ -238,3 +280,76 @@ resource "google_model_armor_floorsetting" "mcp" {
 
   depends_on = [google_project_service.apis]
 }
+
+# ── CONTENT_AUTHZ egress IAM — Service Extensions service agent ────────────
+#
+# CORRECTED 2026-09-05 -- this was the actual root cause of CONTENT_AUTHZ
+# never invoking Model Armor (benign traffic passed, but two independent
+# malicious test payloads, including Google's own guaranteed-detection URL,
+# were never blocked and never appeared in any Model Armor log).
+#
+# The IAM roles below were originally granted to
+# service-{var.project_a_id's own project number}@gcp-sa-dep.iam.gserviceaccount.com
+# -- the WRONG principal. Direct REST proof: GET on the agent gateway
+# resource itself (networkservices.googleapis.com/v1/.../agentGateways/
+# sre-agent-egress) returns `agentGatewayCard.serviceExtensionsServiceAccount
+# = service-193870061732@gcp-sa-dep.iam.gserviceaccount.com` -- a DIFFERENT
+# project number than sreagent-t2-demo's own (327234009108). This is Google's
+# own internal tenant project for this "google_managed { governed_access_path
+# = AGENT_TO_ANYWHERE }" gateway (`gcloud projects describe 193870061732`
+# returns a permission-denied/not-visible error for our own identity --
+# confirming it's a Google-internal project, not a customer-visible one).
+# The Agent Gateway's own request logs corroborate this: every
+# authzPolicyInfo.policies[].name this session was
+# "projects/193870061732/locations/.../authzPolicies/..." -- the SAME
+# non-customer project number, missed earlier because it was assumed to be
+# a display quirk rather than checked.
+#
+# Fixed by referencing the gateway resource's own computed
+# agent_gateway_card.service_extensions_service_account attribute instead of
+# assuming it matches var.project_a_id's project number -- this is the
+# correct, Terraform-native way to get this value and stays correct if
+# Google ever changes the internal tenant project.
+#
+# Per Model Armor's own Agent Gateway integration docs
+# (docs.cloud.google.com/model-armor/model-armor-agent-gateway-integration):
+# roles/modelarmor.calloutUser + roles/serviceusage.serviceUsageConsumer in
+# the gateway's project, roles/modelarmor.user in the template's project --
+# both are var.project_a_id here (single-project deployment), but the
+# PRINCIPAL receiving them is Google's own service agent, not ours. NOT the
+# agent runtime identity (AGENT_IDENTITY / principalSet://agents.global.org-...)
+# either -- that identity is the CALLER Agent Gateway authorizes via
+# REQUEST_AUTHZ, a different principal from the gateway's OWN service agent
+# that performs the Model Armor callout on the gateway's behalf.
+locals {
+  gateway_service_extensions_sa = local.gw_count > 0 ? "serviceAccount:${google_network_services_agent_gateway.sre_egress[0].agent_gateway_card[0].service_extensions_service_account}" : null
+}
+
+resource "google_project_iam_member" "gateway_service_agent_model_armor_callout" {
+  count = local.gw_count
+
+  project = var.project_a_id
+  role    = "roles/modelarmor.calloutUser"
+  member  = local.gateway_service_extensions_sa
+}
+
+resource "google_project_iam_member" "gateway_service_agent_serviceusage" {
+  count = local.gw_count
+
+  project = var.project_a_id
+  role    = "roles/serviceusage.serviceUsageConsumer"
+  member  = local.gateway_service_extensions_sa
+}
+
+resource "google_project_iam_member" "gateway_service_agent_model_armor_user" {
+  count = local.gw_count
+
+  project = var.project_a_id # the Model Armor template's project
+  role    = "roles/modelarmor.user"
+  member  = local.gateway_service_extensions_sa
+}
+
+# Changing `member` on these existing resource addresses (not renaming them)
+# means `terraform apply` revokes the old, wrong-principal grant and adds the
+# correct one in the same operation -- confirmed via `terraform plan` showing
+# these 3 resources as in-place updates, not new resources.

@@ -68,6 +68,17 @@ See the `view` ClusterRole finding above — applies to the Connect Gateway prot
 
 Agent-side VPC + Cloud NAT for egress; no customer VPC/PSC network attachment currently needed for live traffic (Google backbone + Agent Gateway's `AGENT_TO_ANYWHERE` path).
 
+### Custom MCP Cloud Run ingress — security decision (2026-09-04)
+
+**Decision**: `iac/agent/cloudrun_mcp.tf`'s `sre-k8s-mcp` service ingress is `INGRESS_TRAFFIC_ALL`, not an internal-only setting.
+
+**Do not describe this service as private or network-internal.** It is network-reachable from the public internet. The control that protects it is IAM: `roles/run.invoker` is granted to exactly one principal (the agent's `AGENT_IDENTITY`, via `google_cloud_run_v2_service_iam_member.runtime_invoke_mcp`) — no `allUsers`/`allAuthenticatedUsers` grant exists. Verified live (2026-09-04):
+- Unauthenticated request → 403/404, no content returned.
+- Authenticated-but-unauthorized identity (a real GCP identity without `run.invoker` on this specific service, including this project's own Owner-role account) → 401, no content returned.
+- Only the authorized agent identity, via Agent Gateway, successfully invokes it.
+
+**Why `ALL` instead of an internal-only ingress**: the prior setting, `INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER`, required an Internal HTTP(S) Load Balancer + Serverless NEG that was never built — confirmed live, it made the service unreachable by anyone, including the agent's own authorized traffic (Agent Gateway calls the service's public `.run.app` hostname with a Bearer token, the same pattern Google's own GKE Remote MCP public endpoint uses; it was never going to route through an internal LB without also re-pointing Agent Gateway's target, a larger change). Per Cloud Run's own documentation, ingress and IAM authorization are independent controls — this change affects only network reachability, not who is authorized to invoke the service.
+
 ## Encryption / TLS
 
 Standard GCP encryption-at-rest on all storage. TLS to Vertex AI: see the atomic-PATCH mechanism in [Agent Gateway](../architecture/agent-gateway.md) for the one real historical gotcha (a misconfigured binding causing a cert-verify failure, now fixed and documented).
