@@ -12,7 +12,7 @@ Source of truth: `openspec/changes/phase-1-mvp-release/specs/phase-1-release-cri
 | 3 | LLM config-only switching, live proof | **DONE** | see finding below |
 | 1 | Connect Gateway production wiring | **DONE** | fleet re-registered, Terraform-orchestrated, live E2E proven |
 | 5b | Live non-GKE routing proof | **DONE** | 5 scenarios, real evidence, see below |
-| 6b/9c | Model Armor on custom MCP path (#203) | BLOCKED | genuine platform limitation + missing IAM permission — see below, needs user decision |
+| 6b/9c | Model Armor on custom MCP path (#203) | PARTIAL — CONTENT_AUTHZ built, kept, non-regressive, content-inspection UNVERIFIED | see below |
 | 5a | Routing validation matrix (full case list) | PARTIAL | happy path done; failure-path cases (unknown cluster, MCP down, gateway down) still needed |
 | RCA | Golden scenario suite, GKE + kind | PARTIAL | kind: 5/5 done; GKE suite not re-run this session |
 | Failure tests | unknown/unavailable cluster, MCP down, gateway down, malformed response, timeout, oversized evidence | NOT STARTED | |
