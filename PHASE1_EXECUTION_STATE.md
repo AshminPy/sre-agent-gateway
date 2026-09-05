@@ -9,7 +9,7 @@ Source of truth: `openspec/changes/phase-1-mvp-release/specs/phase-1-release-cri
 |---|---|---|---|
 | 2b | GKE cross-project IAM | **DONE** | see finding below — no code change needed |
 | 4 | Custom MCP tool parity (volumes/volumeMounts) | DONE | commit c20665b, 26/26 tests |
-| 3 | LLM config-only switching, live proof | NOT STARTED | next up |
+| 3 | LLM config-only switching, live proof | **DONE** | see finding below |
 | 1 | Connect Gateway production wiring | **DONE** | fleet re-registered, Terraform-orchestrated, live E2E proven |
 | 5b | Live non-GKE routing proof | **DONE** | 5 scenarios, real evidence, see below |
 | 6b/9c | Model Armor on custom MCP path (#203) | NOT STARTED | next after LLM switching |
@@ -49,6 +49,18 @@ Earlier gap analysis called this PARTIAL, citing `iac/gke-access/crossproject_ia
 - Conclusion: onboarding a GKE cluster in a **different** project needs (a) one more `terraform apply` of the already-generic `iac/gke-access` stack with new tfvars (no `.tf` edits), and (b) one more `additional_clusters` entry (no code edit) — the same config-only path as same-project onboarding.
 - **Real remaining limitation, not fixed and correctly out of Phase 1 scope**: this is per-stack-deployment, not simultaneous-multi-project-from-one-deployment. If a future need arises for the agent to read multiple cross-project GKE clusters from a *single* `iac/gke-access` apply, `crossproject_iam.tf`'s scalar would need to become a `for_each` over a list of `(cluster, project)` pairs — the "strategic abstraction" version of this fix. Not built now: Phase 1 only requires one additional cluster proven, and building the generalized version now would be exactly the over-engineering the current guidance warns against. Tracked as the same issue #86 already on file.
 - **Caution learned while investigating this**: an ad-hoc `terraform plan` against `iac/gke-access` using a different `project_b_id`, run with `-backend=false` instead of the stack's real GCS backend, produced a plan to REPLACE (destroy+recreate) the real, live, in-use IAM bindings for the actual deployed agent — because Terraform's live IAM-lookup for `google_project_iam_member` doesn't need prior state to detect an existing binding, so a mismatched ad-hoc init masqueraded as a legitimate comparison. Caught before any apply; no real change made (confirmed via a live `gcloud projects get-iam-policy sreagent-demo` re-check — unchanged). Do not repeat this method for future cross-project checks; use static analysis (`grep`) or a fully isolated temp directory instead.
+
+## Item 3 — LLM config-only switching, live proof (2026-09-04)
+
+`agent/llm/` (base.py/registry.py/gemini_adapter.py) already has a clean provider-neutral abstraction — `LLMClient` ABC, capability declarations, a registry keyed by `LLM_PROFILE` prefix. `registry.py`'s own docstring is honest about the limit: only one real adapter (Gemini) is registered; a genuinely new vendor still needs its own adapter module written first (steps 1-2), then switching is a one-variable change (step 3).
+
+Since only one vendor is wired, proved the mechanism the way it's actually real today: switched **models within the registered provider** (`gemini-2.5-pro` → `gemini-2.5-flash`), config-only, live, on the actual production reasoning engine (not a local bypass):
+- `iac/agent/agent_engine.tf:43-49` — `GEMINI_MODEL`/`LLM_PROFILE` env vars sourced from `var.gemini_model`, one Terraform variable.
+- `terraform plan` with `-var="gemini_model=gemini-2.5-flash"` → `0 to add, 1 to change, 0 to destroy`, in-place update (not a replace). `agent/` source unchanged (`git status` clean) — only the env var block and the (expectedly non-deterministic, re-tarred) inline source archive differed.
+- Applied, ran `invoke_agent.py --scenario onprem` for real: same cluster (`sre-lab`), same routing (`k8s_mcp`, `exact_id`), same tool calls, correct grounded RCA, zero fabrication — report's own metadata line confirms `Model: gemini-2.5-flash via Vertex AI Agent Engine`.
+- Reverted (`gemini_model` back to `gemini-2.5-pro`), re-applied, re-ran the same scenario, confirmed `Model: gemini-2.5-pro via Vertex AI Agent Engine` — production configuration restored.
+
+**Explicit limitation, not glossed over**: this proves the *mechanism* (config-driven selection, zero `agent/main.py`/`agent/nodes/*` code change) but does not prove cross-*vendor* portability (e.g. to OpenAI/Anthropic) — `agent/llm/registry.py` has exactly one adapter today, and writing a second vendor's adapter is real, uncompleted code work by the registry's own documented design. This matches the Phase 1 spec's own fallback instruction for exactly this situation.
 
 ## Cost ledger
 
