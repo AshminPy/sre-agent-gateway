@@ -1,7 +1,7 @@
 # Executive Overview
 
 > **Implementation Status:** Reference page.
-> **Last Verified:** 2026-08-08
+> **Last Verified:** 2026-09-06
 > **Owner:** SRE Agent platform team.
 
 ## One paragraph
@@ -14,7 +14,7 @@ The SRE AI Agent is an automated Kubernetes incident investigator running on Goo
 
 **Working but with real, known gaps**: confidence scoring is a genuine deterministic mechanism, but its specific thresholds are explicitly labeled uncalibrated; observability exists but has a confirmed metric-doubling issue; alerting covers 11 of 14 originally-planned scenarios.
 
-**Not working today, despite existing in Terraform/code**: the fallback Kubernetes-tool path (custom MCP), on-prem/non-GKE cluster support, and Model Armor content-safety inspection. Each of these has real code and real Terraform behind it, but none is actually functioning in the live deployment — see [Risks and Limitations](risks-and-limitations.md) for the full list with evidence.
+**Working today (corrected 2026-09-06 — this was wrong through 2026-08-30)**: the fallback Kubernetes-tool path (custom MCP), on-prem/non-GKE cluster support, and Model Armor content inspection on the request side. **Still genuinely open**: Model Armor never inspects MCP tool RESPONSES (a confirmed Google platform limitation, with an unmerged application-level fix for the custom MCP), and REQUEST_AUTHZ/IAP still fails open by default on `main` (a validated fail-closed fix exists, unmerged) — see [Risks and Limitations](risks-and-limitations.md) for the full current list with evidence.
 
 ## Why this matters for decision-makers
 

@@ -64,3 +64,19 @@ Zero-reference status for all 4 confirmed by a full repo-wide reference sweep be
 (2026-08-30). All inbound links from other docs updated in the same pass; `PRODUCTION-LAUNCH-PLAN.md`
 and `floor-settings-production-plan-2026-08-25.md` were evaluated but deliberately NOT archived —
 both are cited by live code/Terraform comments, not just other docs.
+
+## Added 2026-09-06 (documentation accuracy pass)
+
+| File | What it was | Status | Superseded/replaced by |
+|---|---|---|---|
+| `SUPERSEDED_2026-08-31_agent-registry-terraform-pilot-import.md` | 3-endpoint pilot plan for bringing Agent Registry under Terraform | Superseded — the pilot's conclusion (BLOCKED, 3-endpoint scope only) was fully overtaken 4 days later | `iac/agent/agent_registry.tf`, `iac/agent/agent_registry_mcp.tf` (all registrations, not just 3, brought under Terraform 2026-09-04) |
+| `RESOLVED_2026-08-28_confidence-genericity-review.md` | 7 structural confidence-scoring fixes + corrections addendum (PR #219) | Resolved — fixes merged, live-verified in `agent/confidence/scorer.py`/`evidence_domains.py`; its own "not merged/not deployed" and "zero Group C/D cases" closing statements are stale, the actual fixes are real and live | `docs/management/CURRENT-STATE.md`, `agent/eval/golden_cases.py` (16 cases including Group C/D as of this pass) |
+| `SUPERSEDED_2026-08-31_next-slice-connect-gateway-onboarding.md` | Planned workstream for full Connect Gateway/non-GKE onboarding | Superseded — the planned work was built and shipped 4 days later (Phase 1, PR #242/#244) | `iac/agent/onprem_fleet.tf`, `docs/architecture/gke-vs-nongke.md` |
+| `RESOLVED_2026-08-23_observability-architecture-review.md` | Phase-0 observability gap review, "IMPLEMENT NOW" recommendations | Resolved — every recommendation implemented and merged (PR #178, #179) | `iac/agent/monitoring.tf`, `docs/management/CURRENT-STATE.md` |
+| `RESOLVED_2026-08-26_rca-tf147-and-network-grant-removal.md` | RCA for a Terraform 1.4.7 pin + network-grant-removal incident | Resolved — PR #198 merged, conclusion proven safe; the doc's own listed CI follow-ups are ~11 days stale (superseded by later clean regression runs) but the RCA itself is closed | `docs/management/CURRENT-STATE.md` |
+
+Moved as part of a full documentation accuracy pass (branch `docs/accuracy-pass-2026-09-06`) — see that
+PR's description for the complete UPDATED/ARCHIVED/DELETED/MERGED report. Several other pages were
+found stale in the same pass (Model Armor/CONTENT_AUTHZ framing, custom-MCP/on-prem reachability
+claims) but were corrected in place rather than archived, since their subject matter is still current
+and load-bearing — only genuinely closed/superseded investigations were moved here.

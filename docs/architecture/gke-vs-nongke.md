@@ -1,10 +1,10 @@
 # GKE vs. Non-GKE Kubernetes Access
 
-> **Implementation Status:** GKE path — IMPLEMENTED, live-verified. Non-GKE/on-prem path — PARTIALLY IMPLEMENTED, proven only standalone, NOT wired into the deployed agent.
-> **Last Verified:** 2026-08-08 — `agent/mcp_client.py`, `mcp/server.py`, `docs/connect-gateway-onprem.md`, `docs/custom-k8s-mcp.md`
+> **Implementation Status:** GKE path — IMPLEMENTED, live-verified. Non-GKE/on-prem path — IMPLEMENTED and live-verified end-to-end through the deployed agent (as of 2026-09-04); one real limitation remains (single-cluster-per-deployment) and Connect Gateway infra registration is still manual, not Terraform-managed.
+> **Last Verified:** 2026-09-06 — `agent/mcp_client.py`, `mcp/server.py`, `iac/agent/cloudrun_mcp.tf`, `iac/agent/onprem_fleet.tf`, real investigation runs against `sre-lab`
 > **Owner:** SRE Agent platform team.
 >
-> **Read this page carefully before telling anyone "on-prem support is done."** It is not. Three separate layers exist, and only the first is actually proven in a way that matters for production.
+> **Corrected 2026-09-06**: this page previously said "the production agent cannot reach an on-prem cluster today." That was accurate as of 2026-08-08 but is now WRONG — the custom MCP's ingress and connectivity config were fixed 2026-09-04, and multiple real investigations against the on-prem `sre-lab` cluster have succeeded end-to-end through the actual deployed Agent Engine → Agent Gateway → custom MCP → Connect Gateway path since then. See Layer C below for what changed.
 
 ## The GKE path — IMPLEMENTED
 
@@ -40,25 +40,25 @@ A local `kind` cluster (`sre-lab`, standing in for a real on-prem site) was regi
 ```
 **Why this is a good result, not a bug**: this is the expected consequence of the `view` ClusterRole excluding cluster-scoped Nodes (see [GKE vs Non-GKE Access](#layer-a-connect-gateway-infrastructure-itself--proven-live-but-manual-not-terraform-managed) above) — the important finding is that the server surfaced it as a clean, structured `{"ok": false, "error": ...}` response instead of an unhandled exception crashing the process. That's the `@guarded()` decorator's error-handling working as designed (see [Security Operations](../governance/security.md)), not a gap.
 
-### Layer C: The deployed Cloud Run MCP service — does NOT reach any cluster
+### Layer C: The deployed Cloud Run MCP service — NOW REACHES the on-prem cluster (fixed 2026-09-04)
 
-This is the layer that actually matters for whether the agent can use this path in production, and it's the one that's missing. The deployed Cloud Run service's only env var is `PROJECT_ID` — neither the direct-GKE connectivity vars nor the Connect Gateway `K8S_MCP_KUBE_CONTEXT` var is set anywhere in Terraform. Left unset, the code falls through to a "load local kubeconfig" branch with no kubeconfig file available inside a Cloud Run container.
+This is the layer that actually matters for whether the agent can use this path in production, and it is now working. Three things changed:
 
-**Combined with [MCP Architecture](mcp-architecture.md)'s finding that the custom MCP isn't even deployed (`enable_custom_mcp=false`) and has no network path (no Load Balancer/NEG) even if it were** — the honest summary is:
+1. **Ingress fixed.** `iac/agent/cloudrun_mcp.tf` was `INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER`, which required an Internal HTTP(S) Load Balancer + Serverless NEG that was never built — the service was unreachable by anyone, including the agent's own authorized traffic (Agent Gateway calls the service's public `.run.app` hostname with a Bearer token, the same pattern GKE Remote MCP's own public endpoint uses). Changed to `INGRESS_TRAFFIC_ALL`. IAM is unaffected and still the real control: only the agent's identity holds `roles/run.invoker` on this specific service (verified live: unauthenticated → 403/404, unauthorized-but-real-identity → 401). See [Security Operations](../governance/security.md#custom-mcp-cloud-run-ingress--security-decision-2026-09-04).
+2. **Connectivity configured.** `iac/agent/cloudrun_mcp.tf` now sets `K8S_MCP_KUBE_CONTEXT` (via `var.custom_mcp_kube_context`, wired from the `CUSTOM_MCP_KUBE_CONTEXT` GitHub repo variable). `mcp/Dockerfile` bakes in the Connect Gateway kubeconfig, the `gke-gcloud-auth-plugin`, and the base `google-cloud-cli` package the plugin itself shells out to (a real bug found live: the plugin alone isn't self-sufficient).
+3. **IAM granted.** The Cloud Run runtime SA (`sre-k8s-mcp-runtime`) holds `roles/gkehub.gatewayReader` (`iac/agent/onprem_fleet.tf`), needed for the Connect Gateway auth path.
 
-> **Connect Gateway works when tested manually with `kubectl` or a local `pytest` run. The production agent cannot reach an on-prem/non-GKE cluster today.**
+**Live E2E proof, repeated across multiple sessions (most recently 2026-09-06)**: real investigations against `sre-lab` via the actual deployed path — Agent Engine → Agent Gateway (`ALLOWED`, logged) → custom MCP Cloud Run (`200 OK`) → Connect Gateway → the `sre-lab` kind cluster → real pod/event/log data → a correctly-evidenced RCA. `selected_mcp: k8s_mcp` appears in the observability payload for every one of these runs. This is not a standalone/local proof — it goes through the same Agent Engine + Agent Gateway path a real caller would use.
 
-### What's needed to actually wire this together
+### What is still genuinely open
 
-1. Deploy the custom MCP (`enable_custom_mcp=true`) — but first build the missing Internal Load Balancer + Serverless NEG (see [MCP Architecture](mcp-architecture.md)).
-2. Set `K8S_MCP_KUBE_CONTEXT` (or equivalent) on the Cloud Run service, and bake `gke-gcloud-auth-plugin`/`gcloud` into `mcp/Dockerfile`.
-3. Grant the Cloud Run runtime SA `roles/gkehub.gatewayReader` (it currently only has `roles/container.viewer`).
-4. Convert the manual `gcloud` Fleet-registration/RBAC steps into Terraform (or at minimum, a repeatable script — there is currently no wrapper script for `generate-gateway-rbac`).
-5. Add a field to `clusters.json`'s schema to distinguish "reach via Connect Gateway" from "reach via direct endpoint" — no such field exists today.
-6. ~~Fix `clusters.json`'s single-cluster-only template so a second (on-prem) cluster entry survives a `terraform apply`~~ — **DONE 2026-08-09**: `var.additional_clusters` now supports any number of clusters, including non-GKE ones, and every entry survives `terraform apply` by design (Terraform is now the sole source of truth). See [Cluster Routing](cluster-routing.md). What's still open for on-prem specifically is items 1-5 above (Connect Gateway networking/auth/RBAC), not the registry-survival issue.
-7. Turn on `DATA_READ` audit logging for `connectgateway.googleapis.com`, or accept the current audit gap as a documented risk.
+1. **Connect Gateway fleet registration/RBAC is still manual, not Terraform-managed.** No `google_gke_hub_membership`/`google_gke_hub_feature` resource exists in `iac/` — the fleet membership and `generate-gateway-rbac --apply` step were done by hand and are documented (not automated) in `docs/connect-gateway-onprem.md`. Converting this to Terraform (or at minimum a repeatable wrapper script) is unstarted work.
+2. **No schema field distinguishes "reach via Connect Gateway" from "reach via direct GKE endpoint"** in `clusters.json` today — the distinction currently lives in which env var (`K8S_MCP_KUBE_CONTEXT` vs `GKE_CLUSTER_ENDPOINT`/`GKE_CA_CERT_GCS_PATH`) is set on the Cloud Run service, not in the cluster registry itself.
+3. **Single-cluster-per-deployment.** `mcp/server.py`'s `get_k8s_clients()` uses `@lru_cache(maxsize=1)` — one Cloud Run revision reaches exactly one non-GKE cluster at a time via its `K8S_MCP_KUBE_CONTEXT`. A second on-prem cluster needs either a second Cloud Run service or a per-request context-selection code change. Out of scope for Phase 1, which only required one non-GKE cluster proven.
+4. **`DATA_READ` audit logging is still off** for `connectgateway.googleapis.com` — a full read-only investigation via Connect Gateway leaves no audit trail of what was actually read (only denied/blocked mutation attempts are logged). Turning this on is a project-wide audit-config decision that hasn't been made.
+5. **The custom MCP's own tool responses are not protected from malicious content on this path either** — see [Security Operations](../governance/security.md#model-armor--three-distinct-mechanisms-each-with-different-enforcement-corrected-2026-09-06) for the CONTENT_AUTHZ response-side gap and the unmerged application-level guard that addresses it.
 
-None of this is started as Terraform/automation today — see [Adding a Non-GKE / On-Prem Cluster](../runbooks/add-non-gke-cluster.md) for the current manual runbook based on what's actually been proven.
+See [Adding a Non-GKE / On-Prem Cluster](../runbooks/add-non-gke-cluster.md) for the current runbook, updated to reflect what's actually proven working.
 
 ---
 

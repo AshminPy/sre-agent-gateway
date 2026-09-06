@@ -82,29 +82,22 @@ deployed," not "doesn't exist":**
   surfaced as a clean structured error, not a crash — proof the `@guarded()`
   error handling works as designed.
 - But the *deployed* Cloud Run service cannot reach any cluster today, for
-  three independent reasons: (1) `enable_custom_mcp` defaults `false` and is
-  not overridden in the live `iac/agent/terraform.tfvars` — the service
-  isn't even deployed; (2) even if deployed,
-  `INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER` requires an Internal Load
-  Balancer + Serverless NEG that doesn't exist anywhere in this repo's
-  Terraform; (3) the deployed container's own env vars set only
-  `PROJECT_ID` — none of the connectivity variables `mcp/server.py` needs
-  (`GKE_CLUSTER_ENDPOINT`, `K8S_MCP_KUBE_CONTEXT`) are set, so even a
-  reachable container would fall through to a "load local kubeconfig" branch
-  with no kubeconfig file inside a Cloud Run container.
-- Practical consequence: the GKE-failure fallback to `k8s_mcp` currently
-  degrades to a tool failure rather than a working handoff, and the on-prem
-  path is unproven in production — a real gap, not a documentation gap. The
-  Connect Gateway infrastructure behind it is also not Terraform-managed
-  today (manual `gcloud` setup only), and successful reads through it aren't
-  currently audit-logged (`DATA_READ` audit logging for
-  `connectgateway.googleapis.com` is off).
-- What's needed to close this gap is enumerated concretely in [GKE vs
-  Non-GKE Access](architecture/gke-vs-nongke.md#whats-needed-to-actually-wire-this-together)
-  — building the Load Balancer/NEG, setting the connectivity env vars,
-  granting `roles/gkehub.gatewayReader`, converting the manual Fleet/RBAC
-  steps to Terraform, and extending `clusters.json`'s schema to record which
-  reachability mode a cluster needs.
+  three independent reasons, all since fixed 2026-09-04 (see the update
+  below): `enable_custom_mcp` defaulting `false` in code but being
+  overridden `true` by CI; `INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER`
+  requiring a Load Balancer/NEG that didn't exist; and missing connectivity
+  env vars.
+- **UPDATE 2026-09-06 — this gap is closed.** `iac/agent/cloudrun_mcp.tf`'s
+  ingress is now `INGRESS_TRAFFIC_ALL` (IAM, not network isolation, is the
+  real control — see [Security Operations](governance/security.md#custom-mcp-cloud-run-ingress--security-decision-2026-09-04)),
+  `K8S_MCP_KUBE_CONTEXT` is set, and `roles/gkehub.gatewayReader` is
+  granted. Real investigations against the on-prem `sre-lab` cluster now
+  succeed end-to-end through the deployed Agent Engine → Agent Gateway →
+  custom MCP → Connect Gateway path. What's still genuinely open: Connect
+  Gateway fleet/RBAC registration remains manual (`gcloud`, not Terraform),
+  `DATA_READ` audit logging for `connectgateway.googleapis.com` is still
+  off, and the custom MCP is still single-cluster-per-deployment. Full
+  current detail: [GKE vs Non-GKE Access](architecture/gke-vs-nongke.md#what-is-still-genuinely-open).
 
 ## Related ADRs
 

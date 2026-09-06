@@ -1,7 +1,7 @@
 # Management / Executive FAQ
 
 > **Implementation Status:** Reference page, plain-English summary of facts established elsewhere in this knowledge base.
-> **Last Verified:** 2026-08-08
+> **Last Verified:** 2026-09-06
 > **Owner:** SRE Agent platform team.
 
 **What exactly does this system do?**

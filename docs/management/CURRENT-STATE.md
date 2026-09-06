@@ -1,6 +1,6 @@
 # Current State — the canonical operational source of truth
 
-**Last updated:** 2026-08-30
+**Last updated:** 2026-09-06
 **Owner:** SRE Agent platform team
 **Role:** This is the single place to answer "where are we now, what's done, what's blocked,
 what remains, what's next." It summarizes conclusions and links to the detailed evidence
@@ -21,9 +21,12 @@ and the rest of [`docs/architecture/`](../README.md) (17 pages, current). Do not
 ## 2. Current production / non-production state
 
 - **Live engine:** `sreagent-t2-demo`, Agent Gateway bound natively via Terraform (`google_vertex_ai_reasoning_engine.sre_agent`'s `agentGatewayConfig` — the gateway binding is Terraform-managed since PR #93, 2026-08-10; no manual re-attach step needed after a normal apply).
-- **Model Armor:** both floor settings (`google_mcp_server`, `ai_platform`) are `inspect_only = true` (`iac/agent/model_armor.tf:218-237`). `inspect_and_block` was tried once (2026-08-25) and reverted the next day after two real false positives (one fabricated an RCA, one crashed a run). **Standing precondition gate before re-enabling** (verbatim from the Terraform's own comment, `model_armor.tf:190-195`): a week of `MATCH_FOUND` log entries reviewed with zero false positives on real SRE traffic; `pi_and_jailbreak` block-tested specifically; SDP block-tested at all. None of the three currently hold.
-- **App-level Model Armor** (`SREAgent._sanitize()`) is dead code in every real deployment — gated on the Agent Gateway being off, and the gateway defaults on (#203, blocked by #30).
-- **Custom/fallback MCP traffic** transits the Agent Gateway but is NOT inspected by Model Armor (Google's floor-setting API doesn't support a custom integration type) — a confirmed, real, scoped gap. Full detail: `archive/SUPERSEDED_2026-08-25_custom-mcp-model-armor-coverage.md`.
+- **Model Armor CONTENT_AUTHZ (corrected 2026-09-06 — the finding below this bullet through 2026-08-30 was wrong, root cause was the wrong service hostname, not a platform block):** real and live. `google_network_services_authz_extension.model_armor` + `google_network_security_authz_policy.model_armor` (`iac/agent/model_armor.tf`), using the regional hostname `modelarmor.us-central1.rep.googleapis.com`, both templates `enforcement_type = "INSPECT_AND_BLOCK"`. Live-verified: genuine REQUEST-body inspection and blocking. **Confirmed platform limitation**: RESPONSE-body inspection never fires for MCP `tools/call` responses on either MCP source — Google's own docs list "Streamable HTTP/SSE for MCP" as excluded from gateway sanitization, and this is the MCP spec's own current transport with no viable non-streaming remote alternative. Tried and reverted a `json_response=True` fix on the custom MCP — no measurable change, confirming this is transport-level, not fixable in our Terraform/code.
+- **Model Armor floor settings** (`google_mcp_server`, `ai_platform`) remain `inspect_only = true` (`iac/agent/model_armor.tf`) — a SEPARATE mechanism from CONTENT_AUTHZ, detect-only, never blocking. Fires on GKE Remote MCP requests and the agent's own Gemini calls; does NOT and cannot protect arbitrary custom-MCP response content. `inspect_and_block` was tried once (2026-08-25) and reverted the next day after two real false positives — the precondition gate for re-enabling it (a week of zero-false-positive `MATCH_FOUND` review) still doesn't hold.
+- **App-level Model Armor** (`SREAgent._sanitize()`) is still dead code in every real deployment — gated on the Agent Gateway being off, and the gateway defaults on. This is a DIFFERENT, unrelated mechanism from CONTENT_AUTHZ above (it only ever covered the agent's own query/summary text, never MCP tool traffic).
+- **NEW, unmerged POC (2026-09-06)**: `mcp/response_guard.py` (branch `poc/mcp-response-guard-model-armor`) calls Model Armor directly from the custom MCP server, closing the CONTENT_AUTHZ response-side gap for that source specifically. Live-proven to genuinely block a real malicious response with real log evidence. Fail-open-on-Model-Armor-error is an unresolved, unapproved production decision. Not merged.
+- **REQUEST_AUTHZ/IAP fail-open**: `authz_fail_open = true` default remains on `main`. A validated fail-closed fix exists, unmerged (`fix/content-authz-json-response-and-fail-closed`) — live-tested revoke/retry showed correct denial, no bypass.
+- **Custom/fallback MCP is deployed and reachable** (fixed 2026-09-04 — ingress `INGRESS_TRAFFIC_ALL`, connectivity env vars set). It is also the production path for non-GKE/on-prem clusters via Connect Gateway, proven end-to-end against `sre-lab`. Full detail: [MCP Architecture](../architecture/mcp-architecture.md), [GKE vs Non-GKE Access](../architecture/gke-vs-nongke.md). The original 2026-08-25 finding that this traffic isn't Model Armor-inspected is superseded by the more precise CONTENT_AUTHZ response-side finding above — see `archive/SUPERSEDED_2026-08-25_custom-mcp-model-armor-coverage.md` for the original, now-superseded evidence.
 
 ## 3. Completed capabilities
 
@@ -129,7 +132,8 @@ from this consolidation pass: custom/fallback MCP traffic is not Model Armor-ins
   exist — when it was running the whole time. Fix: both tools now return `ok: False` on a
   NotFound result, same treatment as the existing `isError`/Model Armor-block branches, so a
   wrong name-guess can no longer by itself ground a "resource is missing" claim. See
-  `docs/management/confidence-genericity-review-2026-08-28.md` for the full writeup.
+  `archive/RESOLVED_2026-08-28_confidence-genericity-review.md` for the full writeup (archived
+  2026-09-06 — the fixes described are merged and live, only the standalone report is archived).
 - **Intermittent LLM-response-parse failure — FIXED (most probable root cause; not
   live-confirmed, see caveat below).** `agent/llm/gemini_adapter.py`'s `llm_json()` could not
   tell a response truncated by `max_output_tokens` apart from a genuinely malformed one — a
@@ -150,9 +154,7 @@ from this consolidation pass: custom/fallback MCP traffic is not Model Armor-ins
   controlled re-check per PR #219's own report; out of scope for this fix (scoring-logic
   question, not an RCA-correctness or parse-reliability bug).
 
-**Calibration — BLOCKED, unchanged.** `agent/eval/golden_cases.py` still has all 14 original
-cases and zero Group C/D cases (verified 2026-08-31: `grep -c '"id":'` → 14, same as before).
-Per `confidence-genericity-review-2026-08-28.md` §13, calibration needs at minimum: 1-2 Group C
+**Calibration — UNBLOCKED as of the dataset, not yet independently re-verified as a full calibration pass.** `agent/eval/golden_cases.py` now has 16 cases (verified 2026-09-06: `grep -c '"id":'` → 16, up from 14) — Group C/D cases have been added since the 2026-08-31 check below was written. Whether a full calibration run against these new cases has been performed is not confirmed by this pass; check `agent/eval/` output directly before relying on this. Per `archive/RESOLVED_2026-08-28_confidence-genericity-review.md` §13, calibration needs at minimum: 1-2 Group C
 cases (evidence that plausibly points to the wrong culprit — e.g. a cascading-failure-shaped
 scenario where naive investigation finds the downstream symptom and a correct agent must trace
 to the real upstream cause) and 1 Group D case (evidence sparse/ambiguous enough to tempt a
@@ -182,9 +184,10 @@ explicitly scoped follow-up.
   correct hostname shape for it yet). `MODEL_ARMOR_TEMPLATE` remains unset on both
   engines — this fix is registration-only, does not enable Model Armor.
 - Agent-integrity review (16 gaps, PASS, live-verified): `archive/RESOLVED_2026-08-27_agent-integrity-review.md`
-- Confidence-scoring structural fixes + corrections addendum: `docs/management/confidence-genericity-review-2026-08-28.md`
+- Confidence-scoring structural fixes + corrections addendum: `archive/RESOLVED_2026-08-28_confidence-genericity-review.md`
 - Model Armor floor-setting history (superseded snapshots): `archive/SUPERSEDED_2026-08-25_model-armor-management-report.md`, `archive/SUPERSEDED_2026-08-25_custom-mcp-model-armor-coverage.md`
-- Terraform 1.4.7 / network-grant removal (status: PARTIAL — CI smoke test still red for an unrelated, pre-existing reason): `docs/management/rca-2026-08-26-tf147-and-network-grant-removal.md`
+- CONTENT_AUTHZ/REQUEST_AUTHZ real-traffic investigation (2026-09-05/06 — the finding that supersedes the two entries above): `PHASE1_EVIDENCE_LOG.md`
+- Terraform 1.4.7 / network-grant removal (status at archival: PARTIAL — CI smoke test was red for an unrelated, pre-existing reason; not re-verified since): `archive/RESOLVED_2026-08-26_rca-tf147-and-network-grant-removal.md`
 
 ## 11. Known documentation notes (this consolidation pass)
 

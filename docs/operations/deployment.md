@@ -1,7 +1,7 @@
 # Updating the Agent / CI/CD
 
 > **Implementation Status:** IMPLEMENTED
-> **Last Verified:** 2026-08-09 — `.github/workflows/terraform-apply.yml`, `.github/workflows/terraform-plan.yml`
+> **Last Verified:** 2026-09-06 — `.github/workflows/terraform-apply.yml`, `.github/workflows/terraform-plan.yml`
 > **Source of Truth:** `.github/workflows/terraform-apply.yml`
 > **Owner:** SRE Agent platform team.
 
@@ -23,21 +23,24 @@ also added to the workflow on 2026-08-09 (PR #52) — now reflected above.
 
 ## What happens after someone merges a PR
 
-`.github/workflows/terraform-apply.yml`, triggered on push to `main` touching `agent/**`, `mcp/**`, `iac/agent/**`. Steps, in order:
+`.github/workflows/terraform-apply.yml`, triggered on push to `main` touching `agent/**`, `mcp/**`, `iac/agent/**`. Real step names, in order:
 
-1. Checkout.
-2. **Package agent**: `bash scripts/package_agent.sh` — builds the reproducible `agent.tar.gz` (required since source is embedded inline in Terraform, no GCS staging).
-3. Auth via Workload Identity Federation (no long-lived keys).
-4. `terraform init` against the GCS state backend.
-5. **Apply #1**: full `terraform apply -auto-approve`, ensures infra + Artifact Registry repo exist (runs before any image build, since the repo doesn't exist until first enabled).
-6. **Build & push MCP image** — conditional on `ENABLE_CUSTOM_MCP` repo variable AND the change touching `mcp/**`.
-7. **Apply #2** — conditional, points Cloud Run at the newly-pushed image.
-8. **Verify MCP Cloud Run revision is healthy** — conditional, a real `gcloud run services describe` health check (not an HTTP curl, since the ingress setting means an external curl can't reach it anyway).
-9. **Register Agent Registry endpoints** — Google API endpoints always; the custom MCP's tool-spec, conditionally.
-10. **Attach gateway to engine** — self-heals the one known recurring flake (`code: 3, "The Reasoning Engine failed to be updated"`) by recreating the engine and retrying once; any other error fails the job loudly.
-11. **Smoke test**: live invocation of the deployed agent (`imagepull` scenario), asserts a well-formed RCA came back.
+1. **Detect changed paths** — decides which conditional steps below actually run.
+2. **Package agent** — `bash scripts/package_agent.sh`, builds the reproducible `agent.tar.gz` (source is embedded inline in Terraform, no GCS staging).
+3. **Pin MCP tool spec to currently-live content** — before any apply, so the Agent Registry's tool spec never briefly describes tools a not-yet-deployed revision doesn't support (see `iac/agent/agent_registry_mcp.tf`'s own header comment on the health-gated ordering).
+4. **Init** — `terraform init` against the GCS state backend, via Workload Identity Federation (no long-lived keys).
+5. **Read currently-deployed MCP image** — so the first apply doesn't accidentally revert the live Cloud Run image.
+6. **Apply (ensure infra + Artifact Registry repo exist)** — full `terraform apply`, using the pinned/current spec and image from steps 3/5. Also updates the gateway binding natively (see below) — an ordinary in-place update, no separate attach step.
+7. **Build & push MCP image** — conditional, only when the change touches `mcp/**` and `ENABLE_CUSTOM_MCP` is true.
+8. **Apply (point Cloud Run at the new MCP image)** — conditional, second apply pointing the service at the just-pushed image.
+9. **Verify MCP Cloud Run revision is healthy** — conditional, a real `gcloud run services describe` health check (not an HTTP curl — the service's `INGRESS_TRAFFIC_ALL` setting means it's reachable, but IAM would 401/403 an unauthenticated curl anyway).
+10. **Regenerate MCP tool spec now that the new revision is verified healthy** — conditional, only after step 9 passes.
+11. **Apply (register verified custom MCP tool spec)** — conditional, the only apply where the tool-spec content can actually change.
+12. **Smoke test — verify the agent responds through the gateway** — live invocation of the deployed agent (`imagepull` scenario), asserts a well-formed RCA came back. Real end-to-end proof, not just "the apply succeeded" — this is what would have caught the original mTLS/gateway-binding incident in CI instead of requiring manual investigation.
 
 A failure at any non-conditional step fails the whole job — there's no `continue-on-error` masking a broken deploy.
+
+**No separate "attach gateway" step exists** — since 2026-08-10 (PR #93), the gateway binding (`agentGatewayConfig`) is a native attribute of `google_vertex_ai_reasoning_engine.sre_agent` (`iac/agent/agent_engine.tf`), applied as an ordinary in-place update by step 6/8/11's own `terraform apply`. `scripts/attach_gateway_to_engine.sh` still exists, unchanged, as a manual emergency rollback tool only — CI does not invoke it.
 
 ## Approval gate
 

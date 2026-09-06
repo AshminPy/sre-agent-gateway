@@ -2,7 +2,7 @@
 
 **Implementation Status:** This entire knowledge base documents the currently-deployed system in GCP project `sreagent-t2-demo`, built by direct inspection of the repository, Terraform, and live configuration — not from design documents or assumptions. Every page carries its own status header (Implementation Status, Last Verified, Source of Truth, Owner) and marks claims IMPLEMENTED / PARTIALLY IMPLEMENTED / PLANNED / DEPRECATED / UNKNOWN.
 
-**Last Verified:** 2026-08-30 (index re-verified; added CURRENT-STATE.md and 4 previously-unindexed 2026-08-23→08-28 reports; moved DOCUMENTATION-VALIDATION-REPORT.md to archive/. Individual pages carry their own dates — several were last verified 2026-08-08/09 and predate ~90 commits, so trust current code, or [Current State](management/CURRENT-STATE.md), over any page that disagrees)
+**Last Verified:** 2026-09-06 (repo-wide documentation accuracy pass: corrected the Model Armor/CONTENT_AUTHZ framing across ~15 pages — it is real and request-side-blocking, not inactive; corrected custom-MCP/on-prem reachability claims — both work end-to-end today; archived 5 closed/superseded management reports; added [LLM Switching](operations/llm-switching.md). Individual pages carry their own dates — trust current code, or [Current State](management/CURRENT-STATE.md), over any page that disagrees)
 **Owner:** SRE Agent platform team
 
 ---
@@ -109,11 +109,12 @@
 | [Implemented vs Planned Matrix](management/implemented-vs-planned-matrix.md) | **The current capability truth** — every capability, ✅/🟡/🔵/❌, with file:line or live-command evidence |
 | [Show Me the Implementation](management/show-me-the-implementation.md) | Management-facing "prove it" answers |
 | [Documentation Validation Report](../archive/SUPERSEDED_2026-08-20_DOCUMENTATION-VALIDATION-REPORT.md) | **Historical snapshot (2026-08-08/09)** — audit evidence, not current status |
-| [Confidence/Genericity Review (2026-08-28)](management/confidence-genericity-review-2026-08-28.md) | 7 structural confidence-scoring fixes (PR #219) — before/after evidence + corrections addendum |
+| [Confidence/Genericity Review (2026-08-28)](../archive/RESOLVED_2026-08-28_confidence-genericity-review.md) | 7 structural confidence-scoring fixes (PR #219) — RESOLVED, merged, live-verified; archived 2026-09-06 |
 | [Floor-Settings Production Plan (2026-08-25)](management/floor-settings-production-plan-2026-08-25.md) | Model Armor floor-setting history — **referenced by `iac/agent/model_armor.tf`, do not move** |
-| [Observability Architecture Review (2026-08-23)](management/observability-architecture-review-2026-08-23.md) | Phase-0 observability gap review |
-| [RCA — TF 1.4.7 + Network Grant Removal (2026-08-26)](management/rca-2026-08-26-tf147-and-network-grant-removal.md) | Status: PARTIAL — CI smoke test still red for an unrelated, pre-existing reason |
-| [Next Slice: Connect Gateway Onboarding (2026-08-31)](management/next-slice-connect-gateway-onboarding-2026-08-31.md) | **Planned, not built** — the concrete follow-up workstream for full Connect Gateway/non-GKE onboarding (Fleet Terraform, baked auth plugin, live external-cluster E2E), deferred out of this run |
+| [Observability Architecture Review (2026-08-23)](../archive/RESOLVED_2026-08-23_observability-architecture-review.md) | Phase-0 observability gap review — RESOLVED, every recommendation merged; archived 2026-09-06 |
+| [RCA — TF 1.4.7 + Network Grant Removal (2026-08-26)](../archive/RESOLVED_2026-08-26_rca-tf147-and-network-grant-removal.md) | RESOLVED — PR #198 merged; archived 2026-09-06 |
+| [Next Slice: Connect Gateway Onboarding (2026-08-31)](../archive/SUPERSEDED_2026-08-31_next-slice-connect-gateway-onboarding.md) | SUPERSEDED — this planned work shipped as Phase 1 (PR #242/#244), 4 days after this plan was written; see [GKE vs Non-GKE Access](architecture/gke-vs-nongke.md) for current state; archived 2026-09-06 |
+| [LLM Switching](operations/llm-switching.md) | The exact variable/config to change the Gemini model, what's provider-agnostic vs. not, cost-pricing sync requirement |
 | ADR-001 … ADR-012 | Architecture decision records — [001 two-project split](ADR-001-two-project-split.md) · [002 agent identity and gateway](ADR-002-agent-identity-and-gateway.md) · [003 LangGraph orchestration](ADR-003-langgraph-orchestration.md) · [004 MCP tool-access protocol](ADR-004-mcp-tool-access-protocol.md) · [005 read-only by design](ADR-005-read-only-by-design.md) · [006 evidence before RCA](ADR-006-evidence-before-rca.md) · [007 two confidence dimensions](ADR-007-two-confidence-dimensions.md) · [008 confidence not accuracy](ADR-008-confidence-not-accuracy.md) · [009 GCS durable evidence archive](ADR-009-gcs-durable-evidence-archive.md) · [010 human approval before trusted memory](ADR-010-human-approval-before-trusted-memory.md) · [011 Terraform-managed cluster registry](ADR-011-terraform-managed-cluster-registry.md) · [012 GKE Remote MCP vs custom MCP](ADR-012-gke-remote-mcp-vs-custom-mcp.md) |
 
 ### Promotion to the company repo

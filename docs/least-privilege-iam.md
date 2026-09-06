@@ -26,7 +26,7 @@ are the only roles it holds. Defined in `iac/agent/iam.tf`.
 | `roles/logging.logWriter` | Project A | Emit structured run logs |
 | `roles/cloudtrace.agent` | Project A | OpenTelemetry traces |
 | `roles/monitoring.metricWriter` | Project A | Metrics |
-| `roles/modelarmor.user` | Project A | App-layer prompt/response sanitize |
+| `roles/modelarmor.user` | Project A | App-layer prompt/response sanitize — **conditional, `count = enable_agent_gateway ? 0 : 1`; NOT held in the live config** (gateway is on). Not to be confused with the separate, real, live Gateway CONTENT_AUTHZ mechanism — see [Security Operations](governance/security.md#model-armor--three-distinct-mechanisms-each-with-different-enforcement-corrected-2026-09-06). |
 | `roles/storage.objectCreator` + `objectViewer` | **evidence bucket only** | Write/read RCA evidence |
 | `roles/storage.objectCreator` + `objectViewer` | **eval bucket only** | Write/read eval data |
 | `roles/storage.objectViewer` | **cluster-config bucket only** | Read clusters.json |

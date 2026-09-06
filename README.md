@@ -1,12 +1,14 @@
 # sre-agent-gateway
 
 An AI **Site Reliability Engineering** agent that investigates Kubernetes
-incidents on GKE — read-only — and produces a structured Root Cause Analysis.
-It runs on **Vertex AI Agent Engine**, reasons with **Gemini**, remembers past
-investigations in a **Memory Bank**, and (optionally) has all of its egress
-governed by an **Agent Gateway**. Model Armor content filtering is built and
-templated (`iac/agent/model_armor.tf`) but currently inactive in the default
-gateway-enabled deployment — see [What it does](#what-it-does) below.
+incidents — GKE and non-GKE/on-prem — read-only — and produces a structured
+Root Cause Analysis. It runs on **Vertex AI Agent Engine**, reasons with
+**Gemini**, remembers past investigations in a **Memory Bank**, and
+(optionally) has all of its egress governed by an **Agent Gateway** with
+**Model Armor** content inspection (`iac/agent/model_armor.tf`) — real and
+blocking on the request side, with a documented Google platform limitation on
+the response side (Streamable HTTP/SSE MCP traffic is excluded from gateway
+sanitization) — see [What it does](#what-it-does) below.
 
 Everything is Terraform. The agent runs in **Project A**; the GKE cluster it
 investigates lives in **Project B** (yours, existing or demo). Clone, fill in two
@@ -58,21 +60,23 @@ which carries the current Mermaid diagrams inline.
   permission set granted (zero create/patch/delete), and a live-passing
   regression test that blocks any mutating call pattern from ever being
   added. See [`docs/management/show-me-the-implementation.md`](docs/management/show-me-the-implementation.md) Q7.
-- **GKE Remote MCP** (Google-managed) as the primary tool source, with an
-  optional custom Cloud Run MCP fallback (code-complete, not deployed by
-  default — see [the status matrix](docs/management/implemented-vs-planned-matrix.md)).
+- **GKE Remote MCP** (Google-managed) as the primary tool source, with a
+  custom Cloud Run MCP fallback that also serves as the path to non-GKE/
+  on-prem clusters via Connect Gateway — live, deployed, and used in real
+  investigations today (fixed 2026-09-04; see
+  [MCP Architecture](docs/architecture/mcp-architecture.md)).
 - **Multi-cluster** — any number of GKE or non-GKE clusters via one Terraform
   variable, deterministic 5-tier routing to the correct one.
-- **Model Armor** templates exist for prompt-injection/PII/malicious-URL
-  filtering (`iac/agent/model_armor.tf`), but **currently filter nothing in
-  the live deployment**: not at the Agent Gateway (`CONTENT_AUTHZ` — no
-  working Terraform path exists to wire it, confirmed by a real API
-  rejection) and not in agent code either — the app-level fallback only
-  activates when the gateway is *off* (`enable_agent_gateway=false`), and the
-  live config has the gateway on. This is a real, currently-open control gap,
-  not a deliberately-accepted one — see
-  [Security Operations](docs/governance/security.md) for the full picture and
-  compensating controls.
+- **Model Armor** (`iac/agent/model_armor.tf`) genuinely inspects and BLOCKS
+  MCP `tools/call` REQUEST bodies at the Agent Gateway (`CONTENT_AUTHZ`).
+  RESPONSE bodies are never inspected by the gateway — a documented Google
+  platform limitation (Streamable HTTP/SSE MCP traffic is excluded from
+  gateway sanitization), not a config gap on our side. A separate,
+  detect-only floor setting also covers GKE Remote MCP requests and the
+  agent's own Gemini calls. An application-level guard that closes the
+  response-side gap for the custom MCP exists as an unreviewed POC — see
+  [Security Operations](docs/governance/security.md#model-armor--three-distinct-mechanisms-each-with-different-enforcement-corrected-2026-09-06)
+  for the full picture, evidence, and what's still open.
 - **Memory Bank** — remembers prior RCAs per cluster/namespace.
 - **Full observability** — structured run logs, 11 log-based metrics, 11 alert
   policies, OpenTelemetry traces.
