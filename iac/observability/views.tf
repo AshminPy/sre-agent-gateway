@@ -47,7 +47,13 @@ resource "google_bigquery_table" "v_investigations" {
         timestamp                                       AS event_timestamp_utc,
         DATE(timestamp, "${var.dashboard_timezone}")    AS event_date_local,
         jsonPayload.event_type                          AS event_type,
-        jsonPayload.terminal_kind                       AS terminal_kind,
+        -- Legacy (pre-2026-09-05) summaries have no terminal_kind; they were
+        -- only ever written on normal completion, so label them as such
+        -- rather than leaving them indistinguishable from unknown.
+        COALESCE(
+          jsonPayload.terminal_kind,
+          IF(jsonPayload.event_type IS NULL, "legacy_completion", NULL)
+        )                                                AS terminal_kind,
         jsonPayload.terminal_event_schema_version       AS terminal_event_schema_version,
         jsonPayload.status                              AS status,
         jsonPayload.environment                         AS environment,
@@ -87,7 +93,13 @@ resource "google_bigquery_table" "v_investigations" {
         -- by default, which is already correct, but any SUM()/COUNT()-based
         -- "average" built by hand must not divide by a row count that
         -- includes rows with no real metric to contribute.
-        jsonPayload.partial_metrics_available           AS partial_metrics_available,
+        -- Legacy completion summaries predate this flag; their metrics are
+        -- real completion metrics (the crash path never wrote a summary
+        -- back then), so they count as available. Crash rows keep FALSE.
+        COALESCE(
+          jsonPayload.partial_metrics_available,
+          jsonPayload.event_type IS NULL
+        )                                                AS partial_metrics_available,
         jsonPayload.investigation_completeness_score     AS investigation_completeness_score,
         jsonPayload.root_cause_confidence_score          AS root_cause_confidence_score,
         -- Raw, unmodified Agent classification — never discarded.
@@ -135,7 +147,25 @@ resource "google_bigquery_table" "v_investigations" {
           "%22;project=", "${var.project_a_id}"
         )                                                AS agent_log_link
       FROM `${var.project_a_id}.${google_bigquery_dataset.dashboard.dataset_id}.sre_agent_investigations`
-      WHERE jsonPayload.event_type = "sre_agent_run_terminal"
+      WHERE
+        -- Current shape (since the 2026-09-05 telemetry fix): every run ends
+        -- with exactly one terminal event, completion or crash.
+        jsonPayload.event_type = "sre_agent_run_terminal"
+        -- Legacy shape (rca_builder summaries written BEFORE that fix, and
+        -- the rows backfilled from Cloud Logging by
+        -- scripts/backfill_investigations_from_logging.py): no event_type at
+        -- all, but a run_id, a status and a schema_version. The same log also
+        -- carries run-less entries (memory-bank recalls etc.) with none of
+        -- those fields, which this predicate deliberately excludes.
+        OR (
+          jsonPayload.event_type IS NULL
+          AND jsonPayload.run_id IS NOT NULL
+          AND jsonPayload.status IS NOT NULL
+          AND jsonPayload.schema_version IS NOT NULL
+        )
+      -- One row per run, always. Legacy test runs reused a run_id
+      -- (run_test_001 has 76 summaries); keep only the newest summary.
+      QUALIFY ROW_NUMBER() OVER (PARTITION BY jsonPayload.run_id ORDER BY timestamp DESC) = 1
     SQL
   }
 

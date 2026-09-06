@@ -26,6 +26,7 @@ with a 90-day partition expiration (`var.partition_expiration_days`).
 | run_id | `v_investigations` | `jsonPayload.run_id` | Format `run_YYYYMMDD_HHMMSS_xxxx` |
 | event_timestamp | all three views | `DATETIME(timestamp, var.dashboard_timezone)` | Cloud Logging ingestion time as LOCAL wall-clock (default America/New_York) so Looker Studio day buckets and "include today" follow the readers' calendar |
 | event_timestamp_utc | all three views | `timestamp` | The same instant as a UTC TIMESTAMP, for correlating with Cloud Logging / traces |
+| terminal_kind | `v_investigations` | `jsonPayload.terminal_kind`, or `"legacy_completion"` when the row predates the 2026-09-05 telemetry fix (no `event_type`) | completion \| crash \| legacy_completion |
 | event_date_local | all three views | `DATE(timestamp, var.dashboard_timezone)` | Local calendar date (default America/New_York) for Looker Studio relative date ranges; `timestamp` itself stays UTC |
 | status | `v_investigations` | `jsonPayload.status` | `"success"` \| `"error"` (rca_builder's own enum — Log A's differently-typed `status` field is NOT sunk here) |
 | environment | `v_investigations` | `jsonPayload.environment` | Added 2026-09-05 — resolved once in `agent/nodes/context_resolver.py`, threaded through, never re-derived |

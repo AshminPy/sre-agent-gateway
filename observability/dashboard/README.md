@@ -101,3 +101,22 @@ this scale, and Cloud Logging sinks themselves are free.
 5. Build the Looker Studio report per `looker-studio/DASHBOARD_SPEC.md`,
    pointing each chart's data source at the three views, never the raw
    tables directly.
+
+## Backfilling history from Cloud Logging (one-off)
+
+A Cloud Logging sink only forwards entries written after the sink exists
+(2026-09-05 20:06 UTC here), so the dashboard started with a handful of runs
+while Cloud Logging still held hundreds (30-day default retention).
+`scripts/backfill_investigations_from_logging.py` copies the missing entries
+into the raw sink table with the sink's own schema:
+
+```bash
+python3 scripts/backfill_investigations_from_logging.py --project <project>          # dry run: loads a staging table, prints counts
+python3 scripts/backfill_investigations_from_logging.py --project <project> --apply  # inserts rows not already in the sink (by insertId)
+```
+
+Legacy entries (before the 2026-09-05 telemetry fix) carry no `event_type`;
+`v_investigations` recognises them by `run_id + status + schema_version`,
+labels them `terminal_kind = "legacy_completion"`, and keeps one row per
+`run_id` (`QUALIFY ROW_NUMBER() ... = 1`). Nothing older than Cloud Logging's
+retention window can be recovered.
