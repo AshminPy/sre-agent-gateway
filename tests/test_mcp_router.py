@@ -134,3 +134,112 @@ def test_valid_enabled_cluster_proceeds_to_llm_routing(monkeypatch):
     # Reached Phase 2 (LLM was called and returned "done") rather than safe-stopping —
     # no "cannot route safely" error present.
     assert not any("cannot route safely" in e for e in result.get("errors", []))
+
+
+def _mock_llm_returning(monkeypatch, tool: str, arguments: dict):
+    """Common helper for the issue #246 tests below — the router's own LLM call
+    proposes `tool`/`arguments`; we assert on what the AUTO-FILL step does to
+    `arguments` afterward, not on the LLM's own (mocked) output."""
+    monkeypatch.setattr(
+        mcp_router_mod, "llm_json",
+        lambda *a, **k: (
+            {"tool": tool, "arguments": dict(arguments)},
+            {
+                "input_tokens": 10, "cached_input_tokens": 0, "output_tokens": 5,
+                "reasoning_tokens": 0, "tool_tokens": 0, "total_tokens": 15,
+                "billable_output_tokens": 5, "cost_usd": 0.0,
+                "provider": "gemini", "model": "gemini-2.5-pro", "duration_s": 0.1,
+            },
+        ),
+    )
+
+
+_CUSTOM_CLUSTER_REGISTRY = {
+    "sre-lab": {"cluster_type": "custom", "enabled": True},
+}
+
+
+def test_issue_246_list_nodes_gets_no_namespace_argument(monkeypatch):
+    """list_nodes() takes no namespace param at all (a Node isn't namespaced) — the
+    router's auto-fill must not inject one, or the MCP server rejects the call with
+    'unexpected_keyword_argument'."""
+    monkeypatch.setattr(mcp_router_mod, "_get_cluster_registry", lambda: _CUSTOM_CLUSTER_REGISTRY)
+    _mock_llm_returning(monkeypatch, "list_nodes", {})
+
+    state = _make_state("sre-lab")
+    result = mcp_router(state)
+
+    assert result["current_action"]["tool"] == "list_nodes"
+    assert result["current_action"]["mcp_source"] == "k8s_mcp"
+    assert "namespace" not in result["current_action"]["arguments"]
+
+
+def test_issue_246_describe_node_gets_no_namespace_argument(monkeypatch):
+    """describe_node(node_name) takes only node_name — same cluster-scoped exclusion
+    as list_nodes."""
+    monkeypatch.setattr(mcp_router_mod, "_get_cluster_registry", lambda: _CUSTOM_CLUSTER_REGISTRY)
+    _mock_llm_returning(monkeypatch, "describe_node", {"node_name": "gke-node-1"})
+
+    state = _make_state("sre-lab")
+    result = mcp_router(state)
+
+    assert result["current_action"]["tool"] == "describe_node"
+    args = result["current_action"]["arguments"]
+    assert "namespace" not in args
+    assert args["node_name"] == "gke-node-1"
+
+
+def test_issue_246_normal_namespaced_tool_still_gets_namespace(monkeypatch):
+    """Regression guard: the fix must not remove namespace auto-fill from tools that
+    actually need it — only the two cluster-scoped exceptions."""
+    monkeypatch.setattr(mcp_router_mod, "_get_cluster_registry", lambda: _CUSTOM_CLUSTER_REGISTRY)
+    _mock_llm_returning(monkeypatch, "list_pods", {})
+
+    state = _make_state("sre-lab")
+    result = mcp_router(state)
+
+    assert result["current_action"]["tool"] == "list_pods"
+    assert result["current_action"]["arguments"]["namespace"] == "test-incidents"
+
+
+def test_issue_246_pod_scoped_tool_still_gets_pod_name(monkeypatch):
+    """Regression guard: the pod_name auto-fill (issue #72) is untouched by this fix."""
+    monkeypatch.setattr(mcp_router_mod, "_get_cluster_registry", lambda: _CUSTOM_CLUSTER_REGISTRY)
+    _mock_llm_returning(monkeypatch, "describe_pod_detail", {})
+
+    state = _make_state("sre-lab")
+    result = mcp_router(state)
+
+    args = result["current_action"]["arguments"]
+    assert args["namespace"] == "test-incidents"
+    assert args["pod_name"] == "test-pod"
+
+
+def test_issue_246_tool_not_in_allowlist_still_blocked_safely(monkeypatch):
+    """Invalid/disallowed tool names must still fail safely (allowlist enforcement,
+    unrelated to and unaffected by the namespace auto-fill fix)."""
+    monkeypatch.setattr(mcp_router_mod, "_get_cluster_registry", lambda: _CUSTOM_CLUSTER_REGISTRY)
+    _mock_llm_returning(monkeypatch, "delete_pod", {"namespace": "test-incidents"})
+
+    state = _make_state("sre-lab")
+    result = mcp_router(state)
+
+    assert result["current_action"]["tool"] == "done"
+    assert result["current_action"]["mcp_source"] == "none"
+    assert any("not in allowlist" in e for e in result.get("errors", []))
+
+
+def test_issue_246_routing_to_gke_remote_mcp_unchanged(monkeypatch):
+    """Routing/mcp_source selection itself must be unaffected by this fix — a GKE
+    cluster still routes to gke_remote_mcp regardless of the auto-fill change (which
+    only applies to the k8s_mcp branch)."""
+    monkeypatch.setattr(
+        mcp_router_mod, "_get_cluster_registry",
+        lambda: {"prod-cluster-us-east1": {"cluster_type": "gke", "enabled": True}},
+    )
+    _mock_llm_returning(monkeypatch, "list_k8s_events", {})
+
+    state = _make_state("prod-cluster-us-east1")
+    result = mcp_router(state)
+
+    assert result["current_action"]["mcp_source"] == "gke_remote_mcp"

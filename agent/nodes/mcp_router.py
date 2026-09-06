@@ -9,7 +9,7 @@ from agent.llm import llm_json
 from agent.mcp_client import (
     MCP_REGISTRY, _get_cluster_registry,
     GKE_REMOTE_TOOLS, CUSTOM_K8S_TOOLS,
-    get_tools_for_source,
+    get_tools_for_source, _CUSTOM_TOOLS_WITHOUT_NAMESPACE,
 )
 from agent.prompts import MCP_ROUTER_PHASE2_SYSTEM, MCP_ROUTER_PHASE2_USER
 from agent.otel import trace_node, log_node_tokens
@@ -227,7 +227,11 @@ def mcp_router(state: AgentState) -> dict:
 
     # ── AUTO-FILL for custom K8s MCP ─────────────────────────────
     if mcp_source == "k8s_mcp":
-        args.setdefault("namespace", namespace)
+        # issue #246: cluster-scoped tools (list_nodes, describe_node) take no
+        # namespace param at all -- injecting one made every call fail with
+        # the MCP server's own "unexpected_keyword_argument" validation error.
+        if tool not in _CUSTOM_TOOLS_WITHOUT_NAMESPACE:
+            args.setdefault("namespace", namespace)
         if tool in ("describe_pod_detail", "get_current_logs",
                     "get_previous_logs", "list_events") and pod:
             args.setdefault("pod_name", pod)

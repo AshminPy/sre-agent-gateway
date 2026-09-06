@@ -96,6 +96,21 @@ _CUSTOM_TOOLS_ACCEPTING_POD_NAME = frozenset({
     "describe_pod_detail", "get_current_logs", "get_previous_logs", "list_events",
 })
 
+# issue #246: cluster-scoped custom MCP tools take no `namespace` param at all --
+# a Kubernetes Node isn't namespaced. Confirmed against every CUSTOM_K8S_TOOLS
+# function signature in mcp/server.py: these are the only two lacking `namespace`
+# (every other one of the 24 remaining tools has it, several with a default).
+# mcp_router.py's auto-fill used to setdefault("namespace", ...) unconditionally
+# for every k8s_mcp call, so list_nodes/describe_node were rejected by the MCP
+# server's own Pydantic validation ("unexpected_keyword_argument"). Same
+# frozenset-exclusion pattern as _CUSTOM_TOOLS_ACCEPTING_POD_NAME above, not a
+# schema fetch, for the same reason: agent/ doesn't load mcp/tool_spec.json at
+# runtime, and hardcoding the two-tool exception list is smaller and safer than
+# adding that dependency for two known, stable tool names.
+_CUSTOM_TOOLS_WITHOUT_NAMESPACE = frozenset({
+    "list_nodes", "describe_node",
+})
+
 # Write-style actions — always blocked
 BLOCKED_ACTIONS = frozenset({
     "delete", "create", "patch", "update", "apply",
@@ -477,7 +492,13 @@ def _try_custom_mcp_fallback(
     if not (fallback and fallback_tool and fallback_tool in CUSTOM_K8S_TOOLS):
         return None
     log.info("call_tool: GKE Remote failed → fallback %s.%s", fallback, fallback_tool)
-    fallback_args: Dict[str, Any] = {"namespace": namespace}
+    # issue #246: same guard as mcp_router.py's auto-fill -- no current mapping
+    # above targets a cluster-scoped tool (list_nodes/describe_node), but keep
+    # this consistent with the rest of the module so a future mapping addition
+    # can't silently reintroduce the same "unexpected_keyword_argument" failure.
+    fallback_args: Dict[str, Any] = {}
+    if fallback_tool not in _CUSTOM_TOOLS_WITHOUT_NAMESPACE:
+        fallback_args["namespace"] = namespace
     if pod_name and fallback_tool in _CUSTOM_TOOLS_ACCEPTING_POD_NAME:
         fallback_args["pod_name"] = pod_name
     return call_tool(fallback, fallback_tool, fallback_args, run_id, cluster_name)
