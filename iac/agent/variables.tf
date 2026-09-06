@@ -167,9 +167,9 @@ variable "iap_iam_enforcement_mode" {
 }
 
 variable "authz_fail_open" {
-  description = "When true, the gateway ALLOWS a request if the IAP authorization extension is unreachable (safe for rollout). Set false to fail closed / enforce. Only used when enable_agent_gateway = true."
+  description = "When true, the gateway ALLOWS a request if the IAP authorization extension is unreachable (safe for rollout). Set false to fail closed / enforce. Only used when enable_agent_gateway = true. Default changed true -> false 2026-09-05: normal REQUEST_AUTHZ/IAP enforcement was already proven (real revoke/retry test, no bypass, no stale enforcement); the remaining open question was specifically this extension-unreachable failure mode, which fail-open leaves silently permissive. CI never overrides this var (same reason model_armor_pi_confidence's default lives here, not in terraform.tfvars, which is gitignored) — changing the default here is what actually makes this durable through the real CI/CD pipeline."
   type        = bool
-  default     = true
+  default     = false
 }
 
 # ============================================================================
