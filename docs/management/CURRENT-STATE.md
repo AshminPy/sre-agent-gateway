@@ -132,8 +132,9 @@ from this consolidation pass: custom/fallback MCP traffic is not Model Armor-ins
   exist — when it was running the whole time. Fix: both tools now return `ok: False` on a
   NotFound result, same treatment as the existing `isError`/Model Armor-block branches, so a
   wrong name-guess can no longer by itself ground a "resource is missing" claim. See
-  `archive/RESOLVED_2026-08-28_confidence-genericity-review.md` for the full writeup (archived
-  2026-09-06 — the fixes described are merged and live, only the standalone report is archived).
+  `docs/management/confidence-genericity-review-2026-08-28.md` for the full writeup (kept in
+  its original location — cited by path from 15+ live `agent/`/`tests/` code comments as
+  provenance, same reason as `PRODUCTION-LAUNCH-PLAN.md`).
 - **Intermittent LLM-response-parse failure — FIXED (most probable root cause; not
   live-confirmed, see caveat below).** `agent/llm/gemini_adapter.py`'s `llm_json()` could not
   tell a response truncated by `max_output_tokens` apart from a genuinely malformed one — a
@@ -154,7 +155,7 @@ from this consolidation pass: custom/fallback MCP traffic is not Model Armor-ins
   controlled re-check per PR #219's own report; out of scope for this fix (scoring-logic
   question, not an RCA-correctness or parse-reliability bug).
 
-**Calibration — UNBLOCKED as of the dataset, not yet independently re-verified as a full calibration pass.** `agent/eval/golden_cases.py` now has 16 cases (verified 2026-09-06: `grep -c '"id":'` → 16, up from 14) — Group C/D cases have been added since the 2026-08-31 check below was written. Whether a full calibration run against these new cases has been performed is not confirmed by this pass; check `agent/eval/` output directly before relying on this. Per `archive/RESOLVED_2026-08-28_confidence-genericity-review.md` §13, calibration needs at minimum: 1-2 Group C
+**Calibration — UNBLOCKED as of the dataset, not yet independently re-verified as a full calibration pass.** `agent/eval/golden_cases.py` now has 16 cases (verified 2026-09-06: `grep -c '"id":'` → 16, up from 14) — Group C/D cases have been added since the 2026-08-31 check below was written. Whether a full calibration run against these new cases has been performed is not confirmed by this pass; check `agent/eval/` output directly before relying on this. Per `docs/management/confidence-genericity-review-2026-08-28.md` §13, calibration needs at minimum: 1-2 Group C
 cases (evidence that plausibly points to the wrong culprit — e.g. a cascading-failure-shaped
 scenario where naive investigation finds the downstream symptom and a correct agent must trace
 to the real upstream cause) and 1 Group D case (evidence sparse/ambiguous enough to tempt a
@@ -184,7 +185,7 @@ explicitly scoped follow-up.
   correct hostname shape for it yet). `MODEL_ARMOR_TEMPLATE` remains unset on both
   engines — this fix is registration-only, does not enable Model Armor.
 - Agent-integrity review (16 gaps, PASS, live-verified): `archive/RESOLVED_2026-08-27_agent-integrity-review.md`
-- Confidence-scoring structural fixes + corrections addendum: `archive/RESOLVED_2026-08-28_confidence-genericity-review.md`
+- Confidence-scoring structural fixes + corrections addendum: `docs/management/confidence-genericity-review-2026-08-28.md`
 - Model Armor floor-setting history (superseded snapshots): `archive/SUPERSEDED_2026-08-25_model-armor-management-report.md`, `archive/SUPERSEDED_2026-08-25_custom-mcp-model-armor-coverage.md`
 - CONTENT_AUTHZ/REQUEST_AUTHZ real-traffic investigation (2026-09-05/06 — the finding that supersedes the two entries above): `PHASE1_EVIDENCE_LOG.md`
 - Terraform 1.4.7 / network-grant removal (status at archival: PARTIAL — CI smoke test was red for an unrelated, pre-existing reason; not re-verified since): `archive/RESOLVED_2026-08-26_rca-tf147-and-network-grant-removal.md`

@@ -109,9 +109,9 @@
 | [Implemented vs Planned Matrix](management/implemented-vs-planned-matrix.md) | **The current capability truth** — every capability, ✅/🟡/🔵/❌, with file:line or live-command evidence |
 | [Show Me the Implementation](management/show-me-the-implementation.md) | Management-facing "prove it" answers |
 | [Documentation Validation Report](../archive/SUPERSEDED_2026-08-20_DOCUMENTATION-VALIDATION-REPORT.md) | **Historical snapshot (2026-08-08/09)** — audit evidence, not current status |
-| [Confidence/Genericity Review (2026-08-28)](../archive/RESOLVED_2026-08-28_confidence-genericity-review.md) | 7 structural confidence-scoring fixes (PR #219) — RESOLVED, merged, live-verified; archived 2026-09-06 |
+| [Confidence/Genericity Review (2026-08-28)](management/confidence-genericity-review-2026-08-28.md) | 7 structural confidence-scoring fixes (PR #219) — RESOLVED, merged, live-verified. **Referenced by 15+ live `agent/`/`tests/` code comments, do not move** (same reason as the two rows below) |
 | [Floor-Settings Production Plan (2026-08-25)](management/floor-settings-production-plan-2026-08-25.md) | Model Armor floor-setting history — **referenced by `iac/agent/model_armor.tf`, do not move** |
-| [Observability Architecture Review (2026-08-23)](../archive/RESOLVED_2026-08-23_observability-architecture-review.md) | Phase-0 observability gap review — RESOLVED, every recommendation merged; archived 2026-09-06 |
+| [Observability Architecture Review (2026-08-23)](management/observability-architecture-review-2026-08-23.md) | Phase-0 observability gap review — RESOLVED, every recommendation merged. **Referenced by live `tests/` code comments, do not move** |
 | [RCA — TF 1.4.7 + Network Grant Removal (2026-08-26)](../archive/RESOLVED_2026-08-26_rca-tf147-and-network-grant-removal.md) | RESOLVED — PR #198 merged; archived 2026-09-06 |
 | [Next Slice: Connect Gateway Onboarding (2026-08-31)](../archive/SUPERSEDED_2026-08-31_next-slice-connect-gateway-onboarding.md) | SUPERSEDED — this planned work shipped as Phase 1 (PR #242/#244), 4 days after this plan was written; see [GKE vs Non-GKE Access](architecture/gke-vs-nongke.md) for current state; archived 2026-09-06 |
 | [LLM Switching](operations/llm-switching.md) | The exact variable/config to change the Gemini model, what's provider-agnostic vs. not, cost-pricing sync requirement |
