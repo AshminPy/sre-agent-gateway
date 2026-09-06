@@ -37,10 +37,14 @@ resource "google_bigquery_table" "v_investigations" {
     query          = <<-SQL
       SELECT
         jsonPayload.run_id                             AS run_id,
-        timestamp                                       AS event_timestamp,
-        -- Local calendar date for Looker Studio's relative date ranges
-        -- ("Last 7 days, include today"). `timestamp` is UTC; without this
-        -- column, runs after 00:00 UTC drop out of "today" for EDT readers.
+        -- event_timestamp is LOCAL wall-clock time (var.dashboard_timezone,
+        -- default America/New_York) so Looker Studio's relative date ranges
+        -- ("Last 7 days, include today") and day buckets follow the readers'
+        -- calendar, not UTC. The raw UTC instant is kept as
+        -- event_timestamp_utc for anything that needs to correlate with
+        -- Cloud Logging / traces.
+        DATETIME(timestamp, "${var.dashboard_timezone}") AS event_timestamp,
+        timestamp                                       AS event_timestamp_utc,
         DATE(timestamp, "${var.dashboard_timezone}")    AS event_date_local,
         jsonPayload.event_type                          AS event_type,
         jsonPayload.terminal_kind                       AS terminal_kind,
@@ -160,7 +164,8 @@ resource "google_bigquery_table" "v_model_armor_activity" {
     use_legacy_sql = false
     query          = <<-SQL
       SELECT
-        timestamp                                                             AS event_timestamp,
+        DATETIME(timestamp, "${var.dashboard_timezone}")                      AS event_timestamp,
+        timestamp                                                             AS event_timestamp_utc,
         DATE(timestamp, "${var.dashboard_timezone}")                          AS event_date_local,
         resource.labels.template_id                                          AS template_id,
         CASE
@@ -214,7 +219,8 @@ resource "google_bigquery_table" "v_gateway_activity" {
     use_legacy_sql = false
     query          = <<-SQL
       SELECT
-        timestamp                                                                          AS event_timestamp,
+        DATETIME(timestamp, "${var.dashboard_timezone}")                                   AS event_timestamp,
+        timestamp                                                                          AS event_timestamp_utc,
         DATE(timestamp, "${var.dashboard_timezone}")                                       AS event_date_local,
         jsonpayload_type_loadbalancerlogentry.enforcedgatewaysecuritypolicy.hostname        AS destination_hostname,
         jsonpayload_type_loadbalancerlogentry.authzpolicyinfo.result                        AS overall_result,
