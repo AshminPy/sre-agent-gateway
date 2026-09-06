@@ -680,6 +680,114 @@ def _finalize_investigation_result(result: dict, started_at: float, payload: dic
     }
 
 
+def _write_crash_investigation_event(
+    run_id: str,
+    cluster_requested: str,
+    namespace_requested: str,
+    pod_requested: str,
+    error_type: str,
+    error_message: str,
+    duration_s: float,
+) -> None:
+    """Observability-only: writes a structured terminal event for an investigation
+    that crashed before agent/nodes/rca_builder.py's own observability log ever
+    ran (i.e. graph.invoke()/graph.stream() itself raised, or raised before
+    reaching the graph's terminal node). Without this, a crashed run produces
+    NO structured Cloud Logging entry at all -- only a free-text stack trace --
+    which undercounts total investigations and overstates success rate in any
+    dashboard built on the structured log.
+
+    Writes to the SAME logger ("sre-agent-investigations") rca_builder.py uses,
+    so both land in the same BigQuery sink table; "event_type"/"terminal_kind"
+    let a downstream view tell the two apart and normalize them into one row
+    shape. Callers MUST NOT rely on this to distinguish "did rca_builder run"
+    from "did the graph crash" -- that decision belongs to the caller (see
+    investigate()/investigate_stream(), which only call this when the graph
+    itself never completed, preventing a duplicate terminal event for one run).
+
+    MUST NEVER raise -- a telemetry failure must never mask the original
+    exception the caller is already handling. MUST NEVER fabricate a field
+    that was never actually resolved at crash time (cluster/namespace/pod here
+    are the raw REQUESTED hints, not a resolved cluster -- routing may never
+    have completed).
+
+    Token/tool/evidence/cost counts are recorded as unknown (None / NULL),
+    NOT zero. A graph can genuinely execute tools, collect evidence, and
+    spend model tokens internally, then raise before graph.invoke()/stream()
+    ever returns a final state to this caller -- the caller's own local
+    `state` variable is never mutated in place by LangGraph, so its absence
+    of visibility into what happened does not mean nothing happened. Reporting
+    0 here would be a fabricated fact, not an honest "don't know" -- and would
+    silently drag down average tokens/cost/tool-calls/evidence-count for every
+    dashboard aggregate that doesn't explicitly exclude crash rows. Recovering
+    the graph's actual partial state at crash time is out of scope for this
+    fix (LangGraph state recovery, not observability) -- `partial_metrics_available`
+    records plainly that this row simply has no metrics to offer, so a
+    consuming view/dashboard can choose to exclude it from cost/token/count
+    averages instead of averaging in a NULL as if it were a real reading.
+    """
+    try:
+        from datetime import datetime, timezone
+
+        from google.cloud import logging as cloud_logging
+
+        from agent.llm import MODEL as _deployed_model_name
+        from agent.otel import get_trace_id_hex
+
+        client = cloud_logging.Client(project=os.environ.get("PROJECT_ID"), _use_grpc=False)
+        logger_c = client.logger("sre-agent-investigations")
+        logger_c.log_struct(
+            {
+                "event_type": "sre_agent_run_terminal",
+                # Field name matches rca_builder.py's completion-path entry
+                # (deliberately distinct from the RCA confidence-framework's own
+                # unrelated "schema_version" field).
+                "terminal_event_schema_version": "1.0",
+                "terminal_kind": "crash",
+                "run_id": run_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "trace_id": get_trace_id_hex(),
+                "status": "error",
+                "loop_exit_reason": "runtime_exception",
+                "error_type": error_type,
+                # Truncated, not further redacted -- no exception path in this
+                # codebase's own libraries has been shown to embed a credential
+                # in its str() form. Truncation bounds an unexpectedly large
+                # message (e.g. a raw HTTP response body) from ballooning the
+                # log entry, not a secret-scrubbing control.
+                "error": (error_message or "")[:500],
+                # Requested, not resolved -- context_resolver.py may never have run.
+                "cluster_requested": cluster_requested,
+                "namespace_requested": namespace_requested,
+                "pod_requested": pod_requested,
+                # Static deployment fact, not per-run resolved data -- always
+                # knowable regardless of how far the run got, same convention
+                # agent/nodes/rca_builder.py's own "model_name" field uses.
+                "model_name": _deployed_model_name,
+                "total_latency_s": round(duration_s, 3),
+                # Unknown, not zero -- see the docstring above. None serializes
+                # to JSON null; BigQuery's schema auto-detection will type
+                # these columns from whatever value first arrives non-null
+                # (the completion path's real data), not from this row.
+                "tools_called": None,
+                "evidence_ids": None,
+                "tokens_total": None,
+                "estimated_cost_usd": None,
+                # Explicit, queryable marker -- a consuming view/dashboard
+                # should exclude rows where this is false from any
+                # token/cost/tool-call/evidence-count average, rather than
+                # trust a bare NULL to be handled correctly everywhere.
+                "partial_metrics_available": False,
+            },
+            severity="ERROR",
+        )
+    except Exception as e:
+        # Never let a telemetry failure replace or mask the original exception
+        # the caller is already handling -- log a warning and return, exactly
+        # like rca_builder.py's own observability write does on the success path.
+        log.warning("Failed to write crash investigation event run_id=%s: %s", run_id, e)
+
+
 def investigate(payload: dict) -> dict:
     """
     Core investigation function.
@@ -757,6 +865,11 @@ def investigate(payload: dict) -> dict:
             state  = get_initial_state(envelope)
             result = graph.invoke(state, config={"recursion_limit": GRAPH_RECURSION_LIMIT})
 
+        # Reached only if graph.invoke() returned normally -- rca_builder.py's own
+        # observability log has already been attempted as part of that graph run.
+        # The except block below uses this to decide whether a crash-terminal
+        # event is needed, so one run never produces two terminal log entries.
+        _graph_completed = True
         return _finalize_investigation_result(result, started_at, payload)
 
     except Exception as exc:
@@ -773,10 +886,27 @@ def investigate(payload: dict) -> dict:
         # error while reporting the first.
         _partial = locals().get("state") or locals().get("final_state") or {}
         _run_id = _partial.get("run_id", "") if isinstance(_partial, dict) else ""
+        _duration_s = time.time() - started_at
         log.exception(
             "investigation FAILED run_id=%s cluster=%s namespace=%s pod=%s: %s",
             _run_id or "(not yet assigned)", cluster, namespace, pod, exc,
         )
+        # Observability-only, and only when the graph itself never completed --
+        # see _write_crash_investigation_event()'s own docstring for why this
+        # check prevents a duplicate terminal event when the crash happens AFTER
+        # a successful graph.invoke() (e.g. inside _finalize_investigation_result()
+        # building the return value), in which case rca_builder.py already wrote
+        # the real terminal event as part of the graph run.
+        if not locals().get("_graph_completed", False):
+            _write_crash_investigation_event(
+                run_id=_run_id,
+                cluster_requested=cluster,
+                namespace_requested=namespace,
+                pod_requested=pod,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+                duration_s=_duration_s,
+            )
         return {
             "error": str(exc),
             "error_type": type(exc).__name__,
@@ -787,7 +917,7 @@ def investigate(payload: dict) -> dict:
             "cluster": cluster,
             "namespace": namespace,
             "pod": pod,
-            "duration_s": round(time.time() - started_at, 2),
+            "duration_s": round(_duration_s, 2),
         }
 
 
@@ -893,6 +1023,11 @@ def investigate_stream(payload: dict):
                 final_state = snapshot
                 yield
 
+        # Reached only if the stream loop exhausted normally -- rca_builder.py's
+        # own observability log has already been attempted as part of that graph
+        # run. See investigate()'s identical marker for why this prevents a
+        # duplicate terminal event.
+        _graph_completed = True
         return _finalize_investigation_result(final_state, started_at, payload)
 
     except Exception as exc:
@@ -909,10 +1044,24 @@ def investigate_stream(payload: dict):
         # error while reporting the first.
         _partial = locals().get("state") or locals().get("final_state") or {}
         _run_id = _partial.get("run_id", "") if isinstance(_partial, dict) else ""
+        _duration_s = time.time() - started_at
         log.exception(
             "investigation FAILED run_id=%s cluster=%s namespace=%s pod=%s: %s",
             _run_id or "(not yet assigned)", cluster, namespace, pod, exc,
         )
+        # Observability-only, and only when the graph itself never completed --
+        # see _write_crash_investigation_event()'s own docstring for why this
+        # check prevents a duplicate terminal event.
+        if not locals().get("_graph_completed", False):
+            _write_crash_investigation_event(
+                run_id=_run_id,
+                cluster_requested=cluster,
+                namespace_requested=namespace,
+                pod_requested=pod,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+                duration_s=_duration_s,
+            )
         return {
             "error": str(exc),
             "error_type": type(exc).__name__,
@@ -923,7 +1072,7 @@ def investigate_stream(payload: dict):
             "cluster": cluster,
             "namespace": namespace,
             "pod": pod,
-            "duration_s": round(time.time() - started_at, 2),
+            "duration_s": round(_duration_s, 2),
         }
 
 

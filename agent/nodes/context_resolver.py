@@ -114,6 +114,9 @@ def context_resolver(state: AgentState) -> dict:
             "cluster_name": resolved_cluster,
             "cluster_region": region,
             "project_id": project_id,
+            # Already resolved and normalized by _get_cluster_registry() (agent/mcp_client.py:204)
+            # — never re-derived or guessed here, just threaded through for observability.
+            "environment": cluster_info.get("environment", "unknown"),
             "cluster_explicitly_provided": True,
             "cluster_routing_method": routing["method"],
             "cluster_routing_reason": routing["reason"],

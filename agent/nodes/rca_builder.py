@@ -197,6 +197,26 @@ def _write_observability_log(
         from agent.llm import MODEL as _deployed_model_name
 
         entry = {
+            # Schema/version marker — same discriminator agent/main.py's
+            # _write_crash_investigation_event() uses for a run that crashes
+            # before ever reaching this node, so both event kinds land in the
+            # same BigQuery sink table with a consistent, distinguishable shape.
+            "event_type":         "sre_agent_run_terminal",
+            # Distinct from "schema_version" below (that one is the RCA
+            # confidence-framework's own version, an unrelated concept).
+            "terminal_event_schema_version": "1.0",
+            "terminal_kind":      "completion",
+            # Always None on this path — only a crash-terminal event ever sets
+            # these. Declared here too (not omitted) so BigQuery's schema
+            # auto-detection sees the field on whichever entry type is written
+            # first, regardless of which happens first in practice.
+            "error_type":         None,
+            "error":              None,
+            # True here: this node genuinely ran, so tokens/tools/evidence
+            # below are real, not the crash path's honest "unknown" (see
+            # agent/main.py's _write_crash_investigation_event()).
+            "partial_metrics_available": True,
+
             # Run identity
             "run_id":             state["run_id"],
             "incident_id":        state["incident_id"],
@@ -242,6 +262,9 @@ def _write_observability_log(
             "cluster":            ctx.get("cluster_name", ""),
             "cluster_region":     ctx.get("cluster_region", ""),
             "project_id":         ctx.get("project_id", ""),
+            # Already resolved by context_resolver.py — additive observability field,
+            # never re-derived here.
+            "environment":        ctx.get("environment", "unknown"),
             "mcp_source":         ctx.get("mcp_source", ""),
             "cluster_routing_method": ctx.get("cluster_routing_method", ""),
             "cluster_routing_reason": ctx.get("cluster_routing_reason", ""),
