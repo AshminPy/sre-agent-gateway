@@ -3,5 +3,6 @@ kubernetes>=29.0.0
 google-auth>=2.29.0
 google-cloud-logging>=3.10.0
 google-cloud-storage>=2.16.0
+google-cloud-modelarmor>=0.7.1
 pydantic>=2.7.2
 uvicorn>=0.31.1
