@@ -32,6 +32,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
 
 from fastmcp import FastMCP
+from response_guard import ModelArmorResponseGuard
 from security import guarded
 from tools.pods import get_pods as _get_pods, describe_pod as _describe_pod
 from tools.logs import get_pod_logs as _get_pod_logs, get_previous_pod_logs as _get_previous_pod_logs
@@ -73,6 +74,12 @@ mcp = FastMCP(
         "Never modify any Kubernetes resource."
     ),
 )
+
+# POC (#203 follow-on, 2026-09-06): application-level Model Armor response
+# sanitization — see response_guard.py's module docstring for why this exists
+# and what CONTENT_AUTHZ gateway inspection still doesn't cover. One
+# registration here covers every @mcp.tool() below; no per-tool changes.
+mcp.add_middleware(ModelArmorResponseGuard())
 
 
 @lru_cache(maxsize=1)
