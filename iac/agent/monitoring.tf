@@ -260,6 +260,29 @@ resource "google_logging_metric" "evidence_storage_failures" {
   depends_on = [google_project_service.apis]
 }
 
+# One log entry per response-guard sanitize-call error (mcp/response_guard.py's
+# on_call_tool -- Model Armor itself unreachable/erroring on a tool RESPONSE
+# check). The guard fails OPEN on this event (delivers the real tool result) --
+# this metric/alert is the "loud alerting" half of that decision, not a
+# duplicate of it. Filter is textPayload, not jsonPayload/severity, because
+# mcp/server.py's plain `logging.basicConfig` output lands in Cloud Run's
+# default stdout/stderr capture with severity always DEFAULT (verified live,
+# 2026-09-06: existing WARNING/ERROR-level lines from this same logger show an
+# empty severity field) -- a severity-based filter would never match.
+resource "google_logging_metric" "mcp_model_armor_fail_open" {
+  name    = "sre_agent/mcp_model_armor_fail_open"
+  project = var.project_a_id
+  filter  = "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"sre-k8s-mcp\" AND textPayload:\"model_armor_fail_open\""
+
+  metric_descriptor {
+    metric_kind  = "DELTA"
+    value_type   = "INT64"
+    display_name = "SRE Agent Custom MCP Model Armor Fail-Open"
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
 # Total investigation wall-clock latency, from the per-run structured log
 # (jsonPayload.total_latency_s — rca_builder.py, measured against
 # investigation["started_at"]). Backs the excessive-latency alert.
@@ -304,6 +327,7 @@ resource "time_sleep" "wait_for_metrics" {
     google_logging_metric.unresolved_cluster,
     google_logging_metric.evidence_storage_failures,
     google_logging_metric.investigation_latency,
+    google_logging_metric.mcp_model_armor_fail_open,
   ]
 }
 
@@ -694,6 +718,37 @@ resource "google_monitoring_alert_policy" "evidence_storage_failures" {
   notification_channels = [google_monitoring_notification_channel.email_oncall.name]
   documentation {
     content   = "An evidence item failed to write to GCS after retries — the audit chain is broken for that item. Check the EVIDENCE_BUCKET IAM binding and bucket existence first.\nQuery: `logName=\"projects/${var.project_a_id}/logs/sre-agent-evidence-storage-failures\"`"
+    mime_type = "text/markdown"
+  }
+  depends_on = [time_sleep.wait_for_metrics]
+}
+
+# The response guard (mcp/response_guard.py) fails OPEN when Model Armor
+# itself errors on a tool RESPONSE check -- this is the loud-alerting half of
+# that decision (see the metric's own comment above for why fail-open is
+# acceptable). Any occurrence means an investigation's tool responses went
+# out unsanitized for that window; on-call should know within minutes, not
+# find out from a later audit.
+resource "google_monitoring_alert_policy" "mcp_model_armor_fail_open" {
+  project      = var.project_a_id
+  display_name = "SRE Agent — Custom MCP Model Armor Fail-Open"
+  combiner     = "OR"
+  conditions {
+    display_name = "Response-guard Model Armor sanitize error > 0 in 5 minutes"
+    condition_threshold {
+      filter          = "metric.type=\"logging.googleapis.com/user/sre_agent/mcp_model_armor_fail_open\" AND resource.type=\"cloud_run_revision\""
+      duration        = "0s"
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      aggregations {
+        alignment_period   = "300s"
+        per_series_aligner = "ALIGN_SUM"
+      }
+    }
+  }
+  notification_channels = [google_monitoring_notification_channel.email_oncall.name]
+  documentation {
+    content   = "The custom MCP's Model Armor response guard could not reach/complete a sanitize call and delivered the tool result unsanitized (fail-open, by design). Check Model Armor API health and mcp/response_guard.py's own error detail in the sre-k8s-mcp Cloud Run logs.\nQuery: `resource.type=\"cloud_run_revision\" resource.labels.service_name=\"sre-k8s-mcp\" textPayload:\"model_armor_fail_open\"`"
     mime_type = "text/markdown"
   }
   depends_on = [time_sleep.wait_for_metrics]
