@@ -1,11 +1,10 @@
 # AI SRE Agent — Investigation Dashboard — Looker Studio build spec
 
-**Status: not yet built.** No browser/UI-automation tool was available in the
-session that built the BigQuery backend (`iac/observability/`) — this is a
-session tooling gap, not a Looker Studio permission or product limitation.
-This document is the exact, ready-to-execute build sheet so the report can be
-created by hand (or by an agent with browser access) in roughly 15–20
-minutes, with zero guessing about data sources, fields, or filters.
+**Status: BUILT 2026-09-06** (4 pages, built through the browser against the
+live BigQuery views; report URL, KPI cross-check and the deviations from this
+spec are recorded in §9). The BigQuery backend lives in `iac/observability/`.
+This document remains the build sheet: it is what the report was built from,
+and it is what to re-follow if the report ever has to be rebuilt.
 
 Data source verified live and correct as of 2026-09-05 — see
 `observability/dashboard/schema.md` for the full field mapping and
@@ -247,8 +246,66 @@ granted BigQuery access in Terraform (view-only Looker Studio sharing,
 matching the least-privilege IAM already set up) — do not set the report to
 "Anyone with the link" or public.
 
-## 9. Once built
+## 9. Build record (2026-09-06)
 
-Fill in below and move this section's content into the final report:
-- Looker Studio report URL: _____
-- Screenshot of each page → save under `observability/dashboard/looker-studio/screenshots/`.
+- **Looker Studio report URL:**
+  https://lookerstudio.google.com/reporting/ac74ffed-09d7-46bd-a874-9fe1500f5f4f
+  (owner `ashmin.sub@gmail.com` — the same account that holds
+  `roles/bigquery.dataViewer` on the dataset via `dashboard_viewer_email`;
+  not shared with anyone else, per §8).
+- **Pages:** Overview · Investigations (explorer) · Reliability & Security ·
+  Cost & Performance. Page 5 (Clusters/MCP) was not built: only 2 real
+  clusters (`sre-lab`, `sre-test-cluster`) exist, per §"Page 5".
+- **Data sources:** three embedded BigQuery connections, one per view
+  (`v_investigations`, `v_model_armor_activity`, `v_gateway_activity`), no
+  raw sink tables — as required by §0.
+- **Screenshots:** not saved. The browser tool used for the build cannot
+  write files to disk, so `screenshots/` is still empty. Open the report
+  URL to see the live pages.
+
+### KPI cross-check at build time (dashboard vs BigQuery, all-time window)
+
+| KPI (Overview / R&S / Cost) | Dashboard | `bq query` on the views |
+|---|---|---|
+| Total investigations | 7 | 7 |
+| Errors / Success rate | 4 / 42.86% | 4 / 42.86 |
+| Avg duration (s) | 105.4 | 105.4 |
+| Avg tokens / total tokens | 18.5K / 110.8K | 18,467 / 110,804 |
+| Total est. LLM cost (USD) | 0.3 | 0.335 |
+| Low confidence (<0.5) / low completeness (<0.5) | 1 / 0 | 1 / 0 |
+| Model Armor blocked | 0 | 0 (179 allowed, 25 detected) |
+| Gateway DENIED | 3 | 3 (491 allowed) |
+
+### Deviations from the spec above (all deliberate, all native Looker Studio)
+
+1. **Percent format does not multiply by 100 in this Looker Studio build.**
+   `SUM(CASE WHEN status="success" THEN 1 ELSE 0 END) / COUNT(run_id)` with
+   display format *Percent* rendered `0.50%` for 0.5. The Success Rate field
+   is therefore `100 * (...)` with Percent(2) — verified showing 50.00% for
+   1-of-2 and 42.86% for 3-of-7.
+2. **`COUNTIF` is not a Looker Studio function.** Every "count where"
+   metric (Total Errors, Model Armor Blocks, Denied requests, low
+   completeness / confidence, zero-evidence) is
+   `SUM(CASE WHEN <cond> THEN 1 ELSE 0 END)`. Zero-evidence still excludes
+   `partial_metrics_available = false` rows as §5 requires.
+3. **Top denied destinations** is a bar chart on `destination_hostname`
+   with the calculated metric *Denied requests* (0 for never-denied hosts)
+   rather than a chart-level filter on `overall_result="DENIED"` — same
+   numbers, one fewer filter object to maintain.
+4. **"All-time Investigations" card added to Overview** (requested during
+   the build). It sits outside the group that holds the date-range control
+   and every other Overview element, so the date picker never filters it;
+   its default date range is *Auto: all available dates*.
+5. **Date control default is "Last 7 days, include today".** Without
+   *include today* the current day's runs disappear. Known quirk: Looker
+   Studio evaluates "today" in the report's timezone against UTC
+   `event_timestamp` values, so runs logged after 00:00 UTC only appear once
+   the local date rolls over. If this matters, add a local-date column to
+   `v_investigations` and use it as the date range dimension.
+6. **Model Armor Activity (Overview)** keeps all four `dashboard_state`
+   series, including `allowed`; the R&S page adds the mechanism × state
+   breakdown. The "detected/blocked-only" variant in §5 was not built
+   separately — the state legend already separates them.
+7. Chart titles use Looker Studio's native *Chart title* option (Style tab),
+   not text boxes. No custom icon sidebar and no three-link table cells, as
+   §7 already predicted.
