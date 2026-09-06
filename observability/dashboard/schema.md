@@ -25,6 +25,7 @@ with a 90-day partition expiration (`var.partition_expiration_days`).
 |---|---|---|---|
 | run_id | `v_investigations` | `jsonPayload.run_id` | Format `run_YYYYMMDD_HHMMSS_xxxx` |
 | event_timestamp | `v_investigations` | `timestamp` | Cloud Logging's own ingestion timestamp |
+| event_date_local | all three views | `DATE(timestamp, var.dashboard_timezone)` | Local calendar date (default America/New_York) for Looker Studio relative date ranges; `timestamp` itself stays UTC |
 | status | `v_investigations` | `jsonPayload.status` | `"success"` \| `"error"` (rca_builder's own enum — Log A's differently-typed `status` field is NOT sunk here) |
 | environment | `v_investigations` | `jsonPayload.environment` | Added 2026-09-05 — resolved once in `agent/nodes/context_resolver.py`, threaded through, never re-derived |
 | cluster / cluster_region | `v_investigations` | `jsonPayload.cluster` / `cluster_region` | |

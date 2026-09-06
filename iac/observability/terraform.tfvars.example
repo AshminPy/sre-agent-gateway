@@ -8,3 +8,4 @@ dashboard_viewer_email = "you@example.com"
 # Optional overrides (shown at their defaults):
 # bigquery_dataset_id       = "sre_agent_investigations"
 # partition_expiration_days = 90
+# dashboard_timezone          = "America/New_York"   # IANA zone for the event_date_local column

@@ -38,6 +38,10 @@ resource "google_bigquery_table" "v_investigations" {
       SELECT
         jsonPayload.run_id                             AS run_id,
         timestamp                                       AS event_timestamp,
+        -- Local calendar date for Looker Studio's relative date ranges
+        -- ("Last 7 days, include today"). `timestamp` is UTC; without this
+        -- column, runs after 00:00 UTC drop out of "today" for EDT readers.
+        DATE(timestamp, "${var.dashboard_timezone}")    AS event_date_local,
         jsonPayload.event_type                          AS event_type,
         jsonPayload.terminal_kind                       AS terminal_kind,
         jsonPayload.terminal_event_schema_version       AS terminal_event_schema_version,
@@ -157,6 +161,7 @@ resource "google_bigquery_table" "v_model_armor_activity" {
     query          = <<-SQL
       SELECT
         timestamp                                                             AS event_timestamp,
+        DATE(timestamp, "${var.dashboard_timezone}")                          AS event_date_local,
         resource.labels.template_id                                          AS template_id,
         CASE
           WHEN STARTS_WITH(resource.labels.template_id, "FLOOR_SETTING")     THEN "floor_setting"
@@ -210,6 +215,7 @@ resource "google_bigquery_table" "v_gateway_activity" {
     query          = <<-SQL
       SELECT
         timestamp                                                                          AS event_timestamp,
+        DATE(timestamp, "${var.dashboard_timezone}")                                       AS event_date_local,
         jsonpayload_type_loadbalancerlogentry.enforcedgatewaysecuritypolicy.hostname        AS destination_hostname,
         jsonpayload_type_loadbalancerlogentry.authzpolicyinfo.result                        AS overall_result,
         policy.name                                                                         AS policy_name,

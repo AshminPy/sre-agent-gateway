@@ -21,6 +21,17 @@ variable "partition_expiration_days" {
   default     = 90
 }
 
+variable "dashboard_timezone" {
+  description = "IANA time zone used to derive the `event_date_local` DATE column in every dashboard view (e.g. \"America/New_York\"). Looker Studio evaluates relative date ranges such as \"Last 7 days (include today)\" against a DATE, and the raw `timestamp` is UTC — so without a local date, runs logged after 00:00 UTC vanish from \"today\" until the local date rolls over. Set this to the timezone of the people reading the report, not of the cluster."
+  type        = string
+  default     = "America/New_York"
+
+  validation {
+    condition     = can(regex("^[A-Za-z_]+(/[A-Za-z_+-]+)*$", var.dashboard_timezone))
+    error_message = "dashboard_timezone must be an IANA zone name such as America/New_York or UTC."
+  }
+}
+
 variable "dashboard_viewer_email" {
   description = "Email (Google Account) granted read-only (roles/bigquery.dataViewer) access to the dataset — the identity that will build/view the Looker Studio report. Required, no default, so no personal email ships as a checked-in default."
   type        = string
