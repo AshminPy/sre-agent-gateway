@@ -444,30 +444,4 @@ if __name__ == "__main__":
         port=port,
         path="/mcp",
         stateless_http=True,
-        # 2026-09-05 (#203 CONTENT_AUTHZ investigation): forces every response
-        # to use Content-Type: application/json, never text/event-stream.
-        # Per the MCP spec (modelcontextprotocol.io/specification/2025-06-18/
-        # basic/transports, "Sending Messages to the Server"): the choice
-        # between application/json and text/event-stream for a given
-        # tools/call response is a per-request SERVER decision, not a fixed
-        # transport-wide property -- a server that always returns JSON is
-        # fully spec-conformant Streamable HTTP, not a different transport.
-        # None of our tools use progress/streaming callbacks (verified: no
-        # ctx.report_progress or yield-based tool in mcp/tools/*.py), so this
-        # has no functional impact on any tool response.
-        #
-        # Google's own Model Armor MCP integration docs list "Streamable
-        # HTTP/SSE for MCP" as excluded from sanitization, with zero
-        # elaboration on whether that's a wire-level Content-Type check or a
-        # blanket transport-level exclusion -- confirmed by fetching the full
-        # docs pages, the phrase appears with no further detail either way.
-        # This change is the empirical test of that ambiguity: if the
-        # exclusion is wire-level, removing every text/event-stream response
-        # should let Model Armor's sanitize_operations log show real
-        # tools/call inspection for the first time. If the exclusion is
-        # transport-level regardless of framing, this will have no effect,
-        # and PHASE1_EVIDENCE_LOG.md's platform-limitation finding stands
-        # unchanged. Either result is real evidence -- see that file for
-        # which outcome was actually observed.
-        json_response=True,
     )
