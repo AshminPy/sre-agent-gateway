@@ -318,3 +318,86 @@ matching the least-privilege IAM already set up) — do not set the report to
 7. Chart titles use Looker Studio's native *Chart title* option (Style tab),
    not text boxes. No custom icon sidebar and no three-link table cells, as
    §7 already predicted.
+
+## 10. Build record — session 2 (2026-09-06, evening)
+
+All changes below were made in the live report through the browser; the
+BigQuery views were not touched. Verified by reading the rendered values
+back from the report canvas (not by screenshots — Dark Reader was active
+in the build browser, so pixel checks were unreliable).
+
+### Overview fixes
+- **All-time card** moved out from under the `model` dropdown into the gap
+  between the filter row and the KPI row. Group scope re-checked: with the
+  card selected, Arrange → Group *and* Ungroup are both disabled, i.e. it is
+  a standalone element outside the date-range group. It kept showing 327
+  while the date-filtered Total Investigations showed 145.
+- **Investigations Over Time** now sorts by `event_timestamp (Date)`
+  ascending instead of Record Count descending (bars read Aug 31 → Sep 6).
+- **Donut center total**: Looker Studio's pie/donut Style tab has no
+  center-label option (verified: only slice padding, inner radius, labels,
+  legend, background). Workaround: a compact scorecard (`Record Count`,
+  decimals 0, no field name, transparent background, no border, padding 0)
+  overlaid in the donut hole. To make the date control apply to it, the page
+  group was ungrouped and regrouped with everything except the all-time
+  card; the center then read 145 = Total Investigations.
+- **Duration format `2m 18s`**: two data-source calculated fields on
+  `v_investigations`:
+  - `Duration (m s)` (row level):
+    `CONCAT(CAST(FLOOR(total_latency_s/60) AS TEXT), "m ", CAST(ROUND(total_latency_s - FLOOR(total_latency_s/60)*60, 0) AS TEXT), "s")`
+  - `Avg Duration (m s)` (aggregated):
+    same formula over `AVG(total_latency_s)`.
+  The Overview *Avg Duration* card uses `Avg Duration (m s)` (renders
+  `1m 36s` for 95.8 s). A text metric cannot carry a period comparison, so
+  the "vs previous period" toggle on that one card is off (it showed a stray
+  `%` otherwise). The Recent Investigations table replaced `total_latency_s`
+  with `Avg Duration (m s)` displayed as `duration` — one row per run_id, so
+  the per-row average is the run's own value.
+- **Status pills**: table conditional formatting, field `status`, applied to
+  the `status` column only: `success` → text #137333 on #E6F4EA, `error` →
+  text #C5221F on #FCE8E6 (Google-style green/red pills).
+- **Page icons** (Manage pages → Select icon): Overview = Dashboard,
+  Investigations = Search, Reliability & Security = Shield, Cost &
+  Performance = Paid, Clusters = Cloud, Tools & MCPs = Services, Model Usage
+  = Lightbulb, Logs & Traces = Article, Settings / About = Info. Navigation
+  type is *Left*, so the icons show in the left rail.
+- **Theme**: report theme switched from *Default* to *Simple*.
+
+### New reusable data-source fields
+- `Errors` = `SUM(CASE WHEN status = "error" THEN 1 ELSE 0 END)`
+- `Success Rate (%)` = `100 * SUM(CASE WHEN status = "success" THEN 1 ELSE 0 END) / COUNT(run_id)`
+
+### Five new pages (order: after Cost & Performance)
+Each page was cloned from a stripped copy of the Investigations page so it
+carries the same four header controls (date range, cluster, environment,
+model) plus a page description. All charts read `v_investigations`.
+
+| Page | Components |
+|---|---|
+| Clusters | Investigations by cluster (stacked by status); Avg duration (s) by cluster (AVG total_latency_s); table cluster × cluster_type × cluster_region × mcp_source with Record Count, est. LLM cost, Errors, Success Rate (%), Avg Duration (m s) |
+| Tools & MCPs | Investigations by MCP source (stacked by status); Tool calls per day (SUM tool_call_count vs SUM failed_tool_count); table mcp_source × cluster_type with Record Count, tool calls, failed calls, Avg MCP latency (s) (AVG mcp_latency_s), Errors |
+| Model Usage | Tokens per day (SUM tokens_input vs tokens_output); Estimated LLM cost per day (USD); table model with Record Count, tokens in/out/total, est. LLM cost, Avg model latency (s) (AVG model_latency_s) |
+| Logs & Traces | one wide table sorted by event_timestamp desc: run_id, event_timestamp, status, cluster, namespace, pod, trace_id, agent_log_link, gcs_evidence_path — no metric; Gateway / Model Armor deliberately absent (no run_id) |
+| Settings / About | text only: data sources, freshness, definitions (Estimated LLM Cost, rca_category_normalized, duration, cluster_type), limits, owner, links to these docs |
+
+Values cross-checked at build time (Aug 31 – Sep 6 window): Clusters table
+`sre-test-cluster` 98 runs / 54 errors / 44.9 % / 1m 46s, `sre-lab` 36 / 7 /
+80.56 % / 1m 22s; Tools table gke_remote_mcp 276 tool calls / 68 failed /
+3.44 s avg MCP latency, k8s_mcp 100 / 11 / 8.63 s; Model table
+gemini-2.5-pro 143 runs / 2,549,089 tokens / $7.78 / 66.49 s avg model
+latency, gemini-2.5-flash 2 runs / 13,202 tokens / $0.04 / 10.05 s.
+
+### Known gotchas found while building (for whoever edits this next)
+- Looker Studio's properties panel keeps the last tab (Setup/Style) *and*
+  its scroll position when you select another chart — check which tab is
+  showing before clicking, or a click meant for a metric chip lands on a
+  Style control.
+- The field picker bolds the matched substring, and adding a field via the
+  picker is easy to mis-hit: confirm the chip list afterwards.
+- A time series on `event_timestamp` (DATETIME) hits "Too Many Rows"; use
+  `event_date_local` as the X dimension.
+- `Duplicate page` inserts the copy right after the current page and then
+  shows the *next* page, not the copy.
+- ⌘+M in Chrome on macOS minimises the window — use Page → New page.
+- Screenshots still not saved to `screenshots/` (item 5 stays manual: File →
+  Download → PDF from Looker Studio).
