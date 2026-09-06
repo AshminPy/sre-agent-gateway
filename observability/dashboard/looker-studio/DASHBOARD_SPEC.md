@@ -259,6 +259,15 @@ matching the least-privilege IAM already set up) — do not set the report to
 - **Data sources:** three embedded BigQuery connections, one per view
   (`v_investigations`, `v_model_armor_activity`, `v_gateway_activity`), no
   raw sink tables — as required by §0.
+- **History backfilled 2026-09-06:** `scripts/backfill_investigations_from_logging.py --apply`
+  inserted 390 Cloud Logging entries (Aug 9 → Sep 6, 30-day retention window)
+  into the sink table (18 → 408 rows). `v_investigations` now also accepts the
+  legacy pre-fix row shape and enforces one row per run_id; the Overview
+  therefore starts at 2026-08-09, not 2026-09-05. Anything older is gone from
+  Cloud Logging and cannot be recovered.
+- **Overview styling (2026-09-06):** the six KPI cards have pastel
+  backgrounds, no border, and "vs previous period" comparison enabled
+  (arrows/percentages appear once two comparable periods exist).
 - **Screenshots:** not saved. The browser tool used for the build cannot
   write files to disk, so `screenshots/` is still empty. Open the report
   URL to see the live pages.
