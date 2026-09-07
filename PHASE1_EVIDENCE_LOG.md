@@ -601,3 +601,22 @@ While waiting on the quota cooldown, checked live cluster state and found 2 orph
 - "Unauthorized and irrelevant sources are excluded" — proven (`allowed_clusters` test, irrelevant-gap test).
 - "An unavailable source yields an explicit evidence gap" — the adapter raises `PrometheusQueryError` (never a fabricated result) on any failure; `_call_catalog_source()` converts this to the same `{"ok": False, "error": ...}` shape every other tool failure already uses, which downstream code already treats as a real evidence gap, not a success.
 - "A worked Prometheus example includes registration, authentication, routing, evidence, observability and verification" — registration (catalog entry) ✓, authentication (documented `auth_ref`/env-var pattern, not implemented since disabled) — PARTIAL, routing ✓, evidence (normalized shape) ✓, observability — NOT DONE (no new tracing/metrics added for this source, disclosed gap), verification — fixture tests only, live verification NOT DONE (no real instance).
+
+---
+## 2026-09-07 — Section 6 hardening: generic plug-and-play dispatch (user requirement)
+
+**Trigger:** you told me Elastic, Grafana, and a git MCP are coming later and expect adding
+them to be "minimal code change, plug and play." I checked the Section 6 code just built
+against that bar rather than assuming it already met it, and found it did NOT:
+- `agent/mcp_client.py`'s `_call_catalog_source()` had `if mcp_source == "prometheus" and tool_name == "query_range":` — a second source would have needed a second hardcoded branch.
+- `agent/nodes/mcp_router.py` and `agent/prompts.py`'s prompt template hardcoded the `"promql"` JSON field name and `"query_range"` tool name.
+
+**Fix:** catalog entries now declare `primary_tool`/`query_field`/`query_field_hint`; the router reads these generically and no longer names Prometheus or PromQL anywhere in its code. `_call_catalog_source()` now dynamically imports the entry's `output_adapter` module and calls the function named after the tool — no source-specific branch of any kind.
+
+**Real checklist for adding Elastic/Grafana/git MCP now:** (1) verify the vendor's real supported integration option, (2) write one adapter module, (3) add one catalog entry (`enabled: False` until live-validated), (4) write fixture tests, (5) flip `enabled: True` after live validation. Zero changes to `mcp_router.py` or `mcp_client.py` for a source that fits the "one bounded read-only query" shape (documented in `docs/runbooks/add-mcp-server.md`, which was also updated to mark its earlier, more complex speculative design SUPERSEDED).
+
+**Proof, not just claim:** `tests/test_mcp_client_catalog_dispatch.py` registers a completely fake second source ("elastic") with its own fake adapter module at test time and proves the dispatch function — unmodified — routes to it correctly.
+
+**Verification:** ruff clean. Full suite: 532 passed, 0 failed (was 529). All 3 pre-existing Section 6 tests (`test_mcp_router.py`, `test_source_catalog.py`, `test_prometheus_adapter.py`) required zero changes — Prometheus's real behavior is unchanged, only more explicitly declared. Pushed: `origin/phase1-final-readiness-review` @ `7c730ea`.
+
+**Not yet proven:** this generic mechanism only covers the "one bounded read-only time-window query" shape. A git MCP server (browsing files/commits, not a time-series query) may not fit this shape as-is — flagged honestly now rather than promised as covered; sizing that gap is real work for when a git MCP is actually being added, not solved speculatively here.
