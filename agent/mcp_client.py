@@ -86,7 +86,20 @@ CUSTOM_K8S_TOOLS = frozenset({
     "describe_job",
 })
 
-ALLOWED_TOOLS = GKE_REMOTE_TOOLS | CUSTOM_K8S_TOOLS
+def _additional_source_tools() -> frozenset:
+    """Section 6: approved_tools from every catalog entry, regardless of
+    enabled/disabled -- the allowlist itself is static and safe to include
+    unconditionally; agent/source_catalog.py's own enabled/allowed_clusters
+    checks (in select_additional_source()) are what actually gate whether a
+    call is ever constructed in the first place, not this list."""
+    from agent.source_catalog import SOURCE_CATALOG
+    tools = set()
+    for entry in SOURCE_CATALOG.values():
+        tools |= set(entry.get("approved_tools", ()))
+    return frozenset(tools)
+
+
+ALLOWED_TOOLS = GKE_REMOTE_TOOLS | CUSTOM_K8S_TOOLS | _additional_source_tools()
 
 # issue #72: which custom MCP tools (mcp/server.py) actually accept a pod_name param --
 # confirmed against each tool's real @guarded(name_fields=...) signature, not assumed.
@@ -509,6 +522,46 @@ def _try_custom_mcp_fallback(
     return call_tool(fallback, fallback_tool, fallback_args, run_id, cluster_name)
 
 
+def _call_catalog_source(
+    mcp_source: str, tool_name: str, arguments: Dict[str, Any], cluster_name: str,
+) -> Dict[str, Any]:
+    """Section 6 dispatch target for a agent/source_catalog.py entry. Each
+    source's own adapter module is responsible for its own read-only-ness,
+    bounded query limits, and normalized evidence shape -- this function's
+    only job is a safe, structured call + a uniform ok/error result shape
+    matching what tool_executor.py/evidence_extractor.py already expect from
+    any tool call, regardless of source.
+    """
+    start = time.time()
+    try:
+        if mcp_source == "prometheus" and tool_name == "query_range":
+            from agent.sources.prometheus_adapter import query_range
+            result = query_range(
+                cluster_id=cluster_name,
+                promql=arguments.get("promql", ""),
+                start_ts=arguments.get("start_ts"),
+                end_ts=arguments.get("end_ts"),
+            )
+            return {
+                "ok": True, "result": result, "tool": tool_name,
+                "mcp_source": mcp_source, "duration_s": round(time.time() - start, 2),
+            }
+        return {
+            "ok": False, "error": f"No dispatch implemented for {mcp_source}.{tool_name}",
+            "tool": tool_name, "mcp_source": mcp_source,
+            "duration_s": round(time.time() - start, 2),
+        }
+    except Exception as exc:
+        # Matches every other source's contract: a failure is a clean, honest
+        # {"ok": False, "error": ...} result -- never a fabricated success and
+        # never an unhandled exception reaching tool_executor.py.
+        log.warning("call_tool catalog source=%s tool=%s failed: %s", mcp_source, tool_name, exc)
+        return {
+            "ok": False, "error": str(exc), "tool": tool_name,
+            "mcp_source": mcp_source, "duration_s": round(time.time() - start, 2),
+        }
+
+
 def call_tool(
     mcp_source: str,
     tool_name: str,
@@ -533,6 +586,15 @@ def call_tool(
             "tool": tool_name, "mcp_source": mcp_source,
             "duration_s": 0, "blocked": True,
         }
+
+    # Section 6: a catalog source (e.g. "prometheus") is dispatched to its own
+    # narrow adapter, never the generic JSON-RPC-over-HTTP path below -- these
+    # sources speak their OWN real API (Prometheus's own REST endpoints), not
+    # our MCP wire format, so they can't share call_tool()'s HTTP/JSON-RPC
+    # machinery the way gke_remote_mcp/k8s_mcp (both genuine MCP servers) do.
+    from agent.source_catalog import SOURCE_CATALOG
+    if mcp_source in SOURCE_CATALOG:
+        return _call_catalog_source(mcp_source, tool_name, arguments, cluster_name)
 
     cluster_info  = _get_cluster_registry().get(cluster_name, {})
     source_config = MCP_REGISTRY.get(mcp_source, {})

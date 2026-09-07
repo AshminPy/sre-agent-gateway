@@ -11,7 +11,11 @@ from agent.mcp_client import (
     GKE_REMOTE_TOOLS, CUSTOM_K8S_TOOLS,
     get_tools_for_source, _CUSTOM_TOOLS_WITHOUT_NAMESPACE,
 )
-from agent.prompts import MCP_ROUTER_PHASE2_SYSTEM, MCP_ROUTER_PHASE2_USER
+from agent.prompts import (
+    MCP_ROUTER_PHASE2_SYSTEM, MCP_ROUTER_PHASE2_USER,
+    MCP_ROUTER_ADDITIONAL_SOURCE_SYSTEM, MCP_ROUTER_ADDITIONAL_SOURCE_USER,
+)
+from agent.source_catalog import select_additional_source
 from agent.otel import trace_node, log_node_tokens
 
 log = logging.getLogger("sre-agent.mcp_router")
@@ -139,6 +143,73 @@ def mcp_router(state: AgentState) -> dict:
             "current_action": {"tool": "done", "arguments": {}, "mcp_source": "none"},
             "errors": [f"mcp_router: {reason} — cannot route safely, investigation stopped."],
         }
+
+    # ── Section 6: capability-based additional-source check ────────────
+    # Runs BEFORE the deterministic Kubernetes-only Phase 1 below. With every
+    # catalog entry disabled (today's real state, see agent/source_catalog.py),
+    # select_additional_source() always returns None and this block is a
+    # complete no-op -- the Kubernetes routing below is byte-for-byte the same
+    # as before this existed. Only when a real source is enabled AND
+    # authorized for this cluster AND the planner's own stated gap matches one
+    # of its declared capabilities does this branch ever fire.
+    additional_source = select_additional_source(cluster_name, task_plan, primary_gap)
+    if additional_source is not None:
+        limits = additional_source.get("query_limits", {})
+        max_window = limits.get("max_window_seconds", 3600)
+        action, usage = llm_json(
+            MCP_ROUTER_ADDITIONAL_SOURCE_SYSTEM.format(
+                source_id=additional_source["source_id"],
+                approved_tools=", ".join(sorted(additional_source.get("approved_tools", []))),
+                max_window_seconds=max_window,
+            ),
+            MCP_ROUTER_ADDITIONAL_SOURCE_USER.format(
+                user_query=user_query or "not provided",
+                source_id=additional_source["source_id"],
+                matched_capability=additional_source["matched_capability"],
+                namespace=namespace,
+                pod=pod or "not specified",
+                task_plan=task_plan,
+                primary_gap=primary_gap,
+                evidence_count=evidence_count,
+                evidence_digest=_evidence_digest(state),
+                max_window_seconds=max_window,
+            ),
+            max_tokens=200,
+        )
+        log_node_tokens("mcp_router", state["run_id"], step, usage)
+
+        from agent.llm import llm_json_failed
+        if llm_json_failed(action) or not action or not action.get("promql"):
+            log.warning(
+                "mcp_router: additional-source query construction failed for source=%s -- "
+                "falling through to Kubernetes routing instead of failing the whole step",
+                additional_source["source_id"],
+            )
+        else:
+            import time as _time
+            from agent.llm.accounting import accumulate_usage
+            window = min(int(action.get("window_seconds") or max_window), max_window)
+            now = _time.time()
+            log.info(
+                "mcp_router → source=%s tool=query_range promql=%s window=%ds",
+                additional_source["source_id"], action["promql"], window,
+            )
+            return {
+                "selected_mcp": additional_source["source_id"],
+                "current_action": {
+                    "tool": "query_range",
+                    "arguments": {
+                        "cluster_id": cluster_name,
+                        "promql": action["promql"],
+                        "start_ts": now - window,
+                        "end_ts": now,
+                    },
+                    "mcp_source": additional_source["source_id"],
+                    "reason": action.get("reason", ""),
+                },
+                "investigation": accumulate_usage(state["investigation"], usage),
+            }
+        # falls through to Kubernetes routing below on any failure above
 
     cluster_type = cluster_info.get("cluster_type", "gke")
     selected_mcp = "gke_remote_mcp" if cluster_type == "gke" else "k8s_mcp"

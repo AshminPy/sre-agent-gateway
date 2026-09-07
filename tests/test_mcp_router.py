@@ -316,3 +316,98 @@ def test_issue_246_routing_to_gke_remote_mcp_unchanged(monkeypatch):
     result = mcp_router(state)
 
     assert result["current_action"]["mcp_source"] == "gke_remote_mcp"
+
+
+# ── Section 6: capability-based additional-source selection ────────────
+
+def test_no_enabled_source_leaves_k8s_routing_completely_unchanged(monkeypatch):
+    """Even when the planner's own task_plan/primary_gap WOULD match a capability
+    keyword, routing must fall through to normal Kubernetes selection unchanged
+    while the catalog has nothing enabled -- today's real state."""
+    monkeypatch.setattr(mcp_router_mod, "_get_cluster_registry", lambda: _CUSTOM_CLUSTER_REGISTRY)
+    _mock_llm_returning(monkeypatch, "list_pods", {})
+
+    state = _make_state("sre-lab")
+    state["investigation"]["task_plan"] = "check cpu usage over the last hour"
+    state["investigation"]["primary_gap"] = "historical metric trend unknown"
+    result = mcp_router(state)
+
+    assert result["current_action"]["mcp_source"] == "k8s_mcp"
+    assert result["current_action"]["tool"] == "list_pods"
+
+
+def test_enabled_additional_source_is_selected_for_matching_gap(monkeypatch):
+    """With the catalog entry enabled (simulating a completed, live-validated
+    rollout), a matching gap routes to the additional source instead of
+    Kubernetes -- proving the mechanism itself works end to end."""
+    import agent.source_catalog as catalog
+    patched = dict(catalog.SOURCE_CATALOG)
+    patched["prometheus"] = {**patched["prometheus"], "enabled": True}
+    monkeypatch.setattr(catalog, "SOURCE_CATALOG", patched)
+    monkeypatch.setattr(mcp_router_mod, "_get_cluster_registry", lambda: _CUSTOM_CLUSTER_REGISTRY)
+
+    monkeypatch.setattr(
+        mcp_router_mod, "llm_json",
+        lambda *a, **k: (
+            {"promql": 'rate(container_cpu_usage_seconds_total{pod="test-pod"}[5m])',
+             "window_seconds": 1800, "reason": "check recent CPU trend"},
+            {"input_tokens": 10, "cached_input_tokens": 0, "output_tokens": 5,
+             "reasoning_tokens": 0, "tool_tokens": 0, "total_tokens": 15,
+             "billable_output_tokens": 5, "cost_usd": 0.0,
+             "provider": "gemini", "model": "gemini-2.5-flash", "duration_s": 0.1},
+        ),
+    )
+
+    state = _make_state("sre-lab")
+    state["investigation"]["task_plan"] = "check cpu usage over the last hour"
+    state["investigation"]["primary_gap"] = "historical metric trend unknown"
+    result = mcp_router(state)
+
+    assert result["current_action"]["mcp_source"] == "prometheus"
+    assert result["current_action"]["tool"] == "query_range"
+    assert result["current_action"]["arguments"]["cluster_id"] == "sre-lab"
+    assert "promql" in result["current_action"]["arguments"]
+
+
+def test_additional_source_llm_failure_falls_through_to_kubernetes(monkeypatch):
+    """If the additional-source query-construction call fails/returns garbage, the
+    investigation must not stall -- it falls through to normal Kubernetes routing
+    for this step rather than failing the whole investigation."""
+    import agent.source_catalog as catalog
+    patched = dict(catalog.SOURCE_CATALOG)
+    patched["prometheus"] = {**patched["prometheus"], "enabled": True}
+    monkeypatch.setattr(catalog, "SOURCE_CATALOG", patched)
+    monkeypatch.setattr(mcp_router_mod, "_get_cluster_registry", lambda: _CUSTOM_CLUSTER_REGISTRY)
+
+    call_count = {"n": 0}
+
+    def _llm_json(system, user, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            # First call: the additional-source prompt -- return something unusable.
+            return (
+                {"promql": "", "reason": "n/a"},
+                {"input_tokens": 5, "cached_input_tokens": 0, "output_tokens": 2,
+                 "reasoning_tokens": 0, "tool_tokens": 0, "total_tokens": 7,
+                 "billable_output_tokens": 2, "cost_usd": 0.0,
+                 "provider": "gemini", "model": "gemini-2.5-flash", "duration_s": 0.1},
+            )
+        # Second call: the normal K8s Phase 2 prompt.
+        return (
+            {"tool": "list_pods", "arguments": {}},
+            {"input_tokens": 10, "cached_input_tokens": 0, "output_tokens": 5,
+             "reasoning_tokens": 0, "tool_tokens": 0, "total_tokens": 15,
+             "billable_output_tokens": 5, "cost_usd": 0.0,
+             "provider": "gemini", "model": "gemini-2.5-flash", "duration_s": 0.1},
+        )
+
+    monkeypatch.setattr(mcp_router_mod, "llm_json", _llm_json)
+
+    state = _make_state("sre-lab")
+    state["investigation"]["task_plan"] = "check cpu usage over the last hour"
+    state["investigation"]["primary_gap"] = "historical metric trend unknown"
+    result = mcp_router(state)
+
+    assert result["current_action"]["mcp_source"] == "k8s_mcp"
+    assert result["current_action"]["tool"] == "list_pods"
+    assert call_count["n"] == 2
