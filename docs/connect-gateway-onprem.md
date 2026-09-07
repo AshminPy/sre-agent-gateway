@@ -326,3 +326,42 @@ registration if the key-file fallback (step 2 above) was used.
 - Cluster RBAC objects (cluster-wide, not namespaced): `gateway-impersonate-
   sreagent-t2-demo_ashmin.sub_sre-lab` (Role+Binding),
   `gateway-permission-sreagent-t2-demo_ashmin.sub_sre-lab` (Binding → `view`)
+
+## Adding a second on-prem cluster (2026-09-07 update — read this first)
+
+Everything above this section documents how `sre-lab`'s Connect Gateway path was
+originally proven. That original path connects via a **static kubeconfig context
+baked into the MCP's Docker image** (`mcp/connect-gateway-kubeconfig.yaml`) — meaning
+a second physical on-prem cluster would have needed a new context added to that file
+plus an image rebuild + redeploy. Not a new MCP deployment, and not an agent-code
+change, but not truly zero-touch either.
+
+**This has been replaced with a dynamic mechanism** for any NEW on-prem cluster (the
+existing `sre-lab` entry is deliberately left on the static path, unmigrated — see
+"preserve the existing working cluster connection during migration" below). Adding a
+genuinely new on-prem cluster now needs only:
+
+1. Fleet registration + Connect Agent install (manual, authorized-operator action —
+   steps 1-3 above, unchanged).
+2. Kubernetes RBAC in the separate `AshminPy/sre-k8s-rbac` repo (unchanged).
+3. One `additional_clusters` Terraform entry with `fleet_project_number` (find it via
+   `gcloud projects describe <project-id> --format='value(projectNumber)'`) and
+   `fleet_membership` (defaults to the map key if the Fleet membership name matches).
+4. `terraform apply` — no image rebuild, no code change.
+
+`mcp/server.py`'s `get_k8s_clients()` builds the Connect Gateway connection at request
+time from these two values (`https://connectgateway.googleapis.com/v1/projects/
+{fleet_project_number}/locations/global/memberships/{fleet_membership}`, authenticated
+with a plain Application Default Credentials bearer token) instead of looking up a
+context in the static file. Verified against Google's own documented Connect Gateway
+membership resource path and confirmed the URL format matches what `sre-lab`'s
+already-live-proven static kubeconfig already used successfully (WebSearch, 2026-09-07
+— see `PHASE1_EVIDENCE_LOG.md`).
+
+**What is and isn't verified:** the dynamic path is covered by unit tests
+(`mcp/tests/test_dynamic_connect_gateway.py`) with the Kubernetes SDK and Google auth
+mocked — it has **not** been run against a real second on-prem cluster (none exists in
+this environment). `sre-lab` itself was NOT switched to this path, specifically so its
+one real, live-validated connection is never put at risk by an unverified change — this
+is a live-validation gap for the NEXT genuinely new on-prem cluster onboarded, not a
+claim that this is already proven end-to-end.

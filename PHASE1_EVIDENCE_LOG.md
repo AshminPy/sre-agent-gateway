@@ -620,3 +620,71 @@ against that bar rather than assuming it already met it, and found it did NOT:
 **Verification:** ruff clean. Full suite: 532 passed, 0 failed (was 529). All 3 pre-existing Section 6 tests (`test_mcp_router.py`, `test_source_catalog.py`, `test_prometheus_adapter.py`) required zero changes — Prometheus's real behavior is unchanged, only more explicitly declared. Pushed: `origin/phase1-final-readiness-review` @ `7c730ea`.
 
 **Not yet proven:** this generic mechanism only covers the "one bounded read-only time-window query" shape. A git MCP server (browsing files/commits, not a time-series query) may not fit this shape as-is — flagged honestly now rather than promised as covered; sizing that gap is real work for when a git MCP is actually being added, not solved speculatively here.
+
+---
+## 2026-09-07 — Section 5 hardening: dynamic Connect Gateway (true cluster plug-and-play)
+
+**Trigger:** you asked directly "is adding a new cluster plug-and-play now?" I checked
+rather than assumed, and found the registry/IAM/agent-routing layer genuinely is (new
+`additional_clusters` Terraform entry + apply, zero code touched, verified by reading
+`iac/agent/variables.tf`/`main.tf`/`buckets.tf`/`agent/mcp_client.py`/`mcp/server.py` —
+the GCS-backed `clusters.json` is the single source of truth for both the agent and the
+custom MCP, IAM for Connect Gateway is granted project-wide so a second on-prem cluster
+in the same project needs no new IAM resource either). GKE clusters are already fully
+zero-touch (parent path built dynamically from registry fields).
+
+**But found one real remaining gap**: `mcp/connect-gateway-kubeconfig.yaml` is a static
+file with exactly ONE hardcoded context (`sre-lab`), baked into the MCP's Docker image
+at build time. `get_k8s_clients()` called `config.load_kube_config(context=kube_context)`,
+which requires that context to already exist in the file. A genuinely new physical
+on-prem cluster would have needed: (1) a new context block added to that file, (2) an
+image rebuild, (3) a redeploy of the same Cloud Run service. Not a new deployment, not
+an agent-code change — but not zero-touch either.
+
+**Research before implementing (WebSearch, per this task's own evidence-policy):**
+confirmed Connect Gateway's REST resource path is `projects/{PROJECT_NUMBER}/locations/
+global/memberships/{MEMBERSHIP}` (Google's own documented format), and confirmed
+`gke-gcloud-auth-plugin`'s `DefaultCredentialsTokenProvider` does nothing more than mint
+a plain Application Default Credentials access token and hand it to kubectl as a Bearer
+token — functionally identical to `google.auth.default()` + `credentials.refresh()`,
+already used elsewhere in this exact file for the direct-GKE-endpoint branch. The
+existing, already-live-validated `sre-lab` kubeconfig's own URL
+(`.../projects/327234009108/locations/global/memberships/sre-lab`) matches this exact
+format, which is itself strong first-party evidence the construction is correct.
+
+**Implementation:** two new optional registry fields, `fleet_project_number` and
+`fleet_membership` (defaults to the cluster's registry name if left blank). When set,
+`get_k8s_clients()` builds the Connect Gateway `client.Configuration()` directly —
+no static kubeconfig file, no image rebuild. The **legacy `kube_context` path is left
+completely untouched** and is still what `sre-lab` uses — this hardening is additive,
+opt-in per cluster, and does not migrate the one real live-validated connection,
+matching the Section 5 correction's explicit "preserve the existing working cluster
+connection during migration" requirement.
+
+Files: `mcp/server.py` (`_load_cluster_registry()`, `get_k8s_clients()`),
+`iac/agent/variables.tf` (`additional_clusters` object type), `iac/agent/main.tf`
+(`clusters_json` encoding).
+
+**Tests:** `mcp/tests/test_dynamic_connect_gateway.py` (6, new) — correct host/token
+construction, a registry entry whose `fleet_membership` legitimately differs from its
+registry key, the legacy static path proven completely unaffected (`google.auth.default`
+never called on that path), the "neither field configured" failure case, and the
+registry loader's own `fleet_membership` default-to-name behavior. Updated one existing
+`mcp/tests/test_multi_cluster_isolation.py` assertion whose expected error-message text
+legitimately changed (now mentions both fields, not just `kube_context`).
+
+**Verification:**
+- `terraform validate`: success.
+- Live `terraform plan` (real GCP state, `sreagent-t2-demo`, full documented var set):
+  `Plan: 1 to add, 3 to change, 0 to destroy` — unchanged from the pending Section 5 diff
+  already recorded earlier in this log; the two new schema fields did not add any new
+  resource or destroy, confirming the change is additive-only.
+- `mcp/tests/`: 82 passed (was 76 before this change — 6 new + 0 regressions); the 7
+  pre-existing `test_live_connect_gateway.py` failures are unrelated, already-documented
+  FastMCP API drift, unchanged by this work.
+- ruff clean on all changed/new files.
+
+**Not yet verified (disclosed, not hidden):** the dynamic path itself has NOT been run
+against a real second on-prem cluster — none exists in this environment. It is unit/mock
+-tested only. `sre-lab` was deliberately NOT migrated to it. Live validation is real work
+for whoever onboards the next actual on-prem cluster, not something proven here.

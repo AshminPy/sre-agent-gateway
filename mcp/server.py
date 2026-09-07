@@ -134,6 +134,15 @@ def _load_cluster_registry() -> dict:
             "cluster_type":       (c.get("type") or "gke").lower(),
             "enabled":            bool(c.get("enabled", True)),
             "kube_context":       (c.get("kube_context") or "").strip(),
+            # Dynamic Connect Gateway fields (added 2026-09-07): when both are
+            # set, get_k8s_clients() builds the connection at runtime instead
+            # of looking up a context in the static, image-baked
+            # mcp/connect-gateway-kubeconfig.yaml -- this is what makes adding
+            # a NEW on-prem cluster genuinely zero-touch (no image rebuild).
+            # Empty (default) keeps existing entries (e.g. sre-lab) on the
+            # already-live-validated static-kubeconfig path, unchanged.
+            "fleet_project_number": (c.get("fleet_project_number") or "").strip(),
+            "fleet_membership":     (c.get("fleet_membership") or "").strip() or name,
             "allowed_namespaces": [
                 n.strip() for n in (c.get("allowed_namespaces") or [])
                 if isinstance(n, str) and n.strip()
@@ -243,23 +252,26 @@ def get_k8s_clients(cluster_id: str):
         # re-resolving here is cheap insurance against any future caller that
         # skips that step, not a second, different source of truth.
         entry = resolve_cluster(cluster_id)
-        kube_context = entry["kube_context"]
+        kube_context        = entry["kube_context"]
+        fleet_project_number = entry.get("fleet_project_number", "")
+        fleet_membership      = entry.get("fleet_membership", "") or cluster_id
         endpoint = ""
         gcs_path = ""
-        if not kube_context:
-            # A validated, enabled, 'custom' cluster with no kube_context
-            # configured is a real misconfiguration (missing Terraform field
-            # for this entry), not "use whatever this process would otherwise
-            # default to". Failing loudly here is the only choice consistent
-            # with "never fall back to a different cluster" -- falling
-            # through to the local-kubeconfig branch below would silently
-            # connect this validated cluster_id to whatever context happens
-            # to be the process's own local default, which is a different
-            # cluster in every real deployment.
+        if not kube_context and not fleet_project_number:
+            # A validated, enabled, 'custom' cluster with neither a static
+            # kube_context NOR fleet_project_number configured is a real
+            # misconfiguration (missing Terraform field for this entry), not
+            # "use whatever this process would otherwise default to". Failing
+            # loudly here is the only choice consistent with "never fall back
+            # to a different cluster" -- falling through to the
+            # local-kubeconfig branch below would silently connect this
+            # validated cluster_id to whatever context happens to be the
+            # process's own local default, which is a different cluster in
+            # every real deployment.
             raise ClusterNotFoundError(
-                f"cluster_id '{cluster_id}' is registered and enabled but has no "
-                "kube_context configured -- fix the Terraform registry entry, do "
-                "not fall back to a default connection"
+                f"cluster_id '{cluster_id}' is registered and enabled but has neither "
+                "kube_context nor fleet_project_number configured -- fix the Terraform "
+                "registry entry, do not fall back to a default connection"
             )
     else:
         # No registry configured at all -- local-dev-only fallback, see
@@ -268,6 +280,8 @@ def get_k8s_clients(cluster_id: str):
         endpoint = os.environ.get("GKE_CLUSTER_ENDPOINT", "")
         gcs_path = os.environ.get("GKE_CA_CERT_GCS_PATH", "")
         kube_context = os.environ.get("K8S_MCP_KUBE_CONTEXT", "").strip()
+        fleet_project_number = ""
+        fleet_membership = ""
 
     if endpoint and gcs_path:
         # Running on GCP — use Workload Identity, direct GKE endpoint
@@ -308,9 +322,74 @@ def get_k8s_clients(cluster_id: str):
             logger.error(f"Workload Identity init failed: {e}")
             raise
 
+    elif fleet_project_number:
+        # Dynamic Connect Gateway (added 2026-09-07): builds the connection
+        # entirely from registry data (fleet_project_number + fleet_membership)
+        # at request time -- no static, image-baked kubeconfig context
+        # involved. This is what makes adding a NEW on-prem cluster genuinely
+        # zero-touch: a Terraform registry entry is enough, no image rebuild.
+        #
+        # Same auth mechanism the static-kubeconfig path already uses, just
+        # constructed directly instead of via a kubectl exec plugin: verified
+        # (WebSearch, 2026-09-07) that gke-gcloud-auth-plugin's own
+        # DefaultCredentialsTokenProvider does nothing more than mint a plain
+        # Application Default Credentials access token and hand it to kubectl
+        # as a Bearer token -- identical to what google.auth.default() +
+        # credentials.refresh() produces below.
+        #
+        # URL format `projects/{PROJECT_NUMBER}/locations/global/memberships/
+        # {MEMBERSHIP}` matches Google's own documented Connect Gateway
+        # membership resource path AND this repo's own already-live-validated
+        # static kubeconfig (mcp/connect-gateway-kubeconfig.yaml, proven via
+        # real kubectl calls -- see docs/connect-gateway-onprem.md) -- same
+        # host this process already reaches successfully via the static path,
+        # just built at runtime instead of read from a file.
+        #
+        # connectgateway.googleapis.com is a public Google API endpoint with a
+        # publicly-trusted TLS certificate (not a private cluster endpoint),
+        # so no custom CA cert is downloaded here, unlike the direct-GKE-
+        # endpoint branch above.
+        logger.info(
+            "Initializing K8s client via dynamic Connect Gateway "
+            "(cluster_id=%s, fleet_project_number=%s, fleet_membership=%s) — "
+            "no static kubeconfig file involved",
+            cluster_id, fleet_project_number, fleet_membership,
+        )
+        try:
+            credentials, _ = default(
+                scopes=["https://www.googleapis.com/auth/cloud-platform"]
+            )
+            credentials.refresh(GoogleAuthRequest())
+            host = (
+                f"https://connectgateway.googleapis.com/v1/projects/{fleet_project_number}"
+                f"/locations/global/memberships/{fleet_membership}"
+            )
+            configuration = client.Configuration()
+            configuration.host = host
+            configuration.verify_ssl = True
+            configuration.api_key = {"authorization": f"Bearer {credentials.token}"}
+            configuration.api_key_prefix = {"authorization": ""}
+            api_client = client.ApiClient(configuration)
+            logger.info(f"K8s client ready (dynamic Connect Gateway) → {host}")
+            return (
+                client.CoreV1Api(api_client),
+                client.AppsV1Api(api_client),
+                client.BatchV1Api(api_client),
+                client.AutoscalingV2Api(api_client),
+            )
+        except Exception as e:
+            logger.error(f"Dynamic Connect Gateway init failed: {e}")
+            raise
+
     elif kube_context:
         # Connect Gateway (or any other named context) — kubeconfig-based,
-        # short-lived exec-plugin creds, no static token stored.
+        # short-lived exec-plugin creds, no static token stored. LEGACY path:
+        # kept unchanged and untouched by the dynamic branch above so the
+        # already-live-validated sre-lab connection is never put at risk by
+        # this change -- see "preserve the existing working cluster
+        # connection during migration" in the Section 5 correction. Migrate
+        # an entry to the dynamic path above by setting fleet_project_number
+        # in its registry entry; until that's done, this path is unchanged.
         logger.info(
             "Initializing K8s client via kubeconfig context=%s (cluster_id=%s)",
             kube_context, cluster_id,

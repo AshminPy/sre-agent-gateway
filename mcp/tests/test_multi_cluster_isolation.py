@@ -146,7 +146,7 @@ def test_registered_cluster_with_missing_kube_context_fails_loudly_not_silently(
         "broken-cluster": {"cluster_type": "custom", "enabled": True,
                             "kube_context": "", "allowed_namespaces": []},
     }):
-        with pytest.raises(server.ClusterNotFoundError, match="no kube_context configured"):
+        with pytest.raises(server.ClusterNotFoundError, match="neither kube_context nor fleet_project_number"):
             server.get_k8s_clients("broken-cluster")
 
 

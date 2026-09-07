@@ -54,9 +54,22 @@ variable "additional_clusters" {
     # field -- not a separate deployment per cluster. Only meaningful for
     # type="custom" entries reached via GKE Fleet Connect Gateway; a "gke"
     # entry goes through GKE Remote MCP instead and never reads this field.
-    # Adding a new on-prem cluster is Fleet registration + RBAC + this one
-    # registry entry -- no new MCP deployment, no agent code change.
+    # LEGACY path: requires the matching context to already exist in the
+    # static, image-baked mcp/connect-gateway-kubeconfig.yaml -- adding a
+    # cluster here needs an image rebuild too. Prefer fleet_project_number
+    # below for any NEW on-prem cluster; this field is kept only so the
+    # already-live-validated sre-lab entry is never forced to migrate.
     kube_context = optional(string, "")
+    # Dynamic Connect Gateway (added 2026-09-07): when set (together with
+    # fleet_membership, which defaults to this map key if left empty), the
+    # custom MCP builds the Connect Gateway connection at request time from
+    # these two values -- no static kubeconfig file, no image rebuild. This
+    # is the genuinely plug-and-play path: register the cluster in the Fleet,
+    # grant RBAC, add this one registry entry, apply -- done. Find the
+    # project number with `gcloud projects describe <project-id>
+    # --format='value(projectNumber)'`.
+    fleet_project_number = optional(string, "")
+    fleet_membership     = optional(string, "")
   }))
   # Phase 1: sre-lab (local kind cluster standing in for on-prem, registered
   # into the GCP fleet — see iac/agent/onprem_fleet.tf and
