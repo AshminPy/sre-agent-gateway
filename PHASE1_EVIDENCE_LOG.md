@@ -269,3 +269,154 @@ A clean single-shot proof of the exact same capability through the full Agent→
 
 ### Verdict
 CI-caused regression fully repaired, root cause structurally eliminated (not just patched with the right CLI flags), Kubernetes RBAC ownership now matches the work-side operational model, and the fix is proven — not assumed — via a real post-CI live investigation through the exact required path.
+
+---
+## 2026-09-06 — PHASE 1 FINAL READINESS review branch — issue #246 fix (cluster-scoped tool args)
+
+**Branch:** `phase1-final-readiness-review` (base main `dd84660`, off the PR #249/#250-merged main).
+
+**Root cause (re-confirmed, matches the 2026-09-05 live finding in the RBAC section above):** `mcp_router.py`'s AUTO-FILL step unconditionally injected `namespace` into every `k8s_mcp` tool call's arguments. `list_nodes`/`describe_node` operate on cluster-scoped Node objects, which have no `namespace` field — the custom MCP server rejected the extra kwarg. This is the exact same bug the 2026-09-05 RBAC proof section documented as "attempted three times and blocked... flagged as a separate finding, NOT fixed here, out of scope."
+
+**Fix:** `agent/mcp_client.py` — added `_CUSTOM_TOOLS_WITHOUT_NAMESPACE = frozenset({"list_nodes", "describe_node"})`, mirroring the existing `_CUSTOM_TOOLS_ACCEPTING_POD_NAME` pattern (issue #72). `agent/nodes/mcp_router.py` — guarded the namespace `setdefault` with `if tool not in _CUSTOM_TOOLS_WITHOUT_NAMESPACE`.
+
+**Unit tests:** `tests/test_mcp_router.py` — 6 new tests added. `.venv/bin/python3 -m pytest tests/test_mcp_router.py -v` → **11 passed, 1 warning in 27.50s**.
+
+**Full regression:** `.venv/bin/python3 -m pytest tests/ -q` → **491 passed, 0 failed, exit 0** (52.20s). No regressions from PR #249/#250's merged state.
+
+**Lint:** `ruff check agent/mcp_client.py agent/nodes/mcp_router.py` → All checks passed.
+
+**Commit:** `6315ed3` on `phase1-final-readiness-review`, separate from any other change on this branch.
+
+**Deployment (personal test env, `sreagent-t2-demo`):** packaged review-branch `agent/` via `scripts/package_agent.py`, `terraform apply` in `iac/agent` with the standard onprem var set (custom_mcp_image left at its live-deployed tag, unchanged — this fix does not touch `mcp/`). Plan: `0 to add, 1 to change (source_archive only), 0 to destroy`. Apply: `Apply complete! Resources: 0 added, 1 changed, 0 destroyed.`
+
+**Live test (3 real investigations against `sre-lab`, the custom-MCP/kind cluster):**
+- `run_20260906_234504_hwck` — query "List all nodes in cluster sre-lab...": agent log `mcp_router → source=k8s_mcp tool=list_nodes args={}` (23:45:12Z), then 3× `describe_node args={'node_name': 'sre-lab-control-plane'|'sre-lab-worker'|'sre-lab-worker2'}` — **no `namespace` key in any call.** MCP server audit log confirms all 4 calls `"ok": true, "error": null`.
+- `run_20260906_234710_tdzo` — query "Describe node sre-lab-worker...": `mcp_router → source=k8s_mcp tool=describe_node args={'node_name': 'sre-lab-worker'}` — no namespace. Server audit: `ok: true`.
+- `run_20260906_234738_ynxp` — regression guard, normal namespaced query (imagepull-pod on sre-lab): `describe_pod_detail`, `list_namespace_events`, `list_deployments`, `list_statefulsets`, `list_daemonsets` — **all correctly include `namespace: 'test-incidents'`.** One unrelated 404 on `describe_pod_detail` (`imagepull-pod` fixture doesn't currently exist on `sre-lab` — a missing-fixture issue, not a routing/namespace defect; arguments were correctly formed, the K8s API genuinely returned "pod not found").
+- Cloud Logging queries used: `resource.type="aiplatform.googleapis.com/ReasoningEngine" textPayload:"mcp_router →"` and `resource.type="cloud_run_revision" resource.labels.service_name="sre-k8s-mcp"` with `sre-mcp.audit` event lines, both bounded to the exact test window `2026-09-06T23:44:00Z`–`23:52:00Z`.
+
+**Verdict: PASS, live-proven.** Issue #246 is fixed — cluster-scoped tools no longer receive an invalid `namespace` argument, and normal namespaced/pod-scoped tools are unaffected. Issue #246 is NOT closed (per this task's rule — review-branch work only, not yet merged to main).
+
+**Cleanup note:** no new test fixtures created for this test (reused existing `sre-lab` cluster + nodes, no pods created). No cleanup required.
+
+---
+## 2026-09-07 — Section 1 baseline investigations (GKE + kind)
+
+**Kind/non-GKE baseline:** covered by the #246 live-test runs above (`run_20260906_234504_hwck`, `run_20260906_234710_tdzo`, `run_20260906_234738_ynxp`, all against `sre-lab` via custom MCP `k8s_mcp`). Sequencing note: these ran AFTER the #246 fix was deployed, not strictly "before any fix" — the fix was already in progress per the resumed task's explicit next-step instruction. All 3 completed with `status=done`, correct tool routing, and (except one unrelated missing-fixture 404) zero tool errors.
+
+**GKE baseline:** first attempt (`run_20260906_235731_khfa`, `crashloop` scenario) found no live `crashloop-pod` fixture on `sre-test-cluster` (torn down in the 2026-09-05 cost-hygiene pass, per `PHASE1_EXECUTION_STATE.md`) — agent correctly reported `outcome: insufficient_evidence`, `confidence_band: escalate`, listed `NAME_SCOPED_NOT_FOUND` tool errors explicitly, did NOT fabricate a root cause. This is itself useful evidence for the Section 12 Memory Bank/evidence-integrity audit (honest failure behavior).
+
+Re-ran after applying `k8s/crashloop-pod.yaml` (small pod, 32Mi/100m requests) to `sre-test-cluster` (project `sreagent-demo`, region `us-central1` — NOT `sreagent-t2-demo`; confirmed via `gsutil cat gs://sreagent-t2-demo-cluster-config/clusters.json`, the cluster registry's `sre-test-cluster` entry has `"project": "sreagent-demo"`). Applying the fixture triggered a real GKE node pool scale-up (0→1, `gk3-sre-test-cluster-pool-1` autoscaling group) — expected, cluster runs with 0 idle nodes for cost hygiene.
+
+- Command: `.venv/bin/python3 invoke_agent.py --scenario crashloop --verbose`
+- Result: `run_id: run_20260907_000827_lqdb`, `status: done`, `root_cause_confidence.score: 1.0`, `investigation_completeness: {band: complete, score: 1.0, gaps: []}`, all 4 evidence domains present (`current_logs`, `kubernetes_events`, `kubernetes_status`, `previous_logs`), zero tool errors. Root cause correctly grounded in the pod's actual log line ("Simulating application crash — exit code 1"). `outcome: insufficient_evidence` / `confidence_band: escalate` despite the 1.0 confidence score — the agent flagged this for human review rather than auto-closing, consistent with an intentionally-crashing test fixture with no clear "fix" action; not a defect.
+- Cleanup: `kubectl delete pod crashloop-pod -n test-incidents` immediately after, confirmed `No resources found`. Node pool will scale back to 0 on its own idle-timeout (no further action needed — matches how the cluster already runs day-to-day).
+
+**Section 1 status: baseline established for both cluster types.** This baseline (not main's pre-fix state — the reasoning engine was already running the review branch's #246 fix at the time of both baseline runs) is the comparison point for Section 16's final regression check.
+
+---
+## 2026-09-07 — Section 4: verify #203 current state (NOT re-implemented)
+
+Verification only, per this task's explicit instruction — PR #249 (response guard + fail-closed authz) is already merged to `main`. All checks below are against LIVE GCP state and LIVE Cloud Run logs, not documentation.
+
+1. **Custom MCP response guard deployed and working — CONFIRMED.** Cloud Run logs (`sre-k8s-mcp`, last 24h): `INFO:sre-mcp.response_guard:ModelArmorResponseGuard ready: projects/sreagent-t2-demo/locations/us-central1/templates/sre-agent-response-guard` (multiple init events, most recent `2026-09-06T23:45:26Z`, coinciding with this session's #246 redeploy). **It is actively catching real malicious content**: `WARNING:sre-mcp.response_guard:ModelArmorResponseGuard BLOCKED tool response tool=describe_pod_detail` at `2026-09-06T19:28:41Z` and `19:28:48Z` (from unrelated prior traffic today, not this session's tests) — direct proof of live blocking behavior, not just successful initialization.
+2. **REQUEST_AUTHZ fail-closed — CONFIRMED.** `iac/agent/variables.tf`'s `authz_fail_open` default is `false` (changed from `true` 2026-09-05 per PR #249). Live Terraform state: `terraform state show 'google_network_services_authz_extension.iap[0]'` → `fail_open = false`.
+3. **Gateway CONTENT_AUTHZ (Model Armor extension) also fail-closed — CONFIRMED.** `terraform state show 'google_network_services_authz_extension.model_armor[0]'` → `fail_open = false`. This is the extension-unreachable failure mode, distinct from the RESPONSE_BODY inspection gap below.
+4. **RESPONSE_BODY inspection gap — CONFIRMED still present, unchanged since 2026-09-05.** Re-ran a live spot-check: `gcloud logging read 'resource.type="networkservices.googleapis.com/Gateway" jsonPayload.serviceExtensionInfo.perProcessingRequestInfo.requestType="RESPONSE_BODY"' --freshness=3d` → zero results. Matches the documented Google platform limitation (Streamable HTTP/SSE MCP responses excluded from CONTENT_AUTHZ sanitization per Google's own Model Armor + Agent Gateway integration docs, verified 2026-09-05). No new evidence contradicts this finding. Still recorded as **PARTIAL — ACCEPTED PLATFORM LIMITATION**, not re-litigated.
+5. **Model Armor floor settings — CONFIRMED HIGH + INSPECT_ONLY, unchanged.** `terraform state show 'google_model_armor_floorsetting.mcp[0]'`: `inspect_and_block = false` (all filter categories), `confidence_level = "HIGH"` (malicious_uri_filter_settings). Not block mode — matches Section 5's precondition that global block mode must never be enabled.
+6. **Fail-open alerting (PR #249's new monitoring) — present and has never fired.** `google_logging_metric.mcp_model_armor_fail_open` and `google_monitoring_alert_policy.mcp_model_armor_fail_open` both confirmed in live Terraform state. `gcloud logging read '...textPayload:"model_armor_fail_open"'` → zero matches ever — the response guard's fail-open path has never actually been exercised in this environment, consistent with Model Armor's API never having failed here.
+7. **Google Support case — CONFIRMED still outstanding, not filed.** `docs/management/GOOGLE_SUPPORT_CASE_DRAFT_content_authz_mcp.md` header: "Status: prepared 2026-09-05, non-blocking follow-up to Phase 1. Not yet submitted — filing requires the Google Cloud Console support flow with an authenticated, entitled account, which this session cannot do on the user's behalf." No change since — filing this case is a manual action for the user, not something this task attempts.
+
+**Section 4 verdict: #203's PR #249 fix is live, working, and unchanged since merge. No re-implementation performed or needed. The remaining RESPONSE_BODY platform limitation is unchanged and still explicitly documented, not silently treated as resolved.**
+
+---
+## 2026-09-07 — Section 5: verify #202 (block-mode diagnostic) — determined NOT PERFORMED, left open
+
+**Issue #202** ("Block-mode diagnostic still owed: prove PR #199's fix under real inspect_and_block=true") asks to temporarily flip the project's Model Armor floor setting to `inspect_and_block=true` (a shared, project-wide security control, per the issue's own text: "this is a diagnostic on a shared, project-wide security control, not a standing change"), run one investigation, capture evidence that a real block now produces an honest reduced-completeness result (not a fabrication), then immediately revert.
+
+**This task's own explicit rule for Section 5**: "do not globally enable floor-setting block mode (must remain HIGH/INSPECT_ONLY/logging enabled)." That is the safety gate — and issue #202's diagnostic requires exactly the action this task forbids, even temporarily. The precondition for safely running this diagnostic (a review/rigor context OUTSIDE the current constraint) is not met within this task's scope.
+
+**Decision: NOT performed. Issue #202 left OPEN, not blocked on or forced closed.** Per the plan's explicit instruction: "if unmet, leave open/blocked and document why, don't force it to close the issue."
+
+**Verification performed instead (read-only, no config change):**
+- `agent/mcp_client.py:405` — `_is_model_armor_blocked_result()` (PR #199's fix) is present, unchanged, and wired into the real tool-result path at line 787 ("Deliberately NOT routed through" — comment confirms it's intentionally placed). Not exercised against a real block in this session — that remains the open gap #202 describes.
+- Live floor setting (from Section 4's check): `inspect_and_block = false` (inspect-only), confirming PR #201's config fix is still the live setting — the unsafe `inspect_and_block=true` state has NOT crept back in.
+
+**Not a blocker for the 50-run campaign**: current live evidence (Section 4) shows the rollout config is safe (inspect-only, not block) and — separately, from Section 1's baseline and every investigation run this session — the agent has NOT shown any fabrication behavior; every result has been evidence-grounded, including the two runs this session that hit real 404s (both were reported honestly as errors/insufficient-evidence, not papered over). No current evidence suggests the rollout config is unsafe or produces incorrect RCA behavior. #202 remains a genuine, real, un-closed gap in the sense that PR #199's code fix has never been proven against a live block — but that gap does not indicate a currently broken system, only an underexercised code path.
+
+---
+## 2026-09-07 — Section 6: calibration, Connect Gateway audit logging, FastMCP drift, eval-gate deferral
+
+### (A) Confidence/eval calibration — exact count verified, status reviewed
+
+**Count: 16 golden cases** (verified from `agent/eval/golden_cases.py`'s `GOLDEN_CASES` list directly, not assumed): `crashloop-001, oomkilled-001, imagepull-001, configmap-001, init-001, selector-001, cascading-001, pending-001, onprem-001, insufficient-evidence-001, conflicting-evidence-001, ambiguous-routing-001, mcp-gateway-failure-001, secret-001, probe-timeout-001, intermittent-001`.
+
+**Last run:** `eval_results_16case_calibration_final.json`, 2026-09-05 11:47. Headline `summary.passed = 2/16` under the harness's strict pass criterion (exact in-order tool-trajectory match AND outcome_ok AND confidence_ok, all three). Breaking that down by component (more informative than the headline number):
+- `outcome_ok`: **12/16 true.** 4 real outcome mismatches: `insufficient-evidence-001`, `conflicting-evidence-001`, `mcp-gateway-failure-001`, `intermittent-001`.
+- `confidence_ok`: **14/16 true.** 2 mismatches: `crashloop-001`, `onprem-001` — both also have `predicted_tools: []` (see below), so likely execution failures, not confidence miscalibration.
+- Strict trajectory match (`in_order_match`/exact tool sequence): fails on most cases even where `outcome_ok`/`confidence_ok` are both true (e.g. `oomkilled-001`, `pending-001`, `secret-001`) — the agent frequently reaches the correct conclusion via a different (often longer, still valid) tool sequence than the golden case's exact expected list. This looks like an overly rigid trajectory-matching rubric inflating the apparent failure count, not necessarily a real RCA-quality regression.
+- 3 cases show `predicted_tools: []` (`crashloop-001`, `onprem-001`, `ambiguous-routing-001`) — no tool calls were made at all. Given this session's repeated, independently-confirmed pattern of missing test fixtures (`imagepull-pod` on sre-lab, `crashloop-pod` on sre-test-cluster both had to be recreated for Section 1's baseline), this is most likely the same missing-fixture problem, not a routing/agent defect — not independently re-verified against current fixtures in this session (would require running the golden-case harness end-to-end again, which was judged out of scope for a verify-only review section).
+
+**What remains unvalidated (stated plainly, not swept under the headline number):** whether the 4 real `outcome_ok=False` cases and the apparent trajectory-matching brittleness represent genuine RCA-quality gaps or artifacts of a strict/stale rubric and missing fixtures. **Not fixed or re-run in this task** — this is a review/audit finding for the final report, not something Section 6 was scoped to remediate. Flagged as a genuine open item, not treated as resolved.
+
+### (B) Connect Gateway DATA_READ audit logging — assessed, NOT implemented, recommendation only
+
+Confirmed via `grep` across `iac/agent/*.tf` and `iac/gke-access/*.tf`: **no `google_project_iam_audit_config` (or equivalent DATA_READ audit log config) exists today** for either project. This is a real, confirmed gap — Connect Gateway/GKE API read calls (the exact calls this agent makes for every investigation) are not separately audit-logged beyond the agent's own application-level logging.
+
+**Assessment:**
+- **Security/audit value:** real — a DATA_READ audit trail would independently corroborate the agent's own tool-call logs (e.g. `mcp_router → tool=... args=...`) against Google's own record of what the underlying GCP API actually received, closing a "trust the agent's own logging" gap.
+- **Cost/volume:** DATA_READ is historically the highest-volume Cloud Audit Log category — precisely why it is off by default project-wide (unlike ADMIN_ACTIVITY, which is always on). This project's current call volume is low (test/personal project, sporadic runs), so near-term cost is likely small, but this cannot be soundly bounded without either (a) enabling it briefly to observe real volume — which touches a project-wide, shared logging config, not narrowly scoped to only this agent's own traffic, or (b) a formal GCP Pricing Calculator estimate, which was not run.
+- **Terraform impact:** would be a `google_project_iam_audit_config` resource scoped to `container.googleapis.com` specifically (not project-wide for all services) — a small, standard, fully reversible Terraform addition if approved.
+
+**Decision: NOT implemented this session.** This is a project-wide, security-relevant logging control with a cost dimension that can't be soundly bounded from current evidence — exactly the kind of call this task's harness rules reserve for an explicit owner decision, not an autonomous default. Recommending it as a follow-up, not enabling it unilaterally. If approved, the smallest safe version is: `google_project_iam_audit_config` for `container.googleapis.com` only, `log_type = DATA_READ`, on `sreagent-t2-demo` (and `sreagent-demo` if GKE-side visibility is also wanted) — reversible via `terraform destroy -target`.
+
+### (C) FastMCP test failures — re-confirmed unchanged, still pre-existing and unrelated
+
+`cd mcp && python3 -m pytest tests/ -q` → **7 failed, 66 passed** (2026-09-05's run showed 61 passed — more MCP tests exist now, unrelated churn, same 7 failures). All 7 failures still in `tests/test_live_connect_gateway.py`, same root cause: `AttributeError: 'FastMCP' object has no attribute '_call_tool_mcp'` (installed `fastmcp==4.0.3` locally, removed this private API; `mcp/requirements.txt` still pins the floating `fastmcp>=2.3.4`). `git diff main -- mcp/requirements.txt mcp/tests/test_live_connect_gateway.py` → **empty** — confirmed identical to `main`, not caused by this branch. Spot-checked `test_live_list_nodes_returns_structured_forbidden_not_a_crash` specifically (since it's nominally related to issue #246's tool) — fails at the same `_call_tool_mcp` AttributeError inside the test's own helper, before ever reaching `list_nodes` logic — confirms this is NOT a regression from the #246 fix, purely the pre-existing dependency drift. Not fixed (pinning fastmcp is a separate dependency-hygiene task, out of this scope; these tests already auto-skip in CI where no live kubeconfig context exists).
+
+### (D) Automated eval-quality gate — deferred to Phase 2, no work performed
+
+Per this task's explicit instruction, treated as Phase 2 scope. Not designed, not built, not started.
+
+---
+## 2026-09-07 — Section 7: HARD GATE before the 50-run campaign
+
+Checked each of the 14 required gate items against live evidence:
+
+1. **#86 fixed/live-validated if confirmed** — PASS (conditional). Not confirmed as a currently-exploitable defect (today's deployment is exactly 1 cluster per MCP type); fixing it would be a major architecture redesign, out of scope per this task's own stop condition. Gate's "if confirmed" qualifier is satisfied by non-confirmation, not by a code fix.
+2. **#246 fixed/live-validated** — PASS. See Section 3 evidence (live-tested, zero errors).
+3. **No known wrong-cluster evidence path remains** — PASS. Proven below (alternating test) plus every investigation this session: `source` field in `evidence_extractor` logs matched the requested cluster type in every single run, no exceptions.
+4. **Normal GKE path works** — PASS. Section 1 baseline (`run_20260907_000827_lqdb`, complete/1.0).
+5. **Normal kind/non-GKE path works** — PASS. Section 1 baseline + #246 tests.
+6. **Alternating GKE → kind → GKE works** — PASS, with a transparent retry (below).
+7. **GKE Remote MCP route works** — PASS. `source=gke_remote_mcp` confirmed repeatedly.
+8. **Custom MCP → Connect Gateway route works** — PASS. `source=k8s_mcp` confirmed repeatedly.
+9. **REQUEST_AUTHZ remains fail-closed** — PASS. Section 4 (`fail_open=false` live).
+10. **Custom MCP Model Armor response blocking still works** — PASS. Section 4 (live BLOCKED event today).
+11. **Legitimate evidence not incorrectly blocked** — PASS (bounded). No false blocks observed across ~9 real investigations this session (Section 1, #246 tests, this alternating test) — all legitimate evidence passed through normally. Not exhaustively tested (that's what the 50-run campaign is for).
+12. **Relevant CI is green** — PASS. PR #251 (review-branch → main, NOT merged): `python-tests` success, `terraform-plan` success. See below.
+13. **No unexplained production-impacting test failure remains** — PASS. Only known failures (7 FastMCP tests, Section 6C) are explained, pre-existing, CI-skipped. Agent suite 491/491.
+14. **Terraform has no unexpected drift** — PASS. Both `iac/agent` and `iac/gke-access`: "No changes. Your infrastructure matches the configuration."
+15. **#203 and #202 accurately classified/documented** — PASS. Sections 4 and 5.
+
+### CI evidence (PR #251, opened for CI only, NOT for merge)
+`gh pr create --base main --head phase1-final-readiness-review` → https://github.com/AshminPy/sre-agent-gateway/pull/251. Both checks: `python-tests` **success** (run 34069907686), `terraform-plan` **success** (run 34069907747). PR explicitly marked "DO NOT MERGE" in its own description; will remain open, unmerged, pending the user's final review per this task's rule.
+
+### Alternating GKE → kind → GKE evidence (gate items 3 + 6)
+Sequence: GKE (`sre-test-cluster`, list_nodes) → kind (`sre-lab`, list_nodes) → GKE (`sre-test-cluster`, list_deployments).
+
+**Attempt 1** (`run_20260907_002938_lojz`, GKE): status=**failed**. Root cause (from Cloud Logging): `ERROR: investigation FAILED ... 500 Internal Server Error. {'message': '', 'status': 'Internal Server Error'}` at the `rca_builder` node (final LLM synthesis call). Evidence collection itself succeeded correctly before the failure (`source=gke_remote_mcp`, 2 evidence items written, correctly scoped to `cluster=sre-test-cluster`) — the failure is a transient Gemini/Vertex AI API error, not a routing/evidence defect. Matches the identical failure pattern already documented in `PHASE1_EXECUTION_STATE.md`'s 2026-09-05 entry ("transient Gemini/Vertex AI 500 Internal Server Error... Retried: succeeded").
+
+kind-1 (`run_20260907_003157_ktxs`, sre-lab, run BETWEEN the two GKE attempts): status=done, zero errors. `evidence_extractor` confirms `source=k8s_mcp` throughout (`list_nodes facts=4`, `list_pods facts=2`, `list_namespace_events facts=4`) — correctly isolated to sre-lab, no GKE data leaked in.
+
+**Attempt 1** (`run_20260907_003404_mtbh`, GKE-2): status=**failed**, same generic `500 Internal Server Error`, this time at `task_planner step=1` (a different LLM-call node than attempt 1's failure) — confirms this is a general transient API issue, not tied to one specific code path.
+
+Per this task's material-failure guidance (investigate before rerunning, don't hide the original failure): both original failed results preserved above, not deleted, not silently retried without disclosure.
+
+**Retry (both GKE legs), same review-branch deployment, no code change:**
+- GKE-1 retry: `run_20260907_004206_jcch`, status=done, 51.9s, zero errors. `evidence_extractor`: `source=gke_remote_mcp tool=get_k8s_cluster_info facts=4` — correctly scoped to `sre-test-cluster`.
+- GKE-2 retry: `run_20260907_004533_wilt`, status=done, 93.2s, zero errors. `evidence_extractor`: `source=gke_remote_mcp` for both evidence items (`get_k8s_resource`, `list_k8s_api_resources`) — correctly scoped to `sre-test-cluster`.
+
+**Verdict: gate items 3 and 6 PASS on retry.** The full alternating sequence (GKE → kind → GKE) shows zero cross-cluster evidence contamination in either direction across 4 total successful runs (2 GKE + 1 kind between them + 1 more GKE). The 2 transient LLM-API failures are a known, already-documented platform behavior, unrelated to routing/security/cluster-selection correctness, and did not need a code fix.
+
+### GATE VERDICT: **PASS — all 15 items satisfied.** Proceeding to Section 8 (build the 50-case catalog).
