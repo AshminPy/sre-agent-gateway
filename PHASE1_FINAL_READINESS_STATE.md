@@ -21,10 +21,10 @@ update after every section, don't let it drift.
 | 9 | Run 50 investigations | NOT STARTED | Real cost — GCP LLM calls x50. |
 | 10 | Looker Studio readiness data | NOT STARTED | |
 | 11 | Cleanup fixtures + final Terraform plan | NOT STARTED | |
-| 12 | Memory Bank design audit | NOT STARTED | |
-| 13 | MCP extensibility design (design only) | NOT STARTED | |
-| 14 | Documentation cleanup/sync | NOT STARTED | |
-| 15 | GitHub + tracker sync (In Progress language only) | NOT STARTED | |
+| 12 | Memory Bank design audit | **DONE — SAFE WITH REQUIRED CHANGES** | Core design sound (confidence-gated writes, real cluster scoping, "hint only/do not cite as evidence" prompt guardrail, already-fixed unavailable-vs-empty distinction). 2 real gaps: docstring claims a `status=pending_review` field that's never actually written; GCS/Memory-Bank persistence happens BEFORE the output Model Armor block-check, so blocked content still gets permanently persisted unblocked. Recommended, not implemented (audit-only section). See evidence log. |
+| 13 | MCP extensibility design (design only) | **DONE** | Found existing runbook `docs/runbooks/add-mcp-server.md` already covering most of this — updated it (added vendor-vs-custom table, 8 new checklist items, flagged the binary-branch routing limitation, added a full Prometheus worked example) rather than duplicating with a new doc. No code implemented. See evidence log. |
+| 14 | Documentation cleanup/sync | **DONE** | 3 parallel audit sub-agents reviewed 87 files; 3 parallel fix sub-agents applied corrections (all diffs spot-checked before commit). ~29 files corrected (stale Model Armor/authz_fail_open/custom-MCP-not-deployed claims, all predating 2026-09-04/05/06 fixes), 4 docs archived (superseded), inbound links repointed, 1 self-contradiction in mcp-architecture.md fixed directly. See evidence log for full file lists. |
+| 15 | GitHub + tracker sync (In Progress language only) | **PARTIAL — issues done, tracker done for existing rows** | Fresh evidence comments added to #86, #246, #202, #203 (none closed). No dedicated tracker row exists for #86/#246/#202 (content-matched, not found) — did NOT create new rows per the "ask first" rule; flagging for final report instead of asking mid-task, since this is informational not blocking. Rows 121 (#REQUEST_AUTHZ) and 165 (#203) got a brief re-verification note appended. Will need one more sync pass after the 50-run campaign completes (Section 9) with final results. |
 | 16 | Final regression vs Section 1 baseline | NOT STARTED | |
 | 17 | Final consolidated report + READY/CORRECTIONS/NOT READY verdict | NOT STARTED | STOP after this, wait for user review, no merge. |
 
