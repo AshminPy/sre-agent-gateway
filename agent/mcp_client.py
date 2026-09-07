@@ -496,7 +496,12 @@ def _try_custom_mcp_fallback(
     # above targets a cluster-scoped tool (list_nodes/describe_node), but keep
     # this consistent with the rest of the module so a future mapping addition
     # can't silently reintroduce the same "unexpected_keyword_argument" failure.
-    fallback_args: Dict[str, Any] = {}
+    # Section 5 redesign: the custom MCP server now requires cluster_id on every
+    # call (see mcp/server.py's resolve_cluster()) -- this fallback targets the
+    # SAME cluster the GKE Remote call was already resolved to, never a
+    # different one, matching mcp_router.py's own forced (not setdefault)
+    # cluster_id assignment for the primary k8s_mcp routing path.
+    fallback_args: Dict[str, Any] = {"cluster_id": cluster_name}
     if fallback_tool not in _CUSTOM_TOOLS_WITHOUT_NAMESPACE:
         fallback_args["namespace"] = namespace
     if pod_name and fallback_tool in _CUSTOM_TOOLS_ACCEPTING_POD_NAME:

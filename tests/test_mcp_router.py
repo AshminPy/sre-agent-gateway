@@ -202,6 +202,51 @@ def test_issue_246_explicit_namespace_stripped_from_describe_node_too(monkeypatc
     assert args["node_name"] == "gke-node-1"
 
 
+# ── Section 5: shared custom MCP requires an explicit cluster_id on every call ──
+
+def test_cluster_id_is_auto_filled_for_k8s_mcp_calls(monkeypatch):
+    """Every k8s_mcp tool call must carry cluster_id -- the shared custom MCP (one
+    Cloud Run deployment serving multiple on-prem clusters, see mcp/server.py's
+    resolve_cluster()) has no other way to know which cluster to connect to."""
+    monkeypatch.setattr(mcp_router_mod, "_get_cluster_registry", lambda: _CUSTOM_CLUSTER_REGISTRY)
+    _mock_llm_returning(monkeypatch, "list_pods", {})
+
+    state = _make_state("sre-lab")
+    result = mcp_router(state)
+
+    assert result["current_action"]["arguments"]["cluster_id"] == "sre-lab"
+
+
+def test_cluster_id_is_auto_filled_for_cluster_scoped_tools_too(monkeypatch):
+    """list_nodes/describe_node get no namespace, but they DO still need cluster_id --
+    it's not a namespace-shaped argument, it identifies which cluster's node list to
+    read, which every custom-MCP tool needs regardless of namespace-scoping."""
+    monkeypatch.setattr(mcp_router_mod, "_get_cluster_registry", lambda: _CUSTOM_CLUSTER_REGISTRY)
+    _mock_llm_returning(monkeypatch, "list_nodes", {})
+
+    state = _make_state("sre-lab")
+    result = mcp_router(state)
+
+    args = result["current_action"]["arguments"]
+    assert args["cluster_id"] == "sre-lab"
+    assert "namespace" not in args
+
+
+def test_model_supplied_cluster_id_is_overridden_not_trusted(monkeypatch):
+    """The model's own JSON response naming a DIFFERENT cluster_id than the one this
+    investigation was actually resolved to must never be honored -- evidence text is
+    untrusted input, and letting an LLM-controlled field pick the target cluster would
+    reopen the cross-cluster-evidence risk this redesign closes (issue #86). The
+    investigation's own resolved cluster_name always wins."""
+    monkeypatch.setattr(mcp_router_mod, "_get_cluster_registry", lambda: _CUSTOM_CLUSTER_REGISTRY)
+    _mock_llm_returning(monkeypatch, "list_pods", {"cluster_id": "some-other-cluster"})
+
+    state = _make_state("sre-lab")
+    result = mcp_router(state)
+
+    assert result["current_action"]["arguments"]["cluster_id"] == "sre-lab"
+
+
 def test_issue_246_describe_node_gets_no_namespace_argument(monkeypatch):
     """describe_node(node_name) takes only node_name — same cluster-scoped exclusion
     as list_nodes."""

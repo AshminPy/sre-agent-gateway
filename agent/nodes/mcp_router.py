@@ -227,6 +227,25 @@ def mcp_router(state: AgentState) -> dict:
 
     # ── AUTO-FILL for custom K8s MCP ─────────────────────────────
     if mcp_source == "k8s_mcp":
+        # Section 5 redesign: the shared custom MCP now serves multiple clusters
+        # from one Cloud Run deployment (see mcp/server.py's resolve_cluster()) --
+        # every tool call must carry the exact cluster_id this investigation
+        # already resolved (the SAME cluster_name that decided selected_mcp above
+        # via the Phase 1 deterministic routing). This is a forced OVERWRITE, not
+        # setdefault: the model's own JSON response must never be allowed to name
+        # a different cluster_id than the one this investigation was actually
+        # resolved to -- evidence text is untrusted input, and letting an
+        # LLM-controlled field pick the target cluster would reopen exactly the
+        # cross-cluster-evidence risk this redesign closes (issue #86).
+        if args.get("cluster_id") not in (None, cluster_name):
+            log.warning(
+                "mcp_router: overriding model-supplied cluster_id=%r with the "
+                "investigation's actual resolved cluster '%s' for tool '%s' -- "
+                "a tool call must never target a different cluster than the one "
+                "this investigation was resolved to",
+                args.get("cluster_id"), cluster_name, tool,
+            )
+        args["cluster_id"] = cluster_name
         # issue #246: cluster-scoped tools (list_nodes, describe_node) take no
         # namespace param at all -- injecting one made every call fail with
         # the MCP server's own "unexpected_keyword_argument" validation error.
