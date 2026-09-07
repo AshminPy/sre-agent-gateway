@@ -46,6 +46,7 @@ locals {
       allowed_namespaces = []
       owner              = ""
       enabled            = true
+      kube_context       = "" # GKE entries route via GKE Remote MCP, never the custom MCP
     }
   }
 
@@ -63,6 +64,7 @@ locals {
         allowed_namespaces = c.allowed_namespaces
         owner              = c.owner
         enabled            = c.enabled
+        kube_context       = c.kube_context
       }
     ]
   })

@@ -75,6 +75,19 @@ resource "google_cloud_run_v2_service" "mcp" {
         value = var.project_b_id
       }
 
+      # Section 5 redesign: this ONE Cloud Run service now serves every
+      # "custom"-type cluster in clusters.json, not just one fixed cluster --
+      # every tool call carries an explicit cluster_id, resolved against this
+      # SAME registry the agent itself reads (see iac/agent/iam.tf's
+      # mcp_runtime_cluster_config_reader grant below for the read access this
+      # requires). K8S_MCP_KUBE_CONTEXT (below) is kept only as a local-dev
+      # fallback for when this bucket is unreachable -- never used to pick a
+      # cluster for a real registry-resolved request.
+      env {
+        name  = "CLUSTER_CONFIG_BUCKET"
+        value = google_storage_bucket.cluster_config.name
+      }
+
       dynamic "env" {
         for_each = var.custom_mcp_kube_context != "" ? [var.custom_mcp_kube_context] : []
         content {
@@ -113,4 +126,17 @@ resource "google_project_iam_member" "mcp_runtime_model_armor_user" {
   project = var.project_a_id
   role    = "roles/modelarmor.user"
   member  = "serviceAccount:${google_service_account.mcp_runtime[0].email}"
+}
+
+# Section 5 redesign: the MCP runtime SA needs read access to the SAME
+# clusters.json the agent reads (google_storage_bucket_iam_member
+# .runtime_cluster_config_reader in iam.tf grants the agent identity this
+# same role on this same bucket) -- this server now resolves a per-request
+# cluster_id against this registry instead of using one env-configured
+# connection for its whole lifetime.
+resource "google_storage_bucket_iam_member" "mcp_runtime_cluster_config_reader" {
+  count  = var.enable_custom_mcp ? 1 : 0
+  bucket = google_storage_bucket.cluster_config.name
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:${google_service_account.mcp_runtime[0].email}"
 }

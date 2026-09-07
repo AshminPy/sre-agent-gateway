@@ -49,6 +49,14 @@ variable "additional_clusters" {
     allowed_namespaces = optional(list(string), [])
     owner              = optional(string, "")
     enabled            = optional(bool, true)
+    # Section 5 redesign: the shared custom MCP (mcp/server.py) now serves
+    # every "custom"-type cluster from ONE Cloud Run service, keyed by this
+    # field -- not a separate deployment per cluster. Only meaningful for
+    # type="custom" entries reached via GKE Fleet Connect Gateway; a "gke"
+    # entry goes through GKE Remote MCP instead and never reads this field.
+    # Adding a new on-prem cluster is Fleet registration + RBAC + this one
+    # registry entry -- no new MCP deployment, no agent code change.
+    kube_context = optional(string, "")
   }))
   # Phase 1: sre-lab (local kind cluster standing in for on-prem, registered
   # into the GCP fleet — see iac/agent/onprem_fleet.tf and
@@ -68,6 +76,11 @@ variable "additional_clusters" {
       allowed_namespaces = ["test-incidents"]
       owner              = "sre-platform"
       enabled            = true
+      # Preserves exactly the value previously passed as the single global
+      # var.custom_mcp_kube_context env var -- migrating this cluster from
+      # "the only cluster this MCP service knows about" to "one registry
+      # entry among possibly many" changes nothing about how it connects.
+      kube_context = "connectgateway_sreagent-t2-demo_global_sre-lab"
     }
   }
 
