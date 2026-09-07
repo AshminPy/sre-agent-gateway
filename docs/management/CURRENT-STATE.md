@@ -1,6 +1,6 @@
 # Current State — the canonical operational source of truth
 
-**Last updated:** 2026-08-30
+**Last updated:** 2026-09-07 (§2, §7, §8 corrected — Model Armor CONTENT_AUTHZ extension, custom-MCP response guard, `authz_fail_open` flip, and Agent Registry Terraform management; see notes inline)
 **Owner:** SRE Agent platform team
 **Role:** This is the single place to answer "where are we now, what's done, what's blocked,
 what remains, what's next." It summarizes conclusions and links to the detailed evidence
@@ -21,9 +21,10 @@ and the rest of [`docs/architecture/`](../README.md) (17 pages, current). Do not
 ## 2. Current production / non-production state
 
 - **Live engine:** `sreagent-t2-demo`, Agent Gateway bound natively via Terraform (`google_vertex_ai_reasoning_engine.sre_agent`'s `agentGatewayConfig` — the gateway binding is Terraform-managed since PR #93, 2026-08-10; no manual re-attach step needed after a normal apply).
-- **Model Armor:** both floor settings (`google_mcp_server`, `ai_platform`) are `inspect_only = true` (`iac/agent/model_armor.tf:218-237`). `inspect_and_block` was tried once (2026-08-25) and reverted the next day after two real false positives (one fabricated an RCA, one crashed a run). **Standing precondition gate before re-enabling** (verbatim from the Terraform's own comment, `model_armor.tf:190-195`): a week of `MATCH_FOUND` log entries reviewed with zero false positives on real SRE traffic; `pi_and_jailbreak` block-tested specifically; SDP block-tested at all. None of the three currently hold.
+- **Model Armor floor settings:** both floor settings (`google_mcp_server`, `ai_platform`) are `inspect_only = true` (`iac/agent/model_armor.tf:218-237`). `inspect_and_block` was tried once (2026-08-25) and reverted the next day after two real false positives (one fabricated an RCA, one crashed a run). **Standing precondition gate before re-enabling** (verbatim from the Terraform's own comment, `model_armor.tf:190-195`): a week of `MATCH_FOUND` log entries reviewed with zero false positives on real SRE traffic; `pi_and_jailbreak` block-tested specifically; SDP block-tested at all. None of the three currently hold.
+- **Model Armor CONTENT_AUTHZ extension (Agent Gateway) — live, separate from the floor settings above.** `google_network_services_authz_extension.model_armor` (`iac/agent/agent_gateway.tf`) is wired and enforcing, referencing templates `sre_agent_request`/`sre_agent_response` (`iac/agent/model_armor.tf`), `enforcement_type = "INSPECT_AND_BLOCK"`. This inspects (and can block) request/response traffic through Agent Gateway itself — corrects an earlier finding that this chain was not wired.
 - **App-level Model Armor** (`SREAgent._sanitize()`) is dead code in every real deployment — gated on the Agent Gateway being off, and the gateway defaults on (#203, blocked by #30).
-- **Custom/fallback MCP traffic** transits the Agent Gateway but is NOT inspected by Model Armor (Google's floor-setting API doesn't support a custom integration type) — a confirmed, real, scoped gap. Full detail: `archive/SUPERSEDED_2026-08-25_custom-mcp-model-armor-coverage.md`.
+- **Custom/fallback MCP response protection:** custom MCP responses are separately guarded at the application layer by `mcp/response_guard.py` — live-deployed, blocks on a real `MATCH_FOUND`, fails open only on a genuine Model Armor API error (monitored via the `mcp_model_armor_fail_open` alert, which has never fired). This is the compensating control for the one real gap that remains: Model Armor's floor-setting API still has no custom-MCP integration type, so floor settings themselves never see this traffic. Full background: `archive/SUPERSEDED_2026-08-25_custom-mcp-model-armor-coverage.md`.
 
 ## 3. Completed capabilities
 
@@ -98,14 +99,22 @@ Improvements that must not block completion:
 - **#35** — Error-swallowing in `attach_gateway_to_engine.sh`'s pre-flight checks. Downgraded
   from an earlier draft of this doc: the script is emergency-only (not auto-invoked since
   PR #93), so the blast radius is much smaller than the title suggests.
-- **#33** — Agent Registry endpoints have no Terraform representation (needs a documented
-  decision: intentional-imperative vs. add drift detection).
+- **#33 — RESOLVED 2026-09-04, no longer open.** ~~Agent Registry endpoints have no Terraform
+  representation~~ — Terraform now manages Agent Registry endpoint registrations directly
+  (`iac/agent/agent_registry.tf`, `agent_registry_mcp.tf`, commit `a3f2ba1`). The imperative
+  `scripts/register_endpoints.py` was retired to `archive/RETIRED_2026-09-04_register_endpoints.py`.
+  Kept here (not deleted) so the resolution is visible next to the original item; should move to
+  the tracker's `Completed` tab.
 
 ## 8. Active security/reliability decisions
 
 - **Model Armor precondition gate** — see §2. The single most important standing decision
   right now; do not re-enable `inspect_and_block` without satisfying all 3 conditions or an
   explicit human override.
+- **REQUEST_AUTHZ (IAP) now fails closed, not open.** `iac/agent/variables.tf`'s `authz_fail_open`
+  default flipped `true`→`false` (PR #249, merged 2026-09-05) — confirmed live: `fail_open = false`.
+  An IAP outage now blocks egress instead of silently allowing it; this reverses the earlier
+  rollout-safety tradeoff (see `risks-and-limitations.md` item 6, now corrected to match).
 - **No local `terraform apply`, ever** (2026-08-25 incident: a local apply against the shared
   GCS backend caused real undocumented drift). Every infra change: branch → PR → CI plan →
   merge → CI apply.
@@ -115,8 +124,9 @@ Improvements that must not block completion:
 
 ## 9. Known limitations
 
-Canonical ranked list: [Risks and Limitations](risks-and-limitations.md). Notable additions
-from this consolidation pass: custom/fallback MCP traffic is not Model Armor-inspected (§2).
+Canonical ranked list: [Risks and Limitations](risks-and-limitations.md). Corrected 2026-09-07:
+custom/fallback MCP traffic is now covered by `mcp/response_guard.py` (§2) — earlier drafts of
+this doc said it was uninspected; that is no longer accurate.
 
 **2026-08-31 update — 2 of PR #219's 3 unresolved loose ends fixed, 1 still open:**
 - **`cascading-001`'s wrong RCA — FIXED.** Root cause: `agent/mcp_client.py`'s `call_tool()`
