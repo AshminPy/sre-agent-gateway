@@ -178,6 +178,16 @@ row, don't ask anyone.
   match. This is the same manual cross-check Step 6 of the [promotion
   process](../promotion/01-test-to-work-process.md) requires before any IAM-touching change is
   promoted.
+- **Lab — read the custom MCP's Model Armor response guard**: open `mcp/response_guard.py` and
+  find the `on_call_tool` middleware that calls Model Armor's `sanitize_model_response` directly
+  on every custom-MCP tool response. Confirm for yourself: it blocks on a real `MATCH_FOUND`
+  result, and fails open **only** when the Model Armor API call itself errors — a deliberate,
+  documented availability tradeoff, not a bug. Then find its alert:
+  ```bash
+  grep -n "mcp_model_armor_fail_open" iac/agent/monitoring.tf
+  ```
+  Confirm both the `google_logging_metric` and the `google_monitoring_alert_policy` exist — this
+  is what pages on-call if that fail-open path is ever actually hit.
 - **Checkpoint**: explain why `roles/container.viewer` for GKE access is resource-level/
   role-scoped rather than a broad `roles/editor` grant, and name the specific enforcement layer
   that would catch a regression if someone tried to add a mutating tool later.
@@ -229,8 +239,9 @@ row, don't ask anyone.
   - Review — don't trigger, just read — the [Gateway Failure](../runbooks/gateway-failure.md)
     and [MCP Failure](../runbooks/mcp-failure.md) runbooks, and identify which failure modes are
     currently *real, live-possible* risks (per [Risks and Limitations](../management/risks-and-limitations.md))
-    vs. which describe infrastructure that isn't deployed at all (e.g., the custom MCP failure
-    alert — same "built, not deployed" distinction from Day 3).
+    vs. which describe infrastructure that's now live (the custom MCP is deployed and running —
+    see [MCP Architecture](../architecture/mcp-architecture.md) — the "built, not deployed"
+    framing from earlier sessions is stale).
 
 ## Day 8 — Evaluation and accuracy
 
