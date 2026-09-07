@@ -12,6 +12,7 @@ Fallback: Custom FastMCP on Cloud Run
 
 Source: https://cloud.google.com/kubernetes-engine/docs/reference/mcp
 """
+import importlib
 import json
 import logging
 import os
@@ -525,31 +526,44 @@ def _try_custom_mcp_fallback(
 def _call_catalog_source(
     mcp_source: str, tool_name: str, arguments: Dict[str, Any], cluster_name: str,
 ) -> Dict[str, Any]:
-    """Section 6 dispatch target for a agent/source_catalog.py entry. Each
-    source's own adapter module is responsible for its own read-only-ness,
-    bounded query limits, and normalized evidence shape -- this function's
-    only job is a safe, structured call + a uniform ok/error result shape
-    matching what tool_executor.py/evidence_extractor.py already expect from
-    any tool call, regardless of source.
+    """Section 6 dispatch target for any agent/source_catalog.py entry. Fully
+    generic by design: dynamically imports the entry's own `output_adapter`
+    module and calls the function named after the tool. Adding a future
+    source (Elastic, Grafana, git MCP) means a new catalog entry + a new
+    adapter module -- this function never changes, never hardcodes a source
+    name, and never needs a new branch. Each adapter module is responsible
+    for its own read-only-ness, bounded query limits, and normalized evidence
+    shape; this function's only job is a safe, structured call + a uniform
+    ok/error result shape matching what tool_executor.py/evidence_extractor.py
+    already expect from any tool call, regardless of source.
     """
+    from agent.source_catalog import SOURCE_CATALOG
     start = time.time()
-    try:
-        if mcp_source == "prometheus" and tool_name == "query_range":
-            from agent.sources.prometheus_adapter import query_range
-            result = query_range(
-                cluster_id=cluster_name,
-                promql=arguments.get("promql", ""),
-                start_ts=arguments.get("start_ts"),
-                end_ts=arguments.get("end_ts"),
-            )
-            return {
-                "ok": True, "result": result, "tool": tool_name,
-                "mcp_source": mcp_source, "duration_s": round(time.time() - start, 2),
-            }
+    entry = SOURCE_CATALOG.get(mcp_source, {})
+    if tool_name not in entry.get("approved_tools", frozenset()):
         return {
-            "ok": False, "error": f"No dispatch implemented for {mcp_source}.{tool_name}",
-            "tool": tool_name, "mcp_source": mcp_source,
-            "duration_s": round(time.time() - start, 2),
+            "ok": False, "error": f"tool '{tool_name}' is not an approved tool for source '{mcp_source}'",
+            "tool": tool_name, "mcp_source": mcp_source, "duration_s": round(time.time() - start, 2),
+        }
+    module_path = entry.get("output_adapter")
+    try:
+        adapter = importlib.import_module(module_path)
+        fn = getattr(adapter, tool_name)
+    except (ImportError, AttributeError) as exc:
+        log.warning(
+            "call_tool catalog source=%s tool=%s: adapter dispatch failed: %s",
+            mcp_source, tool_name, exc,
+        )
+        return {
+            "ok": False, "error": f"adapter dispatch failed: {exc}",
+            "tool": tool_name, "mcp_source": mcp_source, "duration_s": round(time.time() - start, 2),
+        }
+    try:
+        call_args = {k: v for k, v in arguments.items() if k != "cluster_id"}
+        result = fn(cluster_id=cluster_name, **call_args)
+        return {
+            "ok": True, "result": result, "tool": tool_name,
+            "mcp_source": mcp_source, "duration_s": round(time.time() - start, 2),
         }
     except Exception as exc:
         # Matches every other source's contract: a failure is a clean, honest

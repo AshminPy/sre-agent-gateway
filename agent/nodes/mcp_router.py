@@ -156,6 +156,12 @@ def mcp_router(state: AgentState) -> dict:
     if additional_source is not None:
         limits = additional_source.get("query_limits", {})
         max_window = limits.get("max_window_seconds", 3600)
+        # Read entirely from the catalog entry -- never hardcode a source's tool
+        # name or query language here. Adding Elastic/Grafana/git MCP later is a
+        # new catalog entry + adapter module only; this block does not change.
+        primary_tool     = additional_source.get("primary_tool", "query")
+        query_field      = additional_source.get("query_field", "query")
+        query_field_hint = additional_source.get("query_field_hint", "a bounded, read-only query")
         action, usage = llm_json(
             MCP_ROUTER_ADDITIONAL_SOURCE_SYSTEM.format(
                 source_id=additional_source["source_id"],
@@ -172,6 +178,8 @@ def mcp_router(state: AgentState) -> dict:
                 primary_gap=primary_gap,
                 evidence_count=evidence_count,
                 evidence_digest=_evidence_digest(state),
+                query_field=query_field,
+                query_field_hint=query_field_hint,
                 max_window_seconds=max_window,
             ),
             max_tokens=200,
@@ -179,7 +187,7 @@ def mcp_router(state: AgentState) -> dict:
         log_node_tokens("mcp_router", state["run_id"], step, usage)
 
         from agent.llm import llm_json_failed
-        if llm_json_failed(action) or not action or not action.get("promql"):
+        if llm_json_failed(action) or not action or not action.get(query_field):
             log.warning(
                 "mcp_router: additional-source query construction failed for source=%s -- "
                 "falling through to Kubernetes routing instead of failing the whole step",
@@ -191,16 +199,16 @@ def mcp_router(state: AgentState) -> dict:
             window = min(int(action.get("window_seconds") or max_window), max_window)
             now = _time.time()
             log.info(
-                "mcp_router → source=%s tool=query_range promql=%s window=%ds",
-                additional_source["source_id"], action["promql"], window,
+                "mcp_router → source=%s tool=%s %s=%s window=%ds",
+                additional_source["source_id"], primary_tool, query_field, action[query_field], window,
             )
             return {
                 "selected_mcp": additional_source["source_id"],
                 "current_action": {
-                    "tool": "query_range",
+                    "tool": primary_tool,
                     "arguments": {
                         "cluster_id": cluster_name,
-                        "promql": action["promql"],
+                        query_field: action[query_field],
                         "start_ts": now - window,
                         "end_ts": now,
                     },

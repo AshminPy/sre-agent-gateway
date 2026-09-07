@@ -49,7 +49,64 @@ Every new source falls into exactly one of these two shapes. Decide which one fi
 
 Only if the new source needs genuinely new *reasoning* behavior beyond "pick this tool from this source's allowlist" — e.g., if it needs its own dedicated node rather than fitting into the existing `mcp_router`/`tool_executor` pattern. For most new sources that follow the existing MCP tool-calling shape, no graph change is needed — only new allowlist entries and (if it's a new source-selection branch) an `mcp_router` Phase 1 update.
 
-## Current architectural limitation: routing assumes every source is cluster-scoped
+## SUPERSEDED (2026-09-07): non-cluster-scoped sources now have a real, generic mechanism
+
+Everything below this point (the "current architectural limitation" and the Prometheus
+"worked example") described a **speculative design only** — no code existed yet. That
+design has since been **replaced by an actually-implemented, generic mechanism**
+(new assignment Section 6). Read this section first; the rest below is kept only as
+historical context for *why* the design looks the way it does.
+
+**What actually exists today** — `agent/source_catalog.py`, `agent/nodes/mcp_router.py`,
+`agent/mcp_client.py`, worked Prometheus example in `agent/sources/prometheus_adapter.py`:
+
+- A small, explicit, hand-maintained `SOURCE_CATALOG` dict (`agent/source_catalog.py`) —
+  each entry declares `source_type`, `enabled`, `allowed_clusters`, `capabilities`,
+  `approved_tools`, `output_adapter` (a Python module path), `query_limits`, and (for the
+  LLM-driven single-query flow) `primary_tool` / `query_field` / `query_field_hint`.
+- `mcp_router.py`'s Section 6 block reads ONLY those catalog fields — it never hardcodes a
+  source name or query language. `select_additional_source()` picks the best-matching
+  enabled + authorized source for the current evidence gap; if none matches, routing falls
+  through to the existing Kubernetes-only path completely unchanged.
+- `mcp_client.py`'s `_call_catalog_source()` dynamically imports the entry's `output_adapter`
+  module and calls the function named after the tool — this function has never needed a new
+  branch added for a new source (proven by `tests/test_mcp_client_catalog_dispatch.py`'s
+  `test_second_catalog_source_requires_zero_client_code_changes`, which registers a
+  completely fake second source and adapter at test time and confirms it dispatches
+  correctly through the unmodified function).
+
+**Adding Elastic, Grafana, or a git MCP server later — the real, current checklist:**
+1. Verify the official supported integration/auth option for that vendor first (don't assume
+   a community MCP server is safe/current — see the WebSearch research recorded in
+   `PHASE1_EVIDENCE_LOG.md`'s Section 6 entry for how this was done for Prometheus/Grafana).
+2. Write a new adapter module (`agent/sources/<name>_adapter.py`) exposing one function per
+   approved tool, matching the signature shape `fn(cluster_id, <query_field>, ...) -> dict`
+   with the normalized evidence fields already documented in `prometheus_adapter.py`'s
+   docstring (source, cluster binding, resource identity, event/collection time, query
+   reference, raw evidence reference, truncation, redaction, retrieval status).
+3. Add ONE new entry to `SOURCE_CATALOG` — `enabled: False` until live-validated, real
+   `allowed_clusters`/`capabilities`/`query_limits` for that source.
+4. Write fixture-based tests for the adapter (no live credentials needed to merge — mark the
+   integration `NOT VERIFIED` until it's actually run against a real endpoint).
+5. Flip `enabled: True` only after live validation. Steps 6 (IAM), 15 (security review), 19
+   (timeout/retry — already enforced generically via `query_limits`), and 23 (live validation)
+   from the original numbered checklist below still apply and are NOT superseded by this
+   mechanism — only the routing/dispatch/tool-discovery steps (9, 10) are.
+
+**No `mcp_router.py`, `mcp_client.py`, or prompt-template change is needed for a new source**
+that fits this shape (a single bounded read-only query against a time-window). A source that
+genuinely doesn't fit — e.g. a git MCP server browsing files/commits rather than running one
+bounded query — will need its own small addition to this mechanism (a second prompt template
+keyed by `source_type`, or a non-time-windowed catalog schema variant); that is a real, not
+speculative, future design decision and should be sized when that source is actually being
+added, not guessed at here.
+
+---
+
+<details>
+<summary>Original speculative design (kept for historical context only — see SUPERSEDED note above)</summary>
+
+### Current architectural limitation: routing assumes every source is cluster-scoped
 
 `mcp_router.py`'s Phase 1 source selection is a binary branch keyed on Kubernetes cluster type:
 ```python
@@ -57,7 +114,7 @@ selected_mcp = "gke_remote_mcp" if cluster_type == "gke" else "k8s_mcp"
 ```
 This works because both existing sources answer "which K8s cluster is this investigation about?" A source like Prometheus, Elasticsearch, GitHub, or Confluence often does **not** have that same 1:1 relationship — a Prometheus instance might monitor one cluster, several clusters, or nothing cluster-shaped at all (e.g. a GitHub repo). Adding a source like this will require turning that binary branch into a genuine `source_type -> mcp_source` lookup (and deciding, per new source, whether it's selected by cluster association, by keyword/intent in the query, or explicitly named by the caller) — a small, mechanical refactor, not a redesign, but **not done today** because no second cluster-scoped-only assumption has been broken yet. Do this refactor when the first non-cluster-scoped source is actually being added, not speculatively ahead of time.
 
-## Worked example: adding Prometheus as a new source
+### Worked example: adding Prometheus as a new source
 
 Concrete walk-through, following the numbered steps above, for a Prometheus instance that monitors `sre-test-cluster` (read-only metrics queries, e.g. "what was this pod's memory usage over the last hour").
 
@@ -87,6 +144,8 @@ Concrete walk-through, following the numbered steps above, for a Prometheus inst
 24. **Rollback**: `enable_prometheus_mcp = false` + `terraform apply` — confirm the Cloud Run service (if any) has no `prevent_destroy` complication first.
 
 No code was changed to build this example — it is a design walk-through only, per this task's scope (implement only if a tiny generic foundation change is clearly required and safe; the routing refactor identified above is exactly that kind of change, deferred until an actual non-cluster-scoped source is being built, not spent speculatively here).
+
+</details>
 
 ---
 

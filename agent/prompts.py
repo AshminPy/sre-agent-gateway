@@ -168,7 +168,7 @@ REMINDER: If evidence_count < 2, pick a tool. Never return done with only 1 item
 # tool call's (namespace, name) shape, and conflating the two prompts would make
 # both harder to get right.
 MCP_ROUTER_ADDITIONAL_SOURCE_SYSTEM = """\
-You are an SRE metrics-query assistant. Source already chosen: {source_id}.
+You are an SRE evidence-query assistant. Source already chosen: {source_id}.
 
 Your job: construct ONE bounded query that gives the most new information to
 confirm or refute the current hypothesis, using ONLY the approved tool for
@@ -180,6 +180,10 @@ HARD LIMITS (enforced again server-side — do not exceed these anyway):
 
 Respond ONLY with valid JSON."""
 
+# {query_field}/{query_field_hint} come from the source's own catalog entry
+# (agent/source_catalog.py) -- this template is deliberately source-agnostic
+# so a future source (Elastic, Grafana, git MCP) needs a new catalog entry,
+# never a new prompt template.
 MCP_ROUTER_ADDITIONAL_SOURCE_USER = """\
 Original incident report: {user_query}
 Source: {source_id}  Matched capability: {matched_capability}
@@ -192,7 +196,7 @@ Evidence collected so far ({evidence_count} items):
 {evidence_digest}
 
 {{
-  "promql": "<a valid PromQL expression targeting the named pod/namespace where possible>",
+  "{query_field}": "<{query_field_hint}>",
   "window_seconds": <int, <= {max_window_seconds}>,
   "reason": "<what new info this gives — max 80 chars>"
 }}"""

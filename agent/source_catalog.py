@@ -49,6 +49,17 @@ SOURCE_CATALOG: Dict[str, Dict[str, Any]] = {
         "capabilities": frozenset({CAPABILITY_HISTORICAL_METRICS}),
         "approved_tools": frozenset({"query_range"}),
         "output_adapter": "agent.sources.prometheus_adapter",
+        # ── LLM-driven single-query routing (mcp_router.py's Section 6 block) ──
+        # Adding a future source (Elastic, Grafana, git MCP) needs ONLY a new
+        # catalog entry + a new adapter module exposing a function named
+        # `primary_tool` with signature (cluster_id, <query_field>, start_ts,
+        # end_ts) -- mcp_router.py and mcp_client.py read these three fields
+        # generically and never hardcode a source name or query language. See
+        # tests/test_mcp_router.py's test_second_catalog_source_requires_zero_
+        # router_or_client_code_changes for the proof.
+        "primary_tool":      "query_range",
+        "query_field":       "promql",
+        "query_field_hint":  "a valid PromQL expression targeting the named pod/namespace where possible",
         "query_limits": {
             "max_window_seconds": 3600,  # 1 hour max range per query
             "max_result_series":  50,
