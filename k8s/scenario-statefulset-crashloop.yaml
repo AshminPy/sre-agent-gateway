@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: badstate-set
+  namespace: test-incidents
+  labels:
+    incident-type: StatefulSetIssue
+spec:
+  serviceName: badstate-set
+  replicas: 1
+  selector:
+    matchLabels:
+      app: badstate-set
+  template:
+    metadata:
+      labels:
+        app: badstate-set
+    spec:
+      containers:
+        - name: crasher
+          image: python:3.11-slim
+          command: ["python", "-c"]
+          args:
+            - |
+              import sys, time
+              print("StatefulSet pod starting...")
+              time.sleep(3)
+              print("Simulating StatefulSet pod crash — exit code 1")
+              sys.exit(1)
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu: "100m"
+            limits:
+              memory: "64Mi"
+              cpu: "200m"
