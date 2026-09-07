@@ -1,11 +1,12 @@
 # On-prem / non-GKE connectivity via GKE Fleet Connect Gateway
 
 Status: **prototype validated** against a real non-GKE cluster (kind, standing in
-for on-prem). Not yet wired into the agent's `mcp_client.py` cluster registry —
-this document is the P3 (`PRODUCTION-LAUNCH-PLAN.md`) deliverable: prove the
+for on-prem), and now also wired into and proven through the live production
+agent path — see the Open Items section below for current status. This
+document is the P3 (`PRODUCTION-LAUNCH-PLAN.md`) deliverable: prove the
 connectivity path, its credential model, its RBAC/audit posture, and its
-failure behavior, before Priority 4 (custom read-only K8s MCP server) routes
-through it.
+failure behavior, ahead of Priority 4 (custom read-only K8s MCP server)
+routing through it.
 
 ## What was proven, and how (2026-08-06/07)
 
@@ -292,11 +293,13 @@ registration if the key-file fallback (step 2 above) was used.
 
 ## Open items / not covered by this task
 
-- **Not wired into the agent.** `mcp_client.py` / `mcp_router.py` still route
-  every non-GKE cluster to the custom K8s MCP server via a direct endpoint +
-  WI bearer token (per `PRODUCTION-LAUNCH-PLAN.md` P4's "Have" line) — this
-  doc proves the Connect Gateway path works standalone; P4 is the follow-up
-  to actually route the agent's MCP calls through it.
+- **Now wired into the agent and live in production.** `mcp_client.py` /
+  `mcp_router.py` route non-GKE clusters to the custom K8s MCP server, which
+  reaches them through the Connect Gateway path this document proved
+  standalone. Real end-to-end proof exists (Agent → Agent Gateway → custom
+  Cloud Run MCP → Connect Gateway → the `sre-lab` cluster), verified
+  2026-09-04 and independently re-confirmed 2026-09-05/06/07 — see
+  [MCP Architecture](architecture/mcp-architecture.md) for the evidence.
 - **DATA_READ audit logging gap** (§6) — needs an explicit decision + IAM
   audit-config change, not made here.
 - **IAM role used for this test was `roles/owner`**, not the recommended
