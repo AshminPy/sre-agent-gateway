@@ -174,6 +174,34 @@ def test_issue_246_list_nodes_gets_no_namespace_argument(monkeypatch):
     assert "namespace" not in result["current_action"]["arguments"]
 
 
+def test_issue_246_explicit_namespace_from_model_is_stripped_not_just_unfilled(monkeypatch):
+    """Expansion-review gap: the original fix only stopped the router's OWN auto-fill
+    from ADDING a namespace to list_nodes/describe_node. It did nothing if the model's
+    own raw arguments already included one (e.g. copied from a prior namespaced call
+    in the same investigation) -- that would still reach the MCP server and fail with
+    the same unexpected_keyword_argument error. Must be stripped either way."""
+    monkeypatch.setattr(mcp_router_mod, "_get_cluster_registry", lambda: _CUSTOM_CLUSTER_REGISTRY)
+    _mock_llm_returning(monkeypatch, "list_nodes", {"namespace": "test-incidents"})
+
+    state = _make_state("sre-lab")
+    result = mcp_router(state)
+
+    assert result["current_action"]["tool"] == "list_nodes"
+    assert "namespace" not in result["current_action"]["arguments"]
+
+
+def test_issue_246_explicit_namespace_stripped_from_describe_node_too(monkeypatch):
+    monkeypatch.setattr(mcp_router_mod, "_get_cluster_registry", lambda: _CUSTOM_CLUSTER_REGISTRY)
+    _mock_llm_returning(monkeypatch, "describe_node", {"namespace": "test-incidents", "node_name": "gke-node-1"})
+
+    state = _make_state("sre-lab")
+    result = mcp_router(state)
+
+    args = result["current_action"]["arguments"]
+    assert "namespace" not in args
+    assert args["node_name"] == "gke-node-1"
+
+
 def test_issue_246_describe_node_gets_no_namespace_argument(monkeypatch):
     """describe_node(node_name) takes only node_name — same cluster-scoped exclusion
     as list_nodes."""

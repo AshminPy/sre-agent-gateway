@@ -232,6 +232,22 @@ def mcp_router(state: AgentState) -> dict:
         # the MCP server's own "unexpected_keyword_argument" validation error.
         if tool not in _CUSTOM_TOOLS_WITHOUT_NAMESPACE:
             args.setdefault("namespace", namespace)
+        elif "namespace" in args:
+            # The auto-fill guard above only stops US from ADDING a namespace --
+            # it does nothing if the model's own raw arguments already included
+            # one (e.g. it copied "namespace" from a prior namespaced call in the
+            # same investigation). That would still reach the MCP server and
+            # fail with the identical unexpected_keyword_argument error the
+            # auto-fill fix was meant to prevent. Strip it here too, with a
+            # clear reason logged, rather than letting an unsupported argument
+            # reach the tool contract silently.
+            log.warning(
+                "mcp_router: stripping unsupported 'namespace' argument the model "
+                "supplied directly for cluster-scoped tool '%s' (args=%s) -- this "
+                "tool takes no namespace parameter",
+                tool, args,
+            )
+            args.pop("namespace", None)
         if tool in ("describe_pod_detail", "get_current_logs",
                     "get_previous_logs", "list_events") and pod:
             args.setdefault("pod_name", pod)
