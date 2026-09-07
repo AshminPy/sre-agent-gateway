@@ -1,3 +1,14 @@
+> **SUPERSEDED 2026-09-04.** This document's own conclusion ("PARTIAL / BLOCKED-by-design")
+> was overtaken by commit `a3f2ba1` (2026-09-04): Terraform now manages Agent Registry
+> endpoint registrations directly (`iac/agent/agent_registry.tf`, `agent_registry_mcp.tf`).
+> `scripts/register_endpoints.py` was retired to
+> `archive/RETIRED_2026-09-04_register_endpoints.py`. See
+> [`docs/management/CURRENT-STATE.md`](../docs/management/CURRENT-STATE.md) §7 for current
+> status (issue #33, now resolved). Kept below unmodified as historical evidence of the
+> pilot-import research that preceded the real fix.
+
+---
+
 # Agent Registry → Terraform pilot-import prep (2026-08-31)
 
 **Status: PARTIAL / BLOCKED-by-design.** Ready-to-import HCL + live evidence are done and

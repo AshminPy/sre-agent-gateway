@@ -1,3 +1,17 @@
+> **SUPERSEDED 2026-08-09 (archived 2026-09-07).** This is the first ("broken harness") run of
+> the tool-scaling baseline. Its own sibling,
+> [`docs/baselines/tool-scaling-baseline-2026-08-09-corrected.md`](../docs/baselines/tool-scaling-baseline-2026-08-09-corrected.md),
+> explicitly states it "supersedes" this file and is "the official tool-scaling baseline" —
+> use that file for any future source-#3 comparison. **Caveat carried over from the corrected
+> file's own text:** it says this file (and its raw JSON,
+> `docs/baselines/tool-scaling-baseline-2026-08-09-raw.json`, not moved here) should be "kept,
+> unmodified, as historical evidence" of what the broken harness reported. This archive copy
+> does not delete or edit the original — the original file remains in place at
+> `docs/baselines/tool-scaling-baseline-2026-08-09.md` alongside its raw JSON. Content below is
+> reproduced unmodified.
+
+---
+
 # Tool-Scaling Baseline — 2026-08-09
 
 > **Purpose**: capture today's routing/tool-selection/RCA numbers with 2 MCP sources (only 1 exercised — GKE Remote MCP) so a real MCP source #3 can be added later and re-compared against this same baseline. No new infrastructure or framework was built for this — this run uses the existing `agent/eval/run_eval.py` harness and the existing 14 golden cases (`agent/eval/golden_cases.py`), `--mode local`.
