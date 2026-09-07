@@ -159,6 +159,44 @@ REMINDER: If evidence_count < 2, pick a tool. Never return done with only 1 item
   "reason": "<what new info this gives — max 80 chars>"
 }}"""
 
+# ── MCP Router — additional-source query construction (Section 6) ───────────
+# Used ONLY when agent/source_catalog.py's select_additional_source() matched an
+# enabled, authorized source for this cluster+gap (today: never, since the only
+# catalog entry is disabled — see that module's own docstring). Deliberately
+# separate from MCP_ROUTER_PHASE2_* above: a metrics query has a fundamentally
+# different shape (a query string + a bounded time window) than a Kubernetes
+# tool call's (namespace, name) shape, and conflating the two prompts would make
+# both harder to get right.
+MCP_ROUTER_ADDITIONAL_SOURCE_SYSTEM = """\
+You are an SRE metrics-query assistant. Source already chosen: {source_id}.
+
+Your job: construct ONE bounded query that gives the most new information to
+confirm or refute the current hypothesis, using ONLY the approved tool for
+this source: {approved_tools}.
+
+HARD LIMITS (enforced again server-side — do not exceed these anyway):
+- Time window must not exceed {max_window_seconds} seconds.
+- Query must be read-only (no admin/write operations exist for this source).
+
+Respond ONLY with valid JSON."""
+
+MCP_ROUTER_ADDITIONAL_SOURCE_USER = """\
+Original incident report: {user_query}
+Source: {source_id}  Matched capability: {matched_capability}
+Namespace: {namespace}  Pod: {pod}
+
+Current task plan: {task_plan}
+Primary gap: {primary_gap}
+
+Evidence collected so far ({evidence_count} items):
+{evidence_digest}
+
+{{
+  "promql": "<a valid PromQL expression targeting the named pod/namespace where possible>",
+  "window_seconds": <int, <= {max_window_seconds}>,
+  "reason": "<what new info this gives — max 80 chars>"
+}}"""
+
 # ── Evidence Extractor ────────────────────────────────────────────
 EVIDENCE_EXTRACTOR_SYSTEM = """\
 You are an SRE evidence analyst.
