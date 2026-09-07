@@ -191,7 +191,9 @@ def test_guarded_rejects_invalid_namespace():
 
 
 def test_guarded_passes_valid_args_through():
-    @sec.guarded(namespace_fields=("namespace",), name_fields=("pod_name",))
+    # require_cluster_id=False: this test exercises generic arg passthrough, not
+    # cluster scoping -- see the dedicated cluster_id tests below for that.
+    @sec.guarded(namespace_fields=("namespace",), name_fields=("pod_name",), require_cluster_id=False)
     def fn(namespace: str, pod_name: str) -> dict:
         return {"namespace": namespace, "pod_name": pod_name}
 
@@ -200,7 +202,7 @@ def test_guarded_passes_valid_args_through():
 
 
 def test_guarded_never_raises_on_unexpected_exception():
-    @sec.guarded()
+    @sec.guarded(require_cluster_id=False)
     def fn() -> dict:
         raise RuntimeError("kaboom")
 
@@ -209,7 +211,7 @@ def test_guarded_never_raises_on_unexpected_exception():
 
 
 def test_guarded_redacts_return_value():
-    @sec.guarded()
+    @sec.guarded(require_cluster_id=False)
     def fn() -> dict:
         return {"data": {"password": "hunter2"}}
 
@@ -221,7 +223,7 @@ def test_guarded_enforces_rate_limit(monkeypatch):
     limiter = sec.RateLimiter(max_calls=2, window_s=60)
     monkeypatch.setattr(sec, "_rate_limiter", limiter)
 
-    @sec.guarded()
+    @sec.guarded(require_cluster_id=False)
     def fn() -> dict:
         return {"ok": True}
 
