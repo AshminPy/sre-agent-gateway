@@ -56,8 +56,8 @@ This used to be the layer that was missing; it's now closed. The deployed Cloud 
 4. Turn on `DATA_READ` audit logging for `connectgateway.googleapis.com`, or accept the current audit gap as a documented risk.
 5. The custom MCP is still single-cluster-per-deployment (`get_k8s_clients()`'s `@lru_cache(maxsize=1)`) — a second non-GKE cluster needs either a second Cloud Run service or per-request context selection.
 
-Items 1, 2, and 4 remain manual/undone today — see [Adding a Non-GKE / On-Prem Cluster](../runbooks/add-non-gke-cluster.md) for the current runbook.
+Items 1, 2, and 4 remain manual/undone today — see [Adding a Non-GKE / On-Prem Cluster](../archive/SUPERSEDED_2026-09-07_add-non-gke-cluster.md) (archived, superseded by the live build above) for historical context.
 
 ---
 
-**Related pages:** [MCP Architecture](mcp-architecture.md) · [Cluster Routing](cluster-routing.md) · [Adding a Non-GKE / On-Prem Cluster](../runbooks/add-non-gke-cluster.md)
+**Related pages:** [MCP Architecture](mcp-architecture.md) · [Cluster Routing](cluster-routing.md) · [Adding a Non-GKE / On-Prem Cluster (archived)](../archive/SUPERSEDED_2026-09-07_add-non-gke-cluster.md)
