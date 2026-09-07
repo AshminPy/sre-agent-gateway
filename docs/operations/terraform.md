@@ -22,7 +22,7 @@ One live environment today: GCP project `sreagent-t2-demo` (agent stack) + `srea
 | File | Purpose |
 |---|---|
 | `agent_engine.tf` | The core reasoning engine + companion Memory Bank engine; runtime env vars |
-| `agent_gateway.tf` | Agent Gateway + IAP REQUEST_AUTHZ |
+| `agent_gateway.tf` | Agent Gateway + IAP REQUEST_AUTHZ + Model Armor CONTENT_AUTHZ extension |
 | `apis.tf` | Enables required Google Cloud APIs |
 | `backend.tf` | GCS remote state backend declaration |
 | `buckets.tf` | Evidence, eval, and cluster-config GCS buckets |

@@ -1,7 +1,7 @@
 # Security Operations
 
-> **Implementation Status:** Kubernetes access — IMPLEMENTED, confirmed read-only across 4 independent layers. Model Armor — PARTIALLY IMPLEMENTED / effectively inactive in the live config (significant finding, read carefully below).
-> **Last Verified:** 2026-08-08
+> **Implementation Status:** Kubernetes access — IMPLEMENTED, confirmed read-only across 4 independent layers. Model Armor — IMPLEMENTED and live on both the Agent Gateway CONTENT_AUTHZ path and the custom MCP's application-level response guard (see below).
+> **Last Verified:** 2026-09-06
 > **Owner:** SRE Agent platform team.
 
 ## Complete IAM permission matrix
@@ -97,7 +97,7 @@ Standard Cloud Audit Logs cover IAM-relevant API calls. **One confirmed, still-o
 
 ## Prompt injection
 
-Kubernetes tool output (logs, event messages, resource names) is untrusted input that flows into LLM context. Mitigations: the tool allowlist + blocklist prevent any injected instruction from causing a real mutating action (there's no mutating tool to invoke even if the model were "convinced" to try); Model Armor's PI/jailbreak filter is the intended additional layer but is **currently not active in the live gateway-on configuration** (see below) — treat the tool-layer allowlist as the primary defense today, not Model Armor.
+Kubernetes tool output (logs, event messages, resource names) is untrusted input that flows into LLM context. Mitigations: the tool allowlist + blocklist prevent any injected instruction from causing a real mutating action (there's no mutating tool to invoke even if the model were "convinced" to try); Model Armor's PI/jailbreak filter is now live on two paths — the Agent Gateway's `CONTENT_AUTHZ` extension (inspects gateway-routed traffic) and the custom MCP's application-level response guard (`mcp/response_guard.py`, inspects custom-MCP tool responses directly) — see below for the current state of each.
 
 ## Malicious tool output / data exfiltration
 
@@ -113,33 +113,27 @@ Not independently audited in this pass — **STATUS: UNKNOWN**, recommend a stan
 
 ---
 
-## ⚠️ Model Armor — the most significant governance finding in this review
+## Model Armor — now live on both inspection paths (updated 2026-09-06)
 
-Model Armor's Terraform templates (`iac/agent/model_armor.tf`) are fully defined — two templates (request/response), filtering PI/jailbreak, malicious URI, RAI, and Sensitive Data Protection, at `MEDIUM_AND_ABOVE` confidence. **But in the live, gateway-enabled deployment, neither inspection path is actually active:**
+**This section previously reported Model Armor as effectively inactive. That finding is now stale — both inspection paths are live.** Model Armor's Terraform templates (`iac/agent/model_armor.tf`) define two templates (request/response), filtering PI/jailbreak, malicious URI, RAI, and Sensitive Data Protection.
 
-- **App-layer**: `MODEL_ARMOR_TEMPLATE` env var is only set when the gateway is *off* (`iac/agent/agent_engine.tf:76-78`). Live config has the gateway *on* — so this env var is unset, and `agent/main.py`'s own logging confirms: `"MODEL_ARMOR_TEMPLATE not set — safety filter disabled"`.
-- **Gateway-layer (`CONTENT_AUTHZ`)**: no such resource exists in `agent_gateway.tf` today. A direct attempt to add it (mirroring the working IAP pattern) was rejected by the GCP API with `Error 400: unsupported Google API for AuthzExtension: modelarmor.googleapis.com` — this is a hard API-level blocker, not a config mistake.
-- A related, still-open Google Support case documents that this is a **known, current workaround**: Model Armor is disabled everywhere (both layers), with compensating controls listed as the read-only tool allowlist, IAP REQUEST_AUTHZ, least-privilege IAM, and human review of RCA output.
+- **Gateway-layer (`CONTENT_AUTHZ`)**: `google_network_services_authz_extension.model_armor` (`iac/agent/agent_gateway.tf`, policy_profile `CONTENT_AUTHZ`) is defined and wired, referencing the same request/response templates. The earlier `Error 400: unsupported Google API for AuthzExtension: modelarmor.googleapis.com` result was real, but it turned out to be a config mistake, not a hard platform blocker: that test used the generic, non-regional `modelarmor.googleapis.com` service string; re-checked 2026-09-05 against the actual installed provider schema (`google-beta 7.43.0`), the regional form `modelarmor.{region}.rep.googleapis.com` — the same format `agent/main.py`'s app-level client already used — is a documented, supported `CONTENT_AUTHZ` service value (see `iac/agent/agent_gateway.tf`'s own comment). Note a separate, still-real platform limitation below: this gateway path never inspects MCP tool-call *response bodies* on the Streamable HTTP transport Google uses for MCP — see "Known, permanent platform gap" below.
+- **Custom MCP application-level guard**: `mcp/response_guard.py` is a FastMCP `on_call_tool` middleware, registered once in `mcp/server.py`, that calls Model Armor's `sanitize_model_response` directly on every custom-MCP tool response before it reaches the transport. This is live and deployed. It exists specifically because the gateway-layer `CONTENT_AUTHZ` extension cannot inspect MCP response bodies (see below) — it is the compensating control for that specific gap on the custom MCP path.
+- **Floor settings** (`iac/agent/model_armor.tf`'s `google_model_armor_floorsetting`, `enable_floor_setting_enforcement = true`): a separate, always-on mechanism, live since 2026-08-25/26, with `inspect_only = true` (detection/logging, not blocking) at HIGH confidence for malicious-URI detection.
 
-**Treat "Model Armor" as not currently providing content-safety enforcement on this deployment**, despite the templates existing in Terraform and in the GCP console. This should be surfaced explicitly to Security/Risk — the Terraform resource *names* imply active protection that isn't actually happening today.
+### Known, permanent platform gap (not fixed by the above)
 
-### What was tried to close the remaining gap, and the exact result
+Google's Agent Gateway `CONTENT_AUTHZ` extension never inspects MCP `tools/call` **response** bodies when using the Streamable HTTP/SSE transport MCP uses — confirmed directly (no `RESPONSE_BODY` `serviceExtensionInfo` event appears on real traffic, checked 2026-09-05 and 2026-09-06) and matches Google's own documented exclusion for this transport. **This is an accepted, permanent platform limitation, not a bug being worked** — `mcp/response_guard.py` (above) is the compensating control for the custom MCP path specifically; it does not mean the platform-level gap itself was fixed, and GKE Remote MCP has no equivalent compensating control today.
 
-One further question worth checking, before assuming the `MEDIUM_AND_ABOVE` confidence setting is the true effective policy: could an org- or project-level Model Armor "floor setting" silently override the template-level confidence configuration? This was tested directly via the REST API, not assumed either way:
+### Response-guard fail-open behavior and its alert
 
-```
-GET https://modelarmor.us-central1.rep.googleapis.com/v1/projects/sreagent-t2-demo/locations/us-central1/floorSetting
-→ {"error": {"code": 500, "message": "An internal error has occurred (5308f8af-f131-4887-8183-beec39ea6ade)", "status": "INTERNAL"}}
+`mcp/response_guard.py` blocks on a real Model Armor `MATCH_FOUND` result on a tool response. It intentionally **fails open only when the Model Armor API call itself errors** (not on a real detection) — a deliberate, documented availability tradeoff. That fail-open condition has a real Cloud Monitoring alert, `mcp_model_armor_fail_open` (`google_logging_metric` + `google_monitoring_alert_policy`, `iac/agent/monitoring.tf`) — it exists and has never fired (no false detections, no API failures observed as of this writing).
 
-GET https://modelarmor.us-central1.rep.googleapis.com/v1/organizations/1076201471152/locations/us-central1/floorSetting
-→ {"error": {"code": 403, "message": "Permission 'modelarmor.floorSettings.get' denied on resource '//modelarmor.googleapis.com/organizations/1076201471152/locations/us-central1/floorSetting'", "status": "PERMISSION_DENIED"}}
-```
+**Update this section again if Google's platform-level MCP response-body exclusion changes** — that would affect GKE Remote MCP too, which currently has no equivalent to `mcp/response_guard.py`.
 
-**Why this matters**: neither result confirms nor rules out an org-level override. The project-level call fails with a genuine server-side `500 INTERNAL` (not a clean "not configured" response, which would look different), and the org-level call fails with a real `403 PERMISSION_DENIED` on the specific permission `modelarmor.floorSettings.get` — meaning the identity used to check simply lacks visibility, not that no floor setting exists. **This is a real, unresolved unknown, not a settled "no floor setting exists" fact** — anyone relying on the `MEDIUM_AND_ABOVE` template confidence as the *actual effective* policy should first get an identity with `modelarmor.floorSettings.get` (at minimum) and re-run this exact check.
+## IAP fail-open — resolved, now fail-closed (updated 2026-09-06)
 
-## IAP fail-open — a real risk-acceptance decision worth explicit sign-off
-
-`authz_fail_open = true` in the live, *enforcing* configuration means an IAP outage degrades to "unauthorized egress allowed" for its duration, rather than the agent simply stopping. This is a deliberate rollout-safety tradeoff per the variable's own description, validated live with "zero behavior difference for legitimate traffic" between DRY_RUN and enforce — but the fail-open behavior itself doesn't appear to have a specific ADR/sign-off record. Recommend closing that gap formally if this system moves toward handling more sensitive incident data.
+**This section previously described `authz_fail_open = true` as the live, enforcing value. That is stale.** The default was changed from `true` to `false` on 2026-09-05 (PR #249, merged) — `iac/agent/variables.tf:169`. Confirmed live in Terraform state: `fail_open = false` on both the `iap` and `model_armor` authz extensions. An IAP (or Model Armor authz) outage now fails **closed** — the agent stops rather than allowing unauthorized egress through. The change was made specifically because normal REQUEST_AUTHZ/IAP enforcement was already proven safe (real revoke/retry test, no bypass, no stale enforcement), leaving the extension-unreachable fail-open behavior as the one remaining silently-permissive gap; it no longer needs a separate ADR/sign-off recommendation since the fail-open posture itself has been removed.
 
 ---
 
