@@ -17,16 +17,16 @@ update after every section, don't let it drift.
 | 5 | Verify #202 (floor-setting block mode) | **DONE — determined NOT PERFORMED, left OPEN** | The diagnostic itself requires temporarily flipping global floor settings to block mode, which this task's own Section 5 rule forbids. Precondition unmet → correctly left open, not forced closed, not treated as a 50-run blocker (live config confirmed safe: inspect-only, no fabrication behavior observed in any run this session). PR #199's code fix (`_is_model_armor_blocked_result`) confirmed still present/wired at `agent/mcp_client.py:405,787`. See evidence log. |
 | 6 | Review: calibration count, Connect Gateway DATA_READ audit logging, FastMCP test failures, eval-quality gate (defer to Phase 2) | **DONE** | (A) 16 golden cases confirmed (code, not assumed). Last run 2026-09-05: strict pass 2/16, but outcome_ok 12/16, confidence_ok 14/16 — headline number inflated by rigid trajectory-matching + 3 missing-fixture cases. 4 real outcome mismatches flagged as genuinely unvalidated, not fixed. (B) DATA_READ audit logging gap confirmed real; NOT implemented — cost can't be soundly bounded, treated as owner decision, recommendation only. (C) FastMCP 7/73 failures re-confirmed unchanged, pre-existing, unrelated to #246 (spot-checked). (D) eval-gate deferred to Phase 2, untouched. See evidence log. |
 | 7 | Hard gate before 50-run campaign | **PASS — all 15 items** | PR #251 opened (NOT for merge, CI-trigger only) — python-tests + terraform-plan both success. Both Terraform stacks: no drift. Alternating GKE→kind→GKE: 2 transient Gemini 500 errors on first GKE attempts (known pre-documented pattern, root-caused, not a defect), both succeeded clean on retry with correct cluster-scoped evidence (`source=gke_remote_mcp`/`k8s_mcp` matched requested cluster every time, zero cross-contamination). See evidence log for full 15-item checklist. |
-| 8 | Build 50-case catalog (25 GKE / 25 kind) | NOT STARTED | Gate passed — cleared to proceed. |
-| 9 | Run 50 investigations | NOT STARTED | Real cost — GCP LLM calls x50. |
-| 10 | Looker Studio readiness data | NOT STARTED | |
-| 11 | Cleanup fixtures + final Terraform plan | NOT STARTED | |
+| 8 | Build 50-case catalog (25 GKE / 25 kind) | **DONE** | 25 recipes × 2 clusters = 50, manifest embedded in `/tmp/phase1_readiness/run_50_campaign.py`. 11 existing `k8s/*.yaml` fixtures reused, 7 new small fixtures added and committed (`27d6364`). |
+| 9 | Run 50 investigations | **PARTIAL — 36/50 valid, 14 blocked by quota, resume tomorrow** | First attempt: 50/50 ran, but a test-harness PATH bug (missing `gke-gcloud-auth-plugin`) silently broke `fixture_apply_ok` for all 20 GKE fixture-based tests (19 silently, 1 outright failed) — NOT an agent/routing/security defect, confirmed and reproduced. Fixed the harness, reran the 20 affected GKE cases: 6 succeeded with valid data before a sustained (likely daily) Gemini/Vertex AI quota exhaustion blocked the remaining 14 across 4 escalating retry waits (0s/90s/5min/25min). **User decision 2026-09-07: stop for today, resume the 14 remaining GKE reruns in a fresh session once quota resets.** Valid data in hand: 25/25 kind (unaffected throughout) + 5/5 GKE query-only (unaffected) + 6/20 GKE fixture-based (corrected) = 36 valid results; 14 GKE fixture-based cases still outstanding. One genuine LLM fabrication found and root-caused during this investigation (T01-crashloop-gke, first attempt only — traced to stale K8s events from a missing fixture, not memory, not present in the corrected rerun). See evidence log for full detail, all original + rerun results preserved separately, nothing hidden. |
+| 10 | Looker Studio readiness data | **BLOCKED on Section 9 completing** | Cannot honestly report final 50-run metrics with 14/50 still outstanding. Will compute once Section 9 finishes tomorrow. |
+| 11 | Cleanup fixtures + final Terraform plan | **DONE for today's work** | All fixtures confirmed removed from both clusters (`kubectl get all -n test-incidents` → empty on both, verified after this session's last kill). 2 rounds of orphaned fixtures found (from killing in-flight test scripts) and cleaned — see evidence log and the new `feedback-verify-pod-status-before-test` memory. GKE nodes will auto-scale to 0 on idle timeout, no action needed. Final Terraform plan for both stacks still to be run as part of Section 16 tomorrow (after the remaining reruns, not before, since more `terraform apply`s for testing aren't expected but should be reconfirmed clean at the very end). |
 | 12 | Memory Bank design audit | **DONE — SAFE WITH REQUIRED CHANGES** | Core design sound (confidence-gated writes, real cluster scoping, "hint only/do not cite as evidence" prompt guardrail, already-fixed unavailable-vs-empty distinction). 2 real gaps: docstring claims a `status=pending_review` field that's never actually written; GCS/Memory-Bank persistence happens BEFORE the output Model Armor block-check, so blocked content still gets permanently persisted unblocked. Recommended, not implemented (audit-only section). See evidence log. |
 | 13 | MCP extensibility design (design only) | **DONE** | Found existing runbook `docs/runbooks/add-mcp-server.md` already covering most of this — updated it (added vendor-vs-custom table, 8 new checklist items, flagged the binary-branch routing limitation, added a full Prometheus worked example) rather than duplicating with a new doc. No code implemented. See evidence log. |
 | 14 | Documentation cleanup/sync | **DONE** | 3 parallel audit sub-agents reviewed 87 files; 3 parallel fix sub-agents applied corrections (all diffs spot-checked before commit). ~29 files corrected (stale Model Armor/authz_fail_open/custom-MCP-not-deployed claims, all predating 2026-09-04/05/06 fixes), 4 docs archived (superseded), inbound links repointed, 1 self-contradiction in mcp-architecture.md fixed directly. See evidence log for full file lists. |
 | 15 | GitHub + tracker sync (In Progress language only) | **PARTIAL — issues done, tracker done for existing rows** | Fresh evidence comments added to #86, #246, #202, #203 (none closed). No dedicated tracker row exists for #86/#246/#202 (content-matched, not found) — did NOT create new rows per the "ask first" rule; flagging for final report instead of asking mid-task, since this is informational not blocking. Rows 121 (#REQUEST_AUTHZ) and 165 (#203) got a brief re-verification note appended. Will need one more sync pass after the 50-run campaign completes (Section 9) with final results. |
-| 16 | Final regression vs Section 1 baseline | NOT STARTED | |
-| 17 | Final consolidated report + READY/CORRECTIONS/NOT READY verdict | NOT STARTED | STOP after this, wait for user review, no merge. |
+| 16 | Final regression vs Section 1 baseline | NOT STARTED | Blocked on Section 9 completing — will run after the remaining 14 reruns tomorrow, not before (avoids doing it twice). |
+| 17 | Final consolidated report + READY/CORRECTIONS/NOT READY verdict | NOT STARTED | Cannot honestly give a final verdict with Section 9/10/16 incomplete. Interim status communicated to user 2026-09-07; full 36-item report to follow once Section 9 completes. Preliminary lean, NOT a final verdict: likely READY WITH REQUIRED CORRECTIONS at minimum (given #202/#86 open-by-design, RESPONSE_BODY platform limitation, Memory Bank's 2 recommended fixes, and now this session's own harness/quota gaps needing to close first) — this is not final and must not be quoted as one. |
 
 ## Known live-environment facts (verified this session, 2026-09-06)
 
@@ -44,11 +44,31 @@ update after every section, don't let it drift.
 - `sre-test-cluster` (GKE) lives in project **`sreagent-demo`** (Project B), region `us-central1` — NOT `sreagent-t2-demo` (Project A, where the agent/gateway/custom-MCP infra lives). Confirmed via `gsutil cat gs://sreagent-t2-demo-cluster-config/clusters.json`. Use `gcloud container clusters get-credentials sre-test-cluster --region us-central1 --project sreagent-demo`. It runs with 0 idle nodes (autoscales 0→1 on first pod schedule) — applying any fixture pod triggers a real (small, short-lived) node scale-up; delete the fixture immediately after each test.
 - `test-incidents` namespace on both clusters currently has NO pod fixtures (both `crashloop-pod` on GKE and `imagepull-pod` on sre-lab were torn down in the 2026-09-05 cost-hygiene pass and never recreated) — any scenario needing a specific fixture must (re)apply it first. Existing fixture manifests are in `k8s/*.yaml` (confirmed `k8s/crashloop-pod.yaml` exists and works).
 
-## Immediate next step (if resuming)
+## Immediate next step (resuming 2026-09-08 or later, once Gemini quota has reset)
 
-Section 1 is DONE. Proceed to Section 4 — verify (do not re-implement) issue #203's current
-state: custom MCP response guard still deployed/working, REQUEST_AUTHZ still fail-closed,
-Gateway CONTENT_AUTHZ behavior, Model Armor floor settings (HIGH+INSPECT_ONLY), the GKE Remote
-MCP RESPONSE_BODY platform-limitation documentation, and whether the Google Support case is
-still outstanding. Then Section 5 (#202 verify-only), then Section 6 (calibration count,
-Connect Gateway audit logging, FastMCP drift, eval-gate deferral).
+Sections 1-8, 12-15 are DONE. Section 9 is PARTIAL (36/50 valid). Resume order:
+
+1. **Before anything else**, verify quota has actually recovered: run one single real
+   investigation (e.g. `invoke_agent.py --scenario crashloop`) and confirm it completes without
+   a `429 RESOURCE_EXHAUSTED`. Do not launch a multi-test batch until this single-call check
+   passes.
+2. Re-check live cluster state first (`kubectl get all -n test-incidents` on both clusters) —
+   per the new `feedback-verify-pod-status-before-test` memory — before running anything.
+3. Resume the GKE fixture rerun for exactly these 14 still-outstanding recipes (script already
+   exists and works: `/tmp/phase1_readiness/rerun_gke_fixtures_resume.py`, just update its
+   `REMAINING_RECIPE_IDS` list to the 14 below and its cooldown back down to something short
+   since quota should be fresh):
+   `selector-mismatch, init-stuck, rollout-stuck, cascading, healthy-control, bad-command,
+   bad-volume-mount, wrong-targetport, impossible-resources, node-selector-mismatch,
+   statefulset-crashloop, malicious-content, recovered-stale, false-alarm`
+4. **After each individual test**, prefer checking `kubectl get pods` before moving to the next
+   one rather than trusting apply-then-sleep alone (per the same memory item).
+5. Once all 14 land (36+14=50 valid GKE-corrected results total), proceed to Section 10 (Looker
+   Studio data), Section 16 (final regression — full CI, both Terraform plans, GKE+kind+
+   alternating+list_nodes+describe_node+normal-tool+Model-Armor-benign+Model-Armor-malicious+
+   REQUEST_AUTHZ-fail-closed, compared against the Section 1 baseline), then Section 17 (the
+   final 36-item report + READY/CORRECTIONS/NOT-READY verdict). STOP after Section 17, wait for
+   user review, do not merge to main.
+6. **Kill-safety reminder**: if any test-orchestration process needs to be stopped early, always
+   run `kubectl get all -n test-incidents` on both clusters immediately after and clean up any
+   orphaned fixture before doing anything else — do not assume the script's own cleanup ran.

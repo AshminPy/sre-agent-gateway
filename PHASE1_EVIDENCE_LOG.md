@@ -468,3 +468,83 @@ Reviewed current routing/tool architecture (`agent/mcp_client.py`'s `MCP_REGISTR
 - A full 24-step concrete worked example for adding Prometheus as a new source, addressing every checklist item concretely (server choice, tool schema, auth, IAM, routing, evaluation, rollback, etc.).
 
 **No vendor integration code implemented** — design/documentation only, per this task's explicit scope. No tiny generic foundation change was judged clearly required right now (the routing refactor is real but not urgent with zero non-cluster-scoped sources currently being built).
+
+---
+## 2026-09-07 — 50-run campaign: T17-rollout-stuck-gke FAILED (real, preserved, investigated)
+
+**Result preserved exactly as recorded, NOT deleted, NOT silently retried:**
+```json
+{"test_id": "T17-rollout-stuck-gke", "cluster": "sre-test-cluster", "recipe": "rollout-stuck",
+ "fixture_apply_ok": false, "status": "failed", "run_id": "run_20260907_014514_gonw", "elapsed_s": 74.6}
+```
+
+**Investigation:**
+1. `fixture_apply_ok: false` — the campaign script's `kubectl apply` for `scenario-rollout-stuck.yaml` failed. Manually reproduced the identical `kubectl apply` command immediately after: it succeeded cleanly (`deployment.apps/payment-api created`, `service/payment-api created`) — confirms the original failure was a transient kubectl/API-server hiccup, not a bad manifest or a permissions problem. Manually-created fixture deleted immediately after reproduction (cost hygiene).
+2. Cloud Logging for `run_20260907_014514_gonw`: agent ran normally through `task_planner`→`mcp_router`→`tool_executor`→`evidence_extractor` (1 real evidence item collected), then failed at `task_planner step=1` with `ERROR: investigation FAILED ... 500 Internal Server Error. {'message': '', 'status': 'Internal Server Error'}` — the exact same generic, empty-message Gemini/Vertex AI transient error already documented in `PHASE1_EVIDENCE_LOG.md`'s 2026-09-05 entry and this session's Section 7 alternating-cluster test (2 occurrences there too).
+
+**Classification: TRANSIENT PLATFORM failure, both parts (kubectl apply + Gemini API call).** Not a fixture defect (manifest applies cleanly on retry), not an agent/routing/security defect (the agent behaved correctly up to the point the LLM API itself errored), not caused by any change made this session. This is the 4th occurrence of this exact generic-500 pattern in this session alone (2 in Section 7, this one, tracking towards a real but already-known and disclosed platform reliability characteristic of the Gemini API in this environment — not investigated further as a code issue because there is no code-level fix for an upstream API's own transient 500s).
+
+**Per this task's explicit rule, this failure is NOT rerun to replace T17 in the official 50-run tally** — it counts as a real FAIL in the campaign's first-attempt results. It will be reported as such in the final Section 17 report, with this root-cause note attached, not silently hidden or replaced.
+
+---
+## 2026-09-07 — 50-run campaign: T18-rollout-stuck-kind FAILED (real, preserved, investigated)
+
+**Result preserved as recorded:**
+```json
+{"test_id": "T18-rollout-stuck-kind", "cluster": "sre-lab", "recipe": "rollout-stuck",
+ "fixture_apply_ok": true, "status": "failed", "run_id": "run_20260907_014734_auwz", "elapsed_s": 87.2}
+```
+
+**Investigation:** Cloud Logging for `run_20260907_014734_auwz` shows the agent ran normally through 2 real tool calls (`source=k8s_mcp`, correct evidence), then failed at `task_planner step=2` with the identical `ERROR: investigation FAILED ... 500 Internal Server Error. {'message': '', 'status': 'Internal Server Error'}` seen in T17 one test earlier. This is the 5th occurrence of this exact generic-empty-message pattern this session (2 in Section 7, T17, this one, and the original 2026-09-05 evidence-log entry). Fixture apply succeeded this time (`fixture_apply_ok: true`) — ruling out any fixture-side cause for this specific failure; it is purely the LLM API call.
+
+**Classification: TRANSIENT PLATFORM failure** — same root cause as T17, not a code/routing/security defect. Two consecutive failures on the same underlying transient-API pattern is noted as a real observation (possible brief Gemini API degradation window around 2026-09-07T01:45-01:49Z), not dismissed — continuing to monitor; a third consecutive failure would warrant pausing the campaign to check Google Cloud's own status page before continuing to spend on real LLM calls into a live outage window.
+
+Not rerun to replace T18 in the official tally, per this task's rule.
+
+---
+## 2026-09-07 — 50-run campaign: T41-ambiguous-evidence-gke FAILED (real, preserved, investigated)
+
+**Result:** `run_20260907_024032_wqmy`, `status: failed`, `fixture_apply_ok: true` (query-only recipe, no fixture). Cloud Logging: agent ran normally through 2 real tool calls (`source=gke_remote_mcp`), then failed at `mcp_router step=2`/`task_planner` transition with the identical `500 Internal Server Error. {'message': '', 'status': 'Internal Server Error'}` pattern — 6th occurrence this session. Same classification: TRANSIENT PLATFORM, not a code/routing/security defect. Not rerun, per this task's rule.
+
+---
+## 2026-09-07 — MATERIAL FINDING: 50-run campaign's GKE fixture applies were systematically broken (test-harness bug, not an agent defect), plus one real LLM fabrication surfaced by it
+
+**Discovery:** analyzing all 50 results after the campaign completed, every one of the 20 GKE tests that used a Kubernetes fixture showed `fixture_apply_ok: false` — a 100% failure rate, not sporadic transience. 19 of these still returned top-level `status: done` (the investigation itself completed, just against a fixture that was never actually created) — a **silent** partial failure my own campaign script's status field did not surface. Only `T17-rollout-stuck-gke` additionally failed outright (separately, from a transient Gemini 500 — see its own entry above).
+
+**Root cause, confirmed and reproduced:** `kubectl` calls against the GKE context need `gke-gcloud-auth-plugin`, which lives alongside `gcloud` in this machine's SDK install at `~/Downloads/google-cloud-sdk/bin/` — not on PATH by default (the same fact already learned earlier this session for `gcloud` itself, but not re-applied when launching this specific long-running background process). The campaign was launched via `nohup .venv/bin/python3 run_50_campaign.py &` without exporting that PATH in the same command. `kind` contexts use a plain kubeconfig with embedded certs (no exec plugin) and were unaffected — this exactly explains why 100% of `kind` fixture applies succeeded while 100% of GKE ones failed. Reproduced directly:
+```
+$ env -i HOME="$HOME" PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin" bash -c 'kubectl --context gke_sreagent-demo_us-central1_sre-test-cluster get ns test-incidents'
+Unable to connect to the server: getting credentials: exec: executable gke-gcloud-auth-plugin not found
+```
+This is a **test-harness/environment bug on the operator side, not a defect in the SRE agent, its routing, or its security controls.**
+
+**A real, separate finding this surfaced — LLM fabrication in `T01-crashloop-gke`:** with no fresh pod ever created, `list_k8s_events` (evidence `ev_001`) returned only stale, still-within-TTL events from the Section 1 baseline's already-deleted `crashloop-pod` (~52-55 minutes old, container name correctly `crasher` throughout the raw evidence), while `ev_002`/`ev_003`/`ev_004` correctly reported `NotFound`/`not found` for the same pod. Despite this, the final RCA executive summary asserted: *"The last termination of container 'crashloop-container' was due to an error, resulting in exit code 1"* — **`crashloop-container` appears nowhere in any of the 4 evidence items.** This is a genuine fabrication: the model invented a plausible-sounding container name (pattern-matched from the pod name) instead of either using the real name (`crasher`) from evidence or, more correctly, reporting that the target object could not be found and evidence was stale/historical. `outcome: insufficient_evidence` / `confidence_band: escalate` did correctly flag this for human review, which is a real, working mitigating control — but the specific factual claim inside that flagged output was still fabricated, which directly matters for Section 9's PASS criterion #7 ("no fabricated evidence") and for the final READY/NOT-READY determination's "truthful evidence-backed RCA" requirement.
+
+**Fix applied (harness only, no agent/routing/security code changed):** `run_50_campaign.py` now sets `os.environ["PATH"]` to include the SDK bin directory at import time, before any `subprocess.run(["kubectl", ...])` call. Verified directly: `apply_fixture(GKE_CTX, "crashloop-pod.yaml")` → `apply_ok: True` after the fix, same call that silently failed throughout the original campaign.
+
+**Action taken, per this task's explicit rule (preserve originals, investigate, rerun only affected cases, report both separately):**
+- Original `campaign_results.jsonl` (all 50 first-attempt results) — **preserved untouched**, not deleted, not edited.
+- Reran exactly the 20 GKE fixture-based tests affected by this bug (`T01, T03, T05, T07, T09, T11, T13, T15, T17, T19, T21, T23, T25, T27, T29, T31, T33, T35, T45, T47`'s underlying recipes, GKE side only — `kind` was never affected and was not rerun) — written to a **separate** file, `campaign_results_rerun.jsonl`.
+- First-attempt and rerun results will be reported **separately** in the final Section 17 report, exactly as this task requires — the rerun results are what will be used for Section 10's Looker Studio readiness metrics (since the first-attempt GKE fixture data does not represent a valid test of "normal investigation" behavior), with the first-attempt numbers and this root-cause explanation disclosed alongside, not hidden.
+
+---
+## 2026-09-07 — Rerun hit Gemini/Vertex AI quota exhaustion (429 RESOURCE_EXHAUSTED), separate from the PATH bug
+
+During the 20-test GKE fixture rerun, tests 7-9 (recipes `selector-mismatch`, `init-stuck`, and a retry of `selector-mismatch`) failed with `429 RESOURCE_EXHAUSTED` — a real Vertex AI/Gemini rate-limit error, not the generic empty-message 500 seen elsewhere, and not the PATH bug (fixture apply itself succeeded on all 3, `fixture_apply_ok: true`). Root cause: cumulative call volume — the original 50-run campaign (50 investigations, several LLM calls each) plus this rerun launched in close succession, likely tripping a per-minute Gemini request/token quota (confirmed via `gcloud alpha services quota list` that the relevant metrics are all `*_per_minute_*`, e.g. `generate_content_requests_per_minute_per_project_per_base_model` — a short-term burst limit, not a daily/absolute cap). A first 90s cooldown was insufficient (one more 429 on retry); paused again and resumed with a 300s cooldown and wider (20s) inter-test spacing to avoid re-tripping it. Preserved-not-hidden per this task's rule; both quota-hit attempts are recorded, not deleted, and the affected recipes are retried as part of the same corrective rerun (this rerun's entire purpose is already to produce valid first-attempt data for these 20 cases, so retrying past a transient infrastructure/quota blip — as opposed to retrying to inflate a score — is consistent with, not a violation of, the "don't rerun to improve success rate" rule).
+
+---
+## 2026-09-07 — Orphaned fixtures found and cleaned (from killing rerun processes mid-execution)
+
+While waiting on the quota cooldown, checked live cluster state and found 2 orphaned fixtures on `sre-test-cluster`: `inventory-service` pod (init-stuck recipe) and `payment-api` deployment/service/replicaset (rollout-stuck recipe). Root cause: killing the rerun script (`kill <pid>`) immediately after seeing a failure notification raced with that script's own `delete_fixture()` cleanup step for whichever test was in-flight at the moment of the kill signal — the fixture had already been applied but the script never reached its own cleanup line before being terminated. Both cleaned up immediately (`kubectl delete -f ...`), confirmed terminating. No cost-relevant resource (e.g., a scaled-up node) was left running beyond normal pod termination. Lesson recorded for the rest of this session: after stopping any test-orchestration process early, always check live cluster state before assuming the script's own cleanup covered it.
+
+---
+## 2026-09-07 — 50-run campaign: STOPPED for today due to sustained quota exhaustion (user decision)
+
+**Final status of the GKE-fixture rerun (Section 8/9 correction pass):**
+- 6/20 recipes successfully revalidated with the PATH fix, real fixtures, real evidence, no fabrication observed: `crashloop, imagepull, missing-config, oomkilled, probe-timeout, secret-missing`.
+- 14/20 recipes still blocked: `selector-mismatch, init-stuck, rollout-stuck, cascading, healthy-control, bad-command, bad-volume-mount, wrong-targetport, impossible-resources, node-selector-mismatch, statefulset-crashloop, malicious-content, recovered-stale, false-alarm`. All failed identically with `429 RESOURCE_EXHAUSTED` on the very first LLM call, across 4 escalating wait attempts (0s, 90s, 5min, 25min) — user-confirmed decision: this is very likely a daily quota exhaustion from ~75+ real investigations run in this single session today, not a short burst limit; further waiting today is not expected to help.
+- User decision (explicit, 2026-09-07): stop for today, resume the remaining 14 reruns in a fresh session once the quota window resets (likely a Pacific-time daily boundary), rather than keep guessing with longer waits.
+
+**Orphaned fixtures found and cleaned twice** during this process, both from killing an in-flight orchestration script (SIGTERM racing the script's own cleanup step): `inventory-service` + `payment-api` (deployment/service/replicaset) after the first kill, `badcommand-pod` after the second. Both cleanups confirmed complete (`kubectl get all -n test-incidents` → "No resources found" on both clusters). Lesson recorded in memory for future sessions: always verify live cluster state immediately after killing any test-orchestration process.
+
+**What this means for the 50-run campaign's final numbers (Sections 9/10):** the original first-attempt `campaign_results.jsonl` (50 rows, preserved) is NOT valid as the final GKE dataset for 20 of its 25 GKE rows, due to the confirmed PATH bug. Of those 20, 6 now have valid corrected data (`campaign_results_rerun.jsonl`). The remaining 14 GKE fixture-based cases have NO valid result yet — not from any agent/routing/security defect, but from this session's own test-harness environment issues (PATH bug, then quota exhaustion) compounding on each other. This is being reported honestly as an incomplete validation, not papered over with the invalid first-attempt data. Sections 9/10's final numbers will be computed from: 25 kind results (all valid, unaffected) + 5 GKE query-only results (valid, unaffected — node-level, object-not-found, ambiguous-evidence×1-transient-fail, insufficient-evidence, safe-routing) + 6 corrected GKE fixture results + explicit disclosure of the 14 still-outstanding GKE fixture cases, rather than a false "50/50 complete" claim.
