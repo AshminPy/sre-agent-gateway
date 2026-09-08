@@ -242,3 +242,30 @@ def test_resource_type_comes_from_custom_mcp_tool_name_not_llm_free_text(monkeyp
     })
     result = evidence_extractor_mod.evidence_extractor(state)
     assert result["evidence_store"]["ev_001"]["resource_type"] == "deployment"
+
+
+def test_uninspected_marker_sets_fail_open_inspection_status(monkeypatch):
+    """Section 8 (2026-09-08): mcp/response_guard.py injects "_uninspected": true into
+    a tool result's own JSON payload when a Model Armor response check failed open --
+    proves the real node detects it, strips it from what the LLM extractor/GCS-sanitized
+    copy sees, and records it as an explicit inspection_status field."""
+    state = _state_with_tool_result("get_pod_logs")
+    state["latest_tool_result"]["result"] = {"status": "Running", "_uninspected": True}
+    _mock_io(monkeypatch, {
+        "resource_type": "pod", "resource_id": "irrelevant",
+        "summary": "Pod status", "key_facts": ["Running"],
+    })
+    result = evidence_extractor_mod.evidence_extractor(state)
+    ev = result["evidence_store"]["ev_001"]
+    assert ev["inspection_status"] == "fail_open"
+
+
+def test_no_uninspected_marker_sets_inspected_status(monkeypatch):
+    state = _state_with_tool_result("get_pod_logs")
+    _mock_io(monkeypatch, {
+        "resource_type": "pod", "resource_id": "irrelevant",
+        "summary": "Pod status", "key_facts": ["Running"],
+    })
+    result = evidence_extractor_mod.evidence_extractor(state)
+    ev = result["evidence_store"]["ev_001"]
+    assert ev["inspection_status"] == "inspected"

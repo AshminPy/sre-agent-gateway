@@ -14,7 +14,7 @@ import mcp_types as mt
 from fastmcp.server.middleware import MiddlewareContext
 from fastmcp.tools.base import ToolResult
 
-from response_guard import ModelArmorResponseGuard, _extract_text
+from response_guard import ModelArmorResponseGuard, UNINSPECTED_MARKER, _extract_text
 
 
 def _make_result(text: str) -> ToolResult:
@@ -131,8 +131,16 @@ def test_sanitize_error_fails_open_and_logs(caplog):
     with caplog.at_level("ERROR", logger="sre-mcp.response_guard"):
         result = asyncio.run(_run())
 
-    assert result is original  # fail open: real content still delivered
+    # Section 8 (2026-09-08): fail-open still delivers the REAL content (never
+    # withheld, unlike an actual block) -- but it is no longer indistinguishable
+    # from a fully-inspected response. The original object is intentionally no
+    # longer returned as-is; a marker is prepended so evidence_extractor.py can
+    # tell this specific tool response bypassed Model Armor.
+    assert result is not original
     assert any("model_armor_fail_open" in r.message for r in caplog.records)
+    text = _extract_text(result)
+    assert UNINSPECTED_MARKER in text
+    assert "pod events: nothing unusual" in text  # real content still delivered, not withheld
 
 
 def test_structured_only_content_is_still_inspected():
@@ -154,3 +162,73 @@ def test_structured_only_content_is_still_inspected():
     result = asyncio.run(_run())
     assert result is original
     assert len(client.calls) == 1
+
+
+def test_init_failure_logs_alertable_error_not_a_warning(monkeypatch, caplog):
+    """Section 8 (2026-09-08): a broken Model Armor client at construction time used
+    to log a plain WARNING with no alertable signal, then silently and permanently
+    disable sanitization for the rest of the process. Must now log at ERROR with the
+    exact string the matching Terraform log-based metric filters on."""
+    # MODEL_ARMOR_RESPONSE_TEMPLATE is read once at module import time (response_guard.py:40),
+    # so the module-level attribute must be patched directly -- setenv alone has no effect
+    # on an already-imported module-level constant.
+    import response_guard
+    monkeypatch.setattr(response_guard, "MODEL_ARMOR_RESPONSE_TEMPLATE", "projects/x/locations/us-central1/templates/y")
+
+    def _boom(*a, **k):
+        raise RuntimeError("permission denied")
+
+    monkeypatch.setattr("google.cloud.modelarmor_v1.ModelArmorClient", _boom)
+
+    with caplog.at_level("ERROR", logger="sre-mcp.response_guard"):
+        guard = ModelArmorResponseGuard()
+
+    assert guard._client is None
+    assert any("model_armor_guard_init_failed" in r.message for r in caplog.records)
+    assert all(r.levelname == "ERROR" for r in caplog.records if "model_armor_guard_init_failed" in r.message)
+
+
+def test_fail_open_marks_real_json_tool_result_without_corrupting_it():
+    """The realistic case -- every real tool in this server returns a JSON-serializable
+    dict (mcp/security.py's _postprocess), never plain prose. Proves the fail-open marker
+    round-trips through agent/mcp_client.py's OWN parsing shape (content[0], json.loads)
+    without losing or altering a single real field -- this is the exact function that
+    would have silently swallowed the real tool result if the marker had been prepended
+    as a separate content block instead of injected into the existing JSON payload."""
+    import json as _json
+
+    client = _FakeClient(raise_exc=RuntimeError("regional endpoint unreachable"))
+    guard = _guard_with_client(client)
+    real_payload = {"pods": [{"name": "checkout-abc123", "phase": "Running"}], "count": 1}
+    original = ToolResult(content=[mt.TextContent(type="text", text=_json.dumps(real_payload))])
+
+    async def call_next(ctx):
+        return original
+
+    async def _run():
+        return await guard.on_call_tool(_make_context(), call_next)
+
+    result = asyncio.run(_run())
+
+    # Simulates agent/mcp_client.py::_extract_content()'s exact real logic: read
+    # content[0], json.loads its text.
+    parsed = _json.loads(result.content[0].text)
+    assert parsed["_uninspected"] is True
+    assert parsed["pods"] == real_payload["pods"]  # real evidence intact, not replaced
+    assert parsed["count"] == 1
+
+
+def test_fail_open_marks_structured_content_too():
+    client = _FakeClient(raise_exc=RuntimeError("regional endpoint unreachable"))
+    guard = _guard_with_client(client)
+    original = ToolResult(structured_content={"pods": [], "count": 0})
+
+    async def call_next(ctx):
+        return original
+
+    async def _run():
+        return await guard.on_call_tool(_make_context(), call_next)
+
+    result = asyncio.run(_run())
+    assert result.structured_content["_uninspected"] is True
+    assert result.structured_content["count"] == 0

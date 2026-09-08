@@ -94,6 +94,29 @@ def _extract_root_cause(summary: dict) -> str:
     )
 
 
+def _primary_claim_cites_uninspected_evidence(result: dict) -> bool:
+    """Section 8 (2026-09-08): a confirmed root cause built on evidence Model Armor
+    never got to check (mcp/response_guard.py's fail-open path) must not be silently
+    promoted to trusted Memory Bank -- gates only on the SPECIFIC evidence the primary
+    causal claim actually cites (agent/nodes/evidence_extractor.py's inspection_status
+    field), not on every evidence item collected during the investigation; an
+    unrelated uninspected side-evidence item that never contributed to the claim
+    isn't a reason to distrust the claim itself."""
+    primary_id = result.get("primary_causal_claim_id")
+    if not primary_id:
+        return False
+    primary = next(
+        (c for c in (result.get("claims") or []) if c.get("claim_id") == primary_id), None,
+    )
+    if not primary:
+        return False
+    evidence_store = result.get("evidence_store", {}) or {}
+    return any(
+        evidence_store.get(eid, {}).get("inspection_status") == "fail_open"
+        for eid in primary.get("supporting_evidence_ids", [])
+    )
+
+
 def _remediation_action_text(item) -> str:
     """Section 7 (2026-09-08): suggested_remediation items are now structured dicts
     (action/type/prerequisites/... — see agent/confidence/models.py's RemediationItem);
@@ -1581,7 +1604,14 @@ class SREAgent:
             confidence_band = result.get("confidence_band", "escalate")
             incident_type = obs.get("incident_type", "") if isinstance(obs, dict) else ""
             # Persist to Vertex AI Memory Bank (cross-session) and in-process list (same session)
-            if confidence_band == "auto":
+            if confidence_band == "auto" and _primary_claim_cites_uninspected_evidence(result):
+                log.error(
+                    "memory_write_blocked_uninspected_evidence cluster=%s namespace=%s "
+                    "pod=%s -- primary causal claim cites evidence that bypassed Model "
+                    "Armor inspection (fail-open); refusing to promote to trusted memory",
+                    cluster, namespace, pod,
+                )
+            elif confidence_band == "auto":
                 cls._mb_store(cluster, namespace, pod, root_cause, confidence, incident_type)
             else:
                 log.info(

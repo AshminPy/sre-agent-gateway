@@ -283,6 +283,28 @@ resource "google_logging_metric" "mcp_model_armor_fail_open" {
   depends_on = [google_project_service.apis]
 }
 
+# Section 8 (2026-09-08): a SEPARATE, distinct failure mode from the per-call
+# fail-open metric above. mcp/response_guard.py's Model Armor client can fail
+# to INITIALIZE at all (bad MODEL_ARMOR_RESPONSE_TEMPLATE, IAM misconfig, a
+# transient construction error) -- when that happens, self._client stays None
+# for the process/revision's entire lifetime and EVERY subsequent tool
+# response goes out unsanitized, permanently, until the next
+# redeploy/restart. This used to log a plain WARNING with no alertable
+# signal at all; response_guard.py now logs ERROR with this exact string.
+resource "google_logging_metric" "mcp_model_armor_guard_init_failed" {
+  name    = "sre_agent/mcp_model_armor_guard_init_failed"
+  project = var.project_a_id
+  filter  = "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"sre-k8s-mcp\" AND textPayload:\"model_armor_guard_init_failed\""
+
+  metric_descriptor {
+    metric_kind  = "DELTA"
+    value_type   = "INT64"
+    display_name = "SRE Agent Custom MCP Model Armor Guard Init Failure"
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
 # Total investigation wall-clock latency, from the per-run structured log
 # (jsonPayload.total_latency_s — rca_builder.py, measured against
 # investigation["started_at"]). Backs the excessive-latency alert.
@@ -749,6 +771,37 @@ resource "google_monitoring_alert_policy" "mcp_model_armor_fail_open" {
   notification_channels = [google_monitoring_notification_channel.email_oncall.name]
   documentation {
     content   = "The custom MCP's Model Armor response guard could not reach/complete a sanitize call and delivered the tool result unsanitized (fail-open, by design). Check Model Armor API health and mcp/response_guard.py's own error detail in the sre-k8s-mcp Cloud Run logs.\nQuery: `resource.type=\"cloud_run_revision\" resource.labels.service_name=\"sre-k8s-mcp\" textPayload:\"model_armor_fail_open\"`"
+    mime_type = "text/markdown"
+  }
+  depends_on = [time_sleep.wait_for_metrics]
+}
+
+# Section 8 (2026-09-08): distinct from the alert above -- this fires on a
+# STARTUP failure, not a per-call error. Any occurrence means the entire
+# Cloud Run revision is running with sanitization permanently disabled until
+# redeployed/restarted; this is a more severe, longer-lived condition than a
+# single fail-open event and needs its own on-call signal, not just a shared
+# metric with the per-call case.
+resource "google_monitoring_alert_policy" "mcp_model_armor_guard_init_failed" {
+  project      = var.project_a_id
+  display_name = "SRE Agent — Custom MCP Model Armor Guard Init Failure"
+  combiner     = "OR"
+  conditions {
+    display_name = "Response-guard Model Armor client failed to initialize > 0 in 5 minutes"
+    condition_threshold {
+      filter          = "metric.type=\"logging.googleapis.com/user/sre_agent/mcp_model_armor_guard_init_failed\" AND resource.type=\"cloud_run_revision\""
+      duration        = "0s"
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      aggregations {
+        alignment_period   = "300s"
+        per_series_aligner = "ALIGN_SUM"
+      }
+    }
+  }
+  notification_channels = [google_monitoring_notification_channel.email_oncall.name]
+  documentation {
+    content   = "The custom MCP's Model Armor response guard failed to construct its client at process startup -- response sanitization is PERMANENTLY disabled for this Cloud Run revision until redeployed/restarted, not just for one call. Check MODEL_ARMOR_RESPONSE_TEMPLATE and IAM permissions, then redeploy.\nQuery: `resource.type=\"cloud_run_revision\" resource.labels.service_name=\"sre-k8s-mcp\" textPayload:\"model_armor_guard_init_failed\"`"
     mime_type = "text/markdown"
   }
   depends_on = [time_sleep.wait_for_metrics]

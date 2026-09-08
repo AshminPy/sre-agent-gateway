@@ -159,6 +159,10 @@ def evidence_extractor(state: AgentState) -> dict:
             "cluster": ctx.get("cluster_name", ""),
             "region": ctx.get("cluster_region", ""),
             "collected_at": collected_at,
+            # A failed tool call has no content to have been inspected or not --
+            # "inspected" here just means "not a known fail-open case", keeping this
+            # field present on every evidence entry regardless of path.
+            "inspection_status": "inspected",
             "summary": _safe_text(f"Tool failed: {latest.get('error', 'unknown')}", 500),
             "key_facts": [],
             "raw_ref": raw_ref,
@@ -173,6 +177,15 @@ def evidence_extractor(state: AgentState) -> dict:
         }
 
     raw = latest.get("result", {})
+    # Section 8 (2026-09-08): mcp/response_guard.py injects "_uninspected": true into
+    # the tool result's own JSON payload when a Model Armor response check failed open
+    # (API error, not a block) -- this is the one point where that fact, otherwise
+    # invisible past the MCP server boundary, reaches the agent. Popped here (not left
+    # in the raw payload) so it becomes its own explicit, named field instead of a
+    # stray key mixed into evidence content the LLM extractor also reads.
+    inspection_status = "inspected"
+    if isinstance(raw, dict) and raw.pop("_uninspected", None):
+        inspection_status = "fail_open"
     sanitized = redact(raw)
 
     raw_ref = write_evidence(
@@ -185,6 +198,7 @@ def evidence_extractor(state: AgentState) -> dict:
             "cluster": ctx.get("cluster_name", ""),
             "cluster_region": ctx.get("cluster_region", ""),
             "project_id": ctx.get("project_id", ""),
+            "inspection_status": inspection_status,
             "sanitized": sanitized,
         },
     )
@@ -272,6 +286,12 @@ def evidence_extractor(state: AgentState) -> dict:
         "cluster": ctx.get("cluster_name", ""),
         "region": ctx.get("cluster_region", ""),
         "collected_at": collected_at,
+        # Section 8 (2026-09-08): "inspected" | "fail_open" -- gates memory promotion,
+        # see agent/main.py's _mb_store call site. Never "not_configured" here; that
+        # case (no MODEL_ARMOR_RESPONSE_TEMPLATE at all) is indistinguishable from
+        # "inspected" at this layer by design -- it's covered separately by the
+        # model_armor_guard_init_failed alert, not per-evidence tracking.
+        "inspection_status": inspection_status,
         "resource_type": resource_type,
         "resource_id": resource_id,
         # real tool-call args, same source as resource_id above -- lets scorer.py's
