@@ -268,7 +268,13 @@ Name exact pods, exit codes, restart counts — no vague language.
 Every claim MUST reference a specific evidence_id (ev_001, ev_002 etc).
 Only state what the evidence supports.
 Include the cluster name and region in the incident summary.
-Remediation steps must be immediately executable by a human — no autonomous actions.
+Remediation steps must be immediately executable by a human — no autonomous actions. For
+each one, say whether it addresses the root cause directly ("remediation") or is a next
+step to gather more evidence ("diagnostic_next_step") — do not label a step "remediation"
+if primary_causal_claim_index is null, since there is no confirmed cause yet for it to
+address. Include what must be true first, what it touches, what it fixes, what could go
+wrong, how to confirm it worked, and how to undo it — leave a field empty/"not applicable"
+only when it genuinely doesn't apply, never guess a plausible-sounding value.
 
 You break your reasoning into individual claims, and flag anything you noticed that seemed
 to conflict with your own conclusion. You do NOT assign a confidence score — application
@@ -333,7 +339,18 @@ Evidence IDs available: {evidence_ids}
   "evidence_chain": ["ev_001", "ev_002"],
   "evidence_gaps": [],
   "reasoning_trace": ["<step 1>", "<step 2>"],
-  "suggested_remediation": ["<human step 1>", "<human step 2>"],
+  "suggested_remediation": [
+    {{
+      "action": "<specific, human-executable step>",
+      "type": "remediation | diagnostic_next_step",
+      "prerequisites": "<what must be checked/true first, or empty string if none>",
+      "affected_scope": "<what this touches, e.g. 'this pod only' vs 'all replicas in namespace X'>",
+      "expected_benefit": "<what this is expected to fix or reveal>",
+      "risk": "<material risk of taking this action, or 'none identified' if genuinely none>",
+      "recovery_verification": "<how to confirm this worked, or empty string if not applicable>",
+      "rollback": "<how to undo this action, or 'not applicable' if there is nothing to undo>"
+    }}
+  ],
   "sources_skipped": []
 }}"""
 
@@ -387,6 +404,11 @@ You do NOT produce a confidence score or probability. You produce categorical ju
   - "conflicting": evidence is clearly from a different time window than the incident
   - "unknown": no trustworthy timestamp information exists to judge this — this is the
     correct answer when you cannot tell, never guess "relevant" by default
+  - If the incident time context has reported_at_is_approximate=true, that anchor is the
+    request's own receipt time, not a caller-confirmed incident time — treat it as a loose
+    hint only. Only conclude "conflicting" from it when evidence is off by hours or more,
+    not minutes; a large gap (e.g. evidence from days earlier with nothing else tying it to
+    this incident) is still a legitimate "conflicting" call even against an approximate anchor.
 
 Respond ONLY with valid JSON."""
 

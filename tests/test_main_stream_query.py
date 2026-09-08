@@ -123,7 +123,29 @@ def test_graph_stream_receives_same_state_and_recursion_limit_as_invoke(monkeypa
     # Both start from get_initial_state() built from an equivalent envelope —
     # compare the parts that matter (run_id differs by design, each call makes
     # its own fresh run_id via make_run_id()).
-    assert invoke_state["incident_envelope"] == stream_state["incident_envelope"]
+    #
+    # incident.reported_at is EXCLUDED from the strict comparison for the same reason
+    # this file already excludes timestamps/latency elsewhere (see
+    # test_stream_query_final_result_matches_query_business_fields's comment): when the
+    # caller doesn't supply an incident time (Section 7, 2026-09-08), each call to
+    # _prepare_investigation_envelope() stamps its OWN wall-clock receipt time, so two
+    # separate calls with the same payload legitimately produce two different values —
+    # this is not a bug, it mirrors real production behavior (two real, separate
+    # requests). The invariant this test actually cares about (that BOTH transports
+    # build their envelope through the identical code path) is verified instead by
+    # confirming both agree on reported_at_approximate.
+    invoke_incident = dict(invoke_state["incident_envelope"]["incident"])
+    stream_incident = dict(stream_state["incident_envelope"]["incident"])
+    assert invoke_incident.pop("reported_at") and stream_incident.pop("reported_at")
+    assert invoke_incident == stream_incident
+    assert (
+        invoke_state["incident_envelope"]["incident"]["reported_at_approximate"]
+        == stream_state["incident_envelope"]["incident"]["reported_at_approximate"]
+        is True
+    )
+    invoke_envelope_minus_incident = {k: v for k, v in invoke_state["incident_envelope"].items() if k != "incident"}
+    stream_envelope_minus_incident = {k: v for k, v in stream_state["incident_envelope"].items() if k != "incident"}
+    assert invoke_envelope_minus_incident == stream_envelope_minus_incident
     assert invoke_config == stream_config  # same recursion_limit passed to both
     assert "recursion_limit" in invoke_config
     assert stream_mode == "values"

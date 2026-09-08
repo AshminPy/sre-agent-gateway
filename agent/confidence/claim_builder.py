@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 
-from agent.confidence.models import Claim, ClaimType, Contradiction, Hypothesis
+from agent.confidence.models import Claim, ClaimType, Contradiction, Hypothesis, RemediationItem
 
 _CITATION_STOP = {
     "this", "that", "with", "from", "have", "been", "were", "they",
@@ -387,3 +387,99 @@ def detect_contradictions(
             idx += 1
 
     return contradictions
+
+
+# Section 7 (2026-09-08): only fires on an EXPLICIT "pod X" / "deployment X" / etc. mention
+# naming a resource that doesn't match anything actually collected -- deliberately narrow.
+# A generic hyphen-scan over the whole action text would false-positive on ordinary English
+# compound words ("read-only", "high-confidence"); requiring a resource-type keyword right
+# before the name is the precise, low-noise signal a human reviewer would also use.
+_RESOURCE_MENTION_RE = re.compile(
+    r"\b(?:pod|deployment|namespace|service|replicaset|node|container)\s+"
+    r"['\"`]?([a-z0-9][a-z0-9-]{1,61}[a-z0-9])['\"`]?",
+    re.IGNORECASE,
+)
+
+
+def _check_identifier_warning(action: str, known_resources: set) -> str:
+    """Section 7: "Validate resource identifiers... where practical." Not a full parser --
+    a bounded, conservative check that only flags a resource name the action text explicitly
+    names that doesn't match anything this investigation actually collected. Advisory, never
+    blocks the item; false negatives (a bad name it misses) are acceptable, false positives
+    that cry wolf on every remediation are not."""
+    if not known_resources:
+        return ""
+    known_lower = {r.lower() for r in known_resources if r}
+    for match in _RESOURCE_MENTION_RE.finditer(action):
+        name = match.group(1).lower()
+        if any(name == r or name in r or r in name for r in known_lower):
+            continue
+        return (
+            f"references '{match.group(1)}', which doesn't match any resource collected "
+            "in this investigation — verify before use"
+        )
+    return ""
+
+
+def normalize_remediation_items(
+    rca_result: dict, primary_claim, resolved_context: dict,
+) -> list:
+    """Coerces the LLM's suggested_remediation into structured RemediationItem objects.
+
+    Accepts both the new structured-object schema (RCA_BUILDER_USER's current prompt) and
+    plain strings (defensive -- a model that ignores the schema, or an older stored RCA
+    being re-rendered, must not crash this function).
+
+    tied_to_primary_cause is set deterministically here, never trusted from the model: True
+    only when primary_claim is not None (a real, verified root cause exists). A remediation
+    cannot honestly claim to address "the supported cause" when there isn't one -- this is
+    the Section 7 requirement "Tie each recommendation to the supported cause or label it as
+    a diagnostic next step," enforced by code, not by asking the model nicely.
+    """
+    raw = rca_result.get("suggested_remediation")
+    if not isinstance(raw, list):
+        return []
+
+    known_resources = {
+        v for v in (
+            resolved_context.get("namespace"),
+            resolved_context.get("pod"),
+            resolved_context.get("deployment"),
+            resolved_context.get("cluster_name"),
+        ) if v
+    }
+    has_verified_cause = primary_claim is not None
+
+    items: list = []
+    for raw_item in raw[:10]:  # bounded -- render layer only shows the first 5 anyway
+        if isinstance(raw_item, str):
+            action = raw_item.strip()
+            if not action:
+                continue
+            items.append(RemediationItem(
+                action=action[:300],
+                tied_to_primary_cause=has_verified_cause,
+                item_type="remediation" if has_verified_cause else "diagnostic_next_step",
+                identifier_warning=_check_identifier_warning(action, known_resources),
+            ))
+            continue
+        if not isinstance(raw_item, dict):
+            continue
+        action = str(raw_item.get("action", "")).strip()
+        if not action:
+            continue
+        model_says_diagnostic = str(raw_item.get("type", "")).lower() == "diagnostic_next_step"
+        tied = has_verified_cause and not model_says_diagnostic
+        items.append(RemediationItem(
+            action=action[:300],
+            tied_to_primary_cause=tied,
+            item_type="remediation" if tied else "diagnostic_next_step",
+            prerequisites=str(raw_item.get("prerequisites") or "")[:200],
+            affected_scope=str(raw_item.get("affected_scope") or "")[:200],
+            expected_benefit=str(raw_item.get("expected_benefit") or "")[:200],
+            risk=str(raw_item.get("risk") or "not assessed")[:200],
+            recovery_verification=str(raw_item.get("recovery_verification") or "")[:200],
+            rollback=str(raw_item.get("rollback") or "not applicable")[:200],
+            identifier_warning=_check_identifier_warning(action, known_resources),
+        ))
+    return items

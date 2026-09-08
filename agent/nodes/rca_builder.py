@@ -22,7 +22,9 @@ from agent.confidence import (
     derive_outcome,
     score_root_cause_confidence,
 )
-from agent.confidence.claim_builder import build_claims, build_hypotheses, detect_contradictions
+from agent.confidence.claim_builder import (
+    build_claims, build_hypotheses, detect_contradictions, normalize_remediation_items,
+)
 from agent.confidence.scorer import confidence_band_from_scores
 from agent.llm import get_session_usage, llm_json
 from agent.otel import get_trace_id_hex, log_node_tokens, trace_node
@@ -491,7 +493,10 @@ def rca_builder(state: AgentState) -> dict:
         # llm_json() now also detects and retries once on an actual MAX_TOKENS
         # truncation (belt-and-suspenders); this raise is the primary fix, since it
         # removes the truncation for the normal case instead of relying on the retry.
-        max_tokens=3072,
+        # Raised 3072 -> 4096 (Section 7, 2026-09-08): suggested_remediation grew from a
+        # flat string list to ~8 fields per item -- same truncation risk this comment
+        # already describes, applied preemptively rather than waiting to rediscover it.
+        max_tokens=4096,
     )
     log_node_tokens("rca_builder", state["run_id"], inv.get("current_step", 0), usage)
 
@@ -623,9 +628,19 @@ def rca_builder(state: AgentState) -> dict:
     else:
         # Minimal explicit incident-time context (point 5, final review round) — only
         # fields that actually exist, never the full resolved_context/AgentState.
+        # Section 7 (2026-09-08): this dict was correctly designed but never actually
+        # populated -- nothing upstream ever set incident_reported_at/incident_start/
+        # incident_end, so temporal_relevance could never be anything but "unknown" in
+        # any real investigation (docs/management/confidence-genericity-review-2026-08-28.md
+        # #15.2). Closed by threading a caller-supplied or receipt-time-approximated
+        # value from agent/main.py's _prepare_investigation_envelope through
+        # input_normalizer.py. reported_at_is_approximate tells the verifier LLM
+        # whether this anchor is caller-confirmed or a rough guess, so it can weight
+        # its temporal_relevance judgment accordingly rather than treating both the same.
         incident_time_context = {
             k: v for k, v in {
                 "reported_at": ctx.get("incident_reported_at"),
+                "reported_at_is_approximate": ctx.get("incident_reported_at_approximate", False),
                 "incident_start": ctx.get("incident_start"),
                 "incident_end": ctx.get("incident_end"),
             }.items() if v
@@ -677,6 +692,12 @@ def rca_builder(state: AgentState) -> dict:
     result["claims"]                     = [c.to_dict() for c in claims]
     result["hypotheses"]                 = [h.to_dict() for h in hypotheses]
     result["contradictions"]             = [c.to_dict() for c in contradictions]
+    # Section 7 (2026-09-08): overwrites the raw LLM value with the deterministically
+    # normalized, structured version -- tied_to_primary_cause/item_type are computed here
+    # from primary_claim, never trusted from what the model itself labeled its own item.
+    result["suggested_remediation"]      = [
+        r.to_dict() for r in normalize_remediation_items(result, primary_claim, ctx)
+    ]
     result["requires_human_review"]      = requires_review
     result["run_id"]                     = state["run_id"]
     result["evidence_chain"]             = evidence_ids

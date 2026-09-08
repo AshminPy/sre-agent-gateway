@@ -94,6 +94,16 @@ def _extract_root_cause(summary: dict) -> str:
     )
 
 
+def _remediation_action_text(item) -> str:
+    """Section 7 (2026-09-08): suggested_remediation items are now structured dicts
+    (action/type/prerequisites/... — see agent/confidence/models.py's RemediationItem);
+    this extracts just the human-readable action line. Still accepts a plain string for
+    the legacy recommendation/next_steps fallback fields, which were never restructured."""
+    if isinstance(item, dict):
+        return str(item.get("action", "")).strip()
+    return str(item).strip()
+
+
 def _build_executive_summary(summary: dict, inv: dict, ctx: dict) -> str:
     """Plain-English one-paragraph summary for non-technical stakeholders.
 
@@ -105,16 +115,29 @@ def _build_executive_summary(summary: dict, inv: dict, ctx: dict) -> str:
     root_cause_brief = root_cause[:120].rstrip(".")
     if len(root_cause) > 120:
         root_cause_brief += "…"
-    remediation = (
-        summary.get("suggested_remediation")
-        or summary.get("recommendation")
-        or summary.get("next_steps")
-        or "No specific remediation provided — review agent output."
-    )
+    remediation_raw = summary.get("suggested_remediation")
+    if isinstance(remediation_raw, list) and remediation_raw:
+        remediation = _remediation_action_text(remediation_raw[0])
+    else:
+        remediation = (
+            summary.get("recommendation")
+            or summary.get("next_steps")
+            or "No specific remediation provided — review agent output."
+        )
     confidence_band = (inv.get("confidence_band") or summary.get("confidence_band") or "unknown").upper()
     outcome = str(summary.get("outcome", "")).upper()
     requires_review = summary.get("requires_human_review", True)
-    review_note = "Human review recommended before actioning." if requires_review else "No immediate human review required."
+    # This agent is read-only and never executes remediation itself (see mcp/server.py's
+    # own design guarantee) -- a human always performs any action regardless of
+    # requires_human_review. That field means "does the DIAGNOSIS need re-verification
+    # before you trust it," never "no human is needed to act on it." Wording corrected
+    # 2026-09-08 (Section 7) -- the machine field itself is unchanged for any dashboard
+    # already filtering on it.
+    review_note = (
+        "Human review recommended before actioning."
+        if requires_review
+        else "Diagnosis is high-confidence; a human must still approve and perform any action."
+    )
     outcome_note = f" Outcome: {outcome}." if outcome else ""
     return (
         f"Incident type: {incident_type}. "
@@ -160,10 +183,13 @@ def _build_rca_report(
         or summary.get("next_steps")
         or []
     )
+    # Section 7 (2026-09-08): kept as the raw items (dicts or strings), not coerced to str
+    # here -- the render loop below (§5 REMEDIATION) needs the structured fields, str()
+    # would flatten a dict into an unreadable Python repr.
     remediation_items = (
-        [str(r) for r in remediation_raw]
+        list(remediation_raw)
         if isinstance(remediation_raw, list)
-        else [str(remediation_raw)]
+        else [remediation_raw]
     ) if remediation_raw else []
 
     contributing_factors = summary.get("contributing_factors") or []
@@ -218,7 +244,12 @@ def _build_rca_report(
         memory_note = "No prior similar incidents found in Memory Bank"
 
     if confidence_band == "AUTO":
-        review_note  = "AUTO — no human review required"
+        # Corrected 2026-09-08 (Section 7): the old text ("no human review required")
+        # directly contradicted status_line two lines below ("AWAITING HUMAN ACTION") in
+        # the same report. AUTO means the diagnosis passed every verification gate and
+        # doesn't need a human to re-check the ROOT CAUSE -- it never means no human is
+        # needed to act. This agent is read-only and never executes remediation itself.
+        review_note  = "AUTO — diagnosis verified, no re-review of the root cause needed; a human must still approve and perform any remediation action"
         status_line  = "INVESTIGATION COMPLETE — AWAITING HUMAN ACTION"
     elif confidence_band == "REVIEW":
         review_note  = "REVIEW — human review recommended before actioning"
@@ -387,10 +418,35 @@ def _build_rca_report(
         L.append("  Immediate Actions:")
         kubectl_cmds = []
         for i, item in enumerate(remediation_items[:5], 1):
-            item_str = str(item).strip()
-            L.append(f"    {i}. {item_str[:150]}")
-            if "kubectl" in item_str.lower():
-                kubectl_cmds.append(item_str)
+            # Section 7 (2026-09-08): items are now structured dicts (action/type/
+            # prerequisites/affected_scope/expected_benefit/risk/recovery_verification/
+            # rollback/identifier_warning — see agent/confidence/models.py's
+            # RemediationItem) rather than a bare string. Still handles a legacy plain
+            # string (the recommendation/next_steps fallback fields were never
+            # restructured) without crashing.
+            if isinstance(item, dict):
+                action_str = str(item.get("action", "")).strip()
+                item_type = item.get("item_type", "diagnostic_next_step")
+                tied = "tied to confirmed root cause" if item.get("tied_to_primary_cause") else "not tied to a confirmed root cause"
+                L.append(f"    {i}. [{item_type}, {tied}] {action_str[:150]}")
+                if item.get("prerequisites"):
+                    L.append(f"       Prerequisites: {item['prerequisites'][:150]}")
+                if item.get("affected_scope"):
+                    L.append(f"       Affected scope: {item['affected_scope'][:150]}")
+                if item.get("expected_benefit"):
+                    L.append(f"       Expected benefit: {item['expected_benefit'][:150]}")
+                L.append(f"       Risk: {item.get('risk', 'not assessed')[:150]}  |  Rollback: {item.get('rollback', 'not applicable')[:150]}")
+                if item.get("recovery_verification"):
+                    L.append(f"       Recovery verification: {item['recovery_verification'][:150]}")
+                if item.get("identifier_warning"):
+                    L.append(f"       ⚠ {item['identifier_warning'][:150]}")
+                if "kubectl" in action_str.lower():
+                    kubectl_cmds.append(action_str)
+            else:
+                item_str = str(item).strip()
+                L.append(f"    {i}. {item_str[:150]}")
+                if "kubectl" in item_str.lower():
+                    kubectl_cmds.append(item_str)
         if kubectl_cmds:
             L.append("")
             L.append("  Commands:")
@@ -409,7 +465,12 @@ def _build_rca_report(
         SEP,
         "  6.  INVESTIGATION METADATA",
         SEP,
-        f"  AI Confidence   : {confidence * 100:.0f}%  (Band: {confidence_band})",
+        # Added 2026-09-08 (Section 7): the score itself is documented internally as
+        # "uncalibrated" (agent/confidence/policy.py's POLICY_VERSION) and never a
+        # probability -- but the report rendered it as a bare "%" with no such caveat,
+        # which reads exactly like a calibrated probability to anyone who hasn't read
+        # the source code. Same underlying number, honest label.
+        f"  AI Confidence   : {confidence * 100:.0f}%  (Band: {confidence_band}, uncalibrated diagnostic score — not a probability)",
         f"  Human Review    : {review_note}",
         f"  Memory Bank     : {memory_note}",
         f"  Model           : {_deployed_model} via Vertex AI Agent Engine",
@@ -452,6 +513,25 @@ def _prepare_investigation_envelope(payload: dict):
     cluster    = (payload.get("cluster") or "").strip()
     deployment = payload.get("deployment", "")
     severity   = payload.get("severity", "unknown")
+    # Section 7 (2026-09-08): optional caller-supplied incident timing, e.g. an
+    # alert's own fired-at time. ISO-8601 string or epoch seconds, either is passed
+    # through as-is to the verifier's incident_time_context -- see
+    # docs/management/confidence-genericity-review-2026-08-28.md #15.2, the
+    # collection-time-vs-incident-time gap this closes (incident_time_context was
+    # never populated anywhere, so temporal_relevance could never be anything but
+    # "unknown" -- a real, demonstrated gap, not a hypothetical one).
+    #
+    # When the caller doesn't supply one, default incident_reported_at to THIS
+    # request's own receipt time, labeled as approximate -- this gives the verifier
+    # a real, if imperfect, anchor instead of nothing at all. It is honest about being
+    # an approximation (see the "(approximate" suffix) rather than presenting a guess
+    # as a caller-confirmed fact.
+    incident_reported_at = payload.get("incident_reported_at") or payload.get("incident_time") or ""
+    incident_reported_at_is_approximate = not incident_reported_at
+    if incident_reported_at_is_approximate:
+        incident_reported_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) + " (approximate — request receipt time, not caller-confirmed)"
+    incident_start = payload.get("incident_start") or ""
+    incident_end   = payload.get("incident_end") or ""
 
     if not query:
         return {"error": "query is required", "status": "failed"}
@@ -467,9 +547,13 @@ def _prepare_investigation_envelope(payload: dict):
             "deployment": deployment,
         },
         "incident": {
-            "severity": severity,
-            "title":    payload.get("title", query[:80]),
-            "service":  payload.get("service", ""),
+            "severity":              severity,
+            "title":                 payload.get("title", query[:80]),
+            "service":               payload.get("service", ""),
+            "reported_at":           incident_reported_at,
+            "reported_at_approximate": incident_reported_at_is_approximate,
+            "start":                 incident_start,
+            "end":                   incident_end,
         },
         "memory_context": payload.get("memory_context", ""),
     }
