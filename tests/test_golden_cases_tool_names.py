@@ -31,7 +31,10 @@ def test_every_case_is_classified():
     """Guards the classification map itself — a new case added to golden_cases.py
     with a cluster this test doesn't know about should fail loudly, not silently
     default to "GKE" and mask a future version of the same bug."""
-    known_clusters = {"sre-test-cluster", "onprem-dc1-cluster"}
+    # sre-lab replaces the old fictional "onprem-dc1-cluster" (corrected 2026-09-08,
+    # Section 10 / Phase 1 50-case manifest prep) -- sre-lab is the real, live
+    # on-prem cluster this repo actually has registered.
+    known_clusters = {"sre-test-cluster", "sre-lab"}
     for case in GOLDEN_CASES:
         cluster = case["payload"]["resource_hints"].get("cluster")
         if cluster is not None:

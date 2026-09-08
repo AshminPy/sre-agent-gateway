@@ -176,21 +176,26 @@ GOLDEN_CASES = [
         # additionally covered without live infra by
         # tests/test_eval_scenario_matrix.py::test_non_gke_cluster_routes_to_custom_mcp.
         "id": "onprem-001",
+        # Corrected 2026-09-08 (Section 10 / Phase 1 50-case manifest prep): cluster
+        # was the fictional "onprem-dc1-cluster" and namespace "billing-ns" -- neither
+        # exists in the real registry. sre-lab is the real, live on-prem cluster
+        # (iac/agent/variables.tf's additional_clusters default), and its ONLY
+        # allowed_namespaces entry is "test-incidents" -- a case using a different
+        # namespace would fail namespace validation before ever reaching the LLM,
+        # for a reason unrelated to what this case is meant to test. Pod/namespace
+        # updated to match; the CrashLoopBackOff scenario itself is unchanged.
         "payload": {
-            "user_query": "Pod legacy-billing-0 in billing-ns on our on-prem cluster is CrashLoopBackOff. Investigate.",
+            "user_query": "Pod legacy-billing-0 in test-incidents on our on-prem cluster is CrashLoopBackOff. Investigate.",
             "incident": {"severity": "P2"},
             "resource_hints": {
-                "namespace": "billing-ns",
+                "namespace": "test-incidents",
                 "pod": "legacy-billing-0",
-                "cluster": "onprem-dc1-cluster",
+                "cluster": "sre-lab",
             },
         },
-        # NOT changed in the 2026-08-09 stale-name fix — these three names
-        # (list_pods, get_current_logs, list_events) are CUSTOM_K8S_TOOLS
-        # names (agent/mcp_client.py), which is correct here since this case
-        # routes through k8s_mcp, not gke_remote_mcp. They were never stale;
-        # they just happen to look similar to the old GKE-side names that
-        # WERE stale in every other case in this file.
+        # These three names (list_pods, get_current_logs, list_events) are
+        # CUSTOM_K8S_TOOLS names (agent/mcp_client.py), correct here since this case
+        # routes through k8s_mcp, not gke_remote_mcp.
         "expected_trajectory": ["list_pods", "get_current_logs", "list_events"],
         "expected_keywords": ["CrashLoopBackOff", "exit"],
         "expected_confidence_min": 0.50,
