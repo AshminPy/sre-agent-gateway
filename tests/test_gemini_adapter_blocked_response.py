@@ -60,12 +60,13 @@ class _FakeClient:
 def _adapter(monkeypatch, response):
     """A real GeminiAdapter with only the SDK client and span emitter faked."""
     adapter = GeminiAdapter.__new__(GeminiAdapter)
-    for attr in (
-        "_session_input", "_session_cached_input", "_session_output",
-        "_session_reasoning", "_session_tool", "_session_total",
-        "_session_calls", "_session_duration_s",
-    ):
-        setattr(adapter, attr, 0)
+    # Section 9 (2026-09-08): session counters live in a contextvars.ContextVar now
+    # (not flat instance attributes) so concurrent investigations sharing the same
+    # cached adapter instance can't cross-contaminate each other's usage totals --
+    # see gemini_adapter.py's own docstring on GeminiAdapter for why.
+    import contextvars
+    adapter._session_var = contextvars.ContextVar("test_gemini_session")
+    adapter.reset_session()
     adapter.price_input_per_1m = 0.0
     adapter.price_output_per_1m = 0.0
     adapter.model = "gemini-2.5-pro"
