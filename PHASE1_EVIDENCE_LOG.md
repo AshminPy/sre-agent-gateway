@@ -973,3 +973,28 @@ live `terraform plan` clean, 0 destroyed. ruff clean.
 **Verification:** full agent suite 571 passed, 0 failed. `mcp/tests/` (mocked): 85
 passed. Live cluster test: 6/7 pass (7th is a known identity-scope mismatch, not a
 defect). ruff clean.
+
+---
+## 2026-09-08 — Section 11: operations and documentation match the release
+
+**Fixed:** 5 docs + 1 Terraform comment describing the retired single-cluster
+`@lru_cache(maxsize=1)` client / "no Connect Gateway code" as current state — all
+corrected with evidence citations to the actual, live-verified 2026-09-07 fix. Two new
+alerts: Connect Gateway connection failure (real observed failure-log filter,
+live-tested) and confirmed the Section 8 Model Armor guard-init alert already closes
+that half of the gap. Two new runbooks: `switch-llm-model.md` and `operate.md`
+(previously scattered/absent), both added to `docs/README.md`'s index. Fixed a dead
+cross-link and corrected `PHASE1_FINAL_READINESS_STATE.md`'s stale #86 row.
+
+**Researched, not fabricated:** a Cloud Run/Agent Engine saturation alert — WebSearch
+confirmed the `aiplatform.googleapis.com/ReasoningEngine` monitored resource type
+exists but could not confirm a specific instance-count metric name; documented as a
+disclosed gap rather than guessing a metric.
+
+**Deferred, disclosed:** distinct OTel spans for the new dynamic Connect Gateway /
+capability-dispatch code paths — `mcp/server.py` has zero OTel instrumentation at all.
+Real gap, judged lower priority than Sections 8-10's correctness/security work given
+rollout timing.
+
+**Verification:** `terraform validate` clean, live `terraform plan`: 4 to add, 1 to
+change, 0 destroyed. Full suite: 571 passed, 0 failed. ruff clean.
