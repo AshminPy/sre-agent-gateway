@@ -10,14 +10,40 @@ status=running and no exit reason at all, because the budget checks were never r
 in that pass. Fixed by moving the three time/token checks ahead of every
 evidence-driven branch (agent/nodes/loop_controller.py).
 """
+import time
+
+import pytest
+
 from agent.nodes.loop_controller import loop_controller
+
+# Fix found 2026-09-08 (CI failure, not reproducible locally): _is_timed_out()/
+# _is_safety_budget_exceeded() both guard with `started_at_mono > 0` (defends
+# against an unset/0 sentinel in real AgentState). This test file's OWN
+# _state() helper below simulates "elapsed_seconds have passed" via
+# `time.monotonic() - elapsed_seconds` -- on a machine whose monotonic clock's
+# own reference epoch is recent (e.g. a freshly-booted, short-lived GitHub
+# Actions runner, confirmed NOT reproducible on a long-uptime local machine
+# where time.monotonic() is already in the millions of seconds), this can go
+# negative/zero for a large elapsed_seconds (600, 999), silently disabling
+# the guard and making these tests fail non-deterministically depending on
+# how long the CI VM has been up when they happen to run -- NOT a bug in
+# loop_controller.py itself (production always calls time.monotonic() fresh,
+# never subtracts from it). Fixed by patching time.monotonic() to a large,
+# fixed reference value for every test in this file, so the simulated
+# elapsed time is always deterministic and always positive, regardless of
+# the real system's monotonic clock state.
+_FIXED_MONOTONIC_NOW = 10_000_000.0
+
+
+@pytest.fixture(autouse=True)
+def _fixed_monotonic_clock(monkeypatch):
+    monkeypatch.setattr(time, "monotonic", lambda: _FIXED_MONOTONIC_NOW)
 
 
 def _state(*, enough_evidence: bool, missing_required_domains: list,
            current_step: int, max_steps: int, elapsed_seconds: float,
            tokens_total: int, max_tokens: int | None = None,
            max_duration_seconds: int = 540) -> dict:
-    import time
     inv = {
         "current_step": current_step, "max_steps": max_steps, "min_steps": 2,
         "enough_evidence": enough_evidence, "tokens_total": tokens_total,
