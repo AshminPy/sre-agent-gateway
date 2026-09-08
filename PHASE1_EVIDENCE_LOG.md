@@ -942,3 +942,34 @@ static capability declaration — judged unnecessary for 2 known-compatible Gemi
 
 **Verification:** full suite 571 passed, 0 failed (up from 566). `terraform validate` +
 live `terraform plan` clean, 0 destroyed. ruff clean.
+
+---
+## 2026-09-08 — Section 10: evaluation and reproducible CI
+
+**Fixed and live-verified:**
+1. `mcp/tests/test_live_connect_gateway.py`'s `_call_tool_mcp` (private FastMCP API,
+   removed in 4.0.3) → `FastMCP.call_tool()` (public). Root cause was
+   `mcp/requirements.txt`'s unbounded `fastmcp>=2.3.4` — now exact-pinned (every
+   dependency in that file). **Live-verified against the real `sre-lab` cluster**:
+   6/7 pass for real; the 7th's Connect-Gateway-restricted-role assertion correctly
+   doesn't apply under a direct kubeconfig context (identity mismatch, not a defect).
+2. pip-audit run for real, properly scoped per deployable unit: `mcp/` = 0
+   vulnerabilities. `agent/` = 9 findings (langgraph/langchain-core ecosystem) — all
+   confirmed via grep against real usage as NOT runtime-exercised (no checkpointer
+   configured, `langgraph_sdk` never imported, no prompt-file-loading, no
+   `ChatOpenAI`). Fix versions are major bumps outside `requirements.txt`'s own
+   deliberate `<1.0.0` ceiling — not forced before rollout; scoped as later work.
+3. Terraform test gate confirmed live to silently no-op ("No tests defined", exit 0)
+   under the fixed, policy-pinned Terraform 1.4.7 CLI — CI now emits a loud warning
+   annotation instead of a misleading clean pass.
+4. Added the `malicious-log-injection-001` golden case (was fully MISSING) — proves
+   RCA-builder resists instructions smuggled inside evidence text. Documented, not
+   faked, why timeout/quota-exhaustion isn't a golden case (already covered by real
+   deterministic unit tests; a golden-case harness can't reliably reproduce live
+   quota state).
+5. Corrected `golden_cases.py`'s docstring claim that it maps 1:1 to
+   `eval/dataset.jsonl` — confirmed false (8/16 IDs don't overlap either direction).
+
+**Verification:** full agent suite 571 passed, 0 failed. `mcp/tests/` (mocked): 85
+passed. Live cluster test: 6/7 pass (7th is a known identity-scope mismatch, not a
+defect). ruff clean.
