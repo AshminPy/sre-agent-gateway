@@ -852,3 +852,62 @@ every other field) holds.
 **Verification:** ruff clean. Full suite: 548 passed, 0 failed (up from 532; +15 new tests,
 1 existing assertion updated to match the new structured shape by design, 1 existing test
 fixed for the real regression above). Pushed: `origin/phase1-final-readiness-review`.
+
+---
+## 2026-09-08 — Section 8: content-safety and memory lifecycle gaps closed
+
+**Investigation:** fresh-context Explore agent audit of mcp/response_guard.py, the
+memory write/read paths, and iac/agent/model_armor.tf against every Section 8
+requirement. 8 verdicts returned (2 SATISFIED, 6 GAP/PARTIAL) with exact file:line
+evidence — full detail in this session's transcript; summary below.
+
+**Fixed (batch 1, commit `18b1634`):**
+1. Model Armor guard init failure now logs ERROR with a distinct, alertable string
+   (`model_armor_guard_init_failed`) instead of a plain WARNING — was permanently,
+   silently disabling sanitization for the process lifetime with zero alert. New
+   Terraform metric + alert policy added (`iac/agent/monitoring.tf`).
+2. A per-call fail-open (Model Armor API error, not a block) now marks the tool
+   result itself — verified against `agent/mcp_client.py`'s REAL parsing logic first
+   (`_extract_content()` only reads `content[0]`, `json.loads`'s it) before choosing
+   an approach that survives that exact path: injects `"_uninspected": true` into the
+   existing JSON payload rather than adding a separate content block, which would
+   have been silently ignored or replaced the real result with marker text entirely.
+3. `evidence_extractor.py` detects and strips this into an explicit
+   `inspection_status` field (`"inspected"` | `"fail_open"`) on every evidence item.
+4. New memory-write gate (`agent/main.py`): a confirmed root cause whose PRIMARY
+   claim cites `fail_open` evidence is refused promotion to trusted Memory Bank,
+   logged with the exact reason.
+
+**Fixed (batch 2, commit `0025825`):** the memory review-status gap ADR-010 itself
+labeled "DECIDED design intent — NOT YET IMPLEMENTED... do not represent this as a
+built control." `_mb_store()` now writes real `status=pending_review`/`run_id`/
+`policy_version` fields; `_mb_recall()` only returns `status=approved` memories.
+Caught and fixed a real correctness bug during implementation, before it shipped:
+the first draft returned `""` for "records exist but none approved," which would
+have rendered as the false claim "No prior incidents found" — same failure class the
+existing `MEMORY_RECALL_UNAVAILABLE` sentinel already exists to prevent. New
+`scripts/review_memory.py` (list/approve/reject/revoke) is the smallest supported
+review operation — a CLI using the Memory Bank SDK's public `get()`/`delete()`/
+`create()`, since no public `update()` exists.
+
+**Verified already correct, no change needed:**
+- REQUEST_AUTHZ fail-closed and the custom-MCP response guard itself (PR #249) —
+  confirmed still intact, not reopened.
+- No secret-shaped value reaches a log line unredacted on either path checked.
+- Floor settings remain `inspect_only` + logging enabled (not flipped to block mode)
+  — matches the required, unchanged posture; the 3-condition precondition gate for
+  ever re-enabling blocking still doesn't hold, correctly left alone.
+- The GKE Remote MCP response-inspection gap (no equivalent to `response_guard.py`
+  exists for that traffic) is a real, permanent platform limitation — already
+  documented accurately and repeatedly across `docs/governance/security.md`,
+  `docs/architecture/agent-gateway.md`, and `docs/runbooks/add-mcp-server.md`. Not
+  eliminated (can't be, on the platform side), and not silently undocumented either.
+
+**Docs corrected:** ADR-010 and `docs/architecture/memory.md` both explicitly said
+"NOT YET IMPLEMENTED"/"PLANNED, not built" before this work — updated to reflect
+what's now actually built, with the real verification evidence linked here.
+
+**Verification:** ruff clean. Full agent suite: 566 passed, 0 failed (up from 556
+pre-Section-8). `mcp/tests/`: 85 passed, 7 failed — confirmed identical to the
+already-known FastMCP API-drift failures (Section 10 addresses this directly, not
+caused by this section's work). `terraform validate`: clean.
