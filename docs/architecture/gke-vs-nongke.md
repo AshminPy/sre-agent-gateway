@@ -51,12 +51,12 @@ This used to be the layer that was missing; it's now closed. The deployed Cloud 
 ### What's still open
 
 1. Convert the manual `gcloud` Fleet-registration/RBAC steps into Terraform (or at minimum, a repeatable script — there is currently no wrapper script for `generate-gateway-rbac`).
-2. Add a field to `clusters.json`'s schema to distinguish "reach via Connect Gateway" from "reach via direct endpoint" — no such field exists today.
+2. ~~Add a field to `clusters.json`'s schema to distinguish "reach via Connect Gateway" from "reach via direct endpoint"~~ — **DONE 2026-09-07**: `fleet_project_number`/`fleet_membership` (dynamic Connect Gateway, no static file) vs. the legacy `kube_context` field (static, image-baked) are now distinct, explicit registry fields — see `docs/connect-gateway-onprem.md`.
 3. ~~Fix `clusters.json`'s single-cluster-only template so a second (on-prem) cluster entry survives a `terraform apply`~~ — **DONE 2026-08-09**: `var.additional_clusters` now supports any number of clusters, including non-GKE ones, and every entry survives `terraform apply` by design (Terraform is now the sole source of truth). See [Cluster Routing](cluster-routing.md).
 4. Turn on `DATA_READ` audit logging for `connectgateway.googleapis.com`, or accept the current audit gap as a documented risk.
-5. The custom MCP is still single-cluster-per-deployment (`get_k8s_clients()`'s `@lru_cache(maxsize=1)`) — a second non-GKE cluster needs either a second Cloud Run service or per-request context selection.
+5. ~~The custom MCP is still single-cluster-per-deployment (`get_k8s_clients()`'s `@lru_cache(maxsize=1)`) — a second non-GKE cluster needs either a second Cloud Run service or per-request context selection.~~ — **DONE 2026-09-07** (issue #86): `get_k8s_clients(cluster_id)` is `@lru_cache(maxsize=32)`, keyed per cluster; one shared Cloud Run service serves many clusters with proven isolation.
 
-Items 1, 2, and 4 remain manual/undone today — see [Adding a Non-GKE / On-Prem Cluster](../archive/SUPERSEDED_2026-09-07_add-non-gke-cluster.md) (archived, superseded by the live build above) for historical context.
+Item 1 and item 4 remain manual/undone today — see [Adding a Non-GKE / On-Prem Cluster](../archive/SUPERSEDED_2026-09-07_add-non-gke-cluster.md) (archived, superseded by the live build above) for historical context.
 
 ---
 

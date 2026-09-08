@@ -179,8 +179,13 @@ config since it's a separately-deployable component with its own
   Gateway → custom Cloud Run MCP → Connect Gateway → the `sre-lab` cluster),
   verified 2026-09-04 and independently re-confirmed 2026-09-05/06/07 — see
   [MCP Architecture](architecture/mcp-architecture.md) for the evidence.
-  Remaining known limitation: the deployment is single-cluster-per-Cloud-Run-
-  service (`get_k8s_clients()`'s `@lru_cache(maxsize=1)`).
+  RESOLVED 2026-09-07 (issue #86, Section 5 of the new-assignment expansion
+  work): `get_k8s_clients(cluster_id)` is now `@lru_cache(maxsize=32)`, keyed
+  per cluster — one shared Cloud Run service correctly serves many clusters
+  concurrently with proven isolation (`mcp/tests/test_multi_cluster_isolation.py`'s
+  real concurrent-threading test). Adding a new on-prem cluster is now a
+  registry entry + Fleet registration, not a new deployment — see
+  `docs/connect-gateway-onprem.md`'s "Adding a second on-prem cluster" section.
 - **Rate limiting is per-process, not distributed.** Fine for
   `min_instance_count=0/max=3` single-tenant internal use
   (`cloudrun_mcp.tf`); would need Memorystore/Redis for a real distributed

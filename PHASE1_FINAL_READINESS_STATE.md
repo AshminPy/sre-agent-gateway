@@ -6,12 +6,22 @@ branch-only. Full evidence: `PHASE1_EVIDENCE_LOG.md` (append-only, this task's e
 the `2026-09-06 — PHASE 1 FINAL READINESS review branch` headers). This file is the live summary —
 update after every section, don't let it drift.
 
+**2026-09-08 note:** this file went stale for ~20 hours while a separate, later 12-section
+assignment ("correction and expansion" work) ran on this SAME branch — Sections 5-11 of that
+work fixed #86 (see row 2 below, corrected) and made several other real changes this file's
+other rows don't yet reflect (dynamic Connect Gateway, capability-based routing, causal-
+verification fixes, memory review lifecycle, model-portability/capacity fixes, CI/eval fixes).
+Full detail for all of that is in `PHASE1_EVIDENCE_LOG.md`'s 2026-09-07/08 entries. This file's
+remaining rows (3 onward) are being re-verified now as part of resuming THIS plan's own Step 1
+(re-establish baseline) — treat anything below not yet marked re-verified as of 2026-09-08 with
+appropriate caution until that pass completes.
+
 ## Section status (17 sections, per the user's plan)
 
 | # | Section | Status | Notes |
 |---|---|---|---|
 | 1 | Baseline (main HEAD, 1 GKE + 1 kind investigation) | **DONE** | Kind: `run_20260906_234504_hwck`/`_234710_tdzo`/`_234738_ynxp` (sre-lab). GKE: `run_20260907_000827_lqdb` (sre-test-cluster, project `sreagent-demo`), root_cause_confidence 1.0, investigation_completeness complete/1.0, zero errors. Fixture applied+deleted, cost hygiene preserved. Sequencing note: baseline ran on review-branch code (post-#246-fix), not pre-fix main — see evidence log. |
-| 2 | Fix #86 (multi-cluster correctness) | **DETERMINED — NO CODE FIX** | Confirmed real (5-finding breakdown from 2026-08-09 audit still accurate) but NOT currently exploitable — today's deployment is exactly 1 cluster per MCP type. A real fix is a major architecture redesign (per-cluster `mcp_url`, keyed client cache, per-project IAM) — triggers this task's own stop condition. Not fixed. Issue stays open, not touched further this task. |
+| 2 | Fix #86 (multi-cluster correctness) | **DONE 2026-09-07 — live-proven** | SUPERSEDES the "DETERMINED — NO CODE FIX" verdict below this table was originally written with. A separate, later assignment (the 12-section "correction and expansion" work, run on this SAME branch) implemented the real fix: `get_k8s_clients(cluster_id)` is `@lru_cache(maxsize=32)`, keyed per cluster, replacing the single global client. Proven via `mcp/tests/test_multi_cluster_isolation.py`'s real concurrent-threading test AND a live end-to-end proof (real pod created on `sre-lab`, correctly retrieved through the deployed service after migrating it off the old static-kubeconfig path). Full detail: `PHASE1_EVIDENCE_LOG.md`'s 2026-09-07 Section 5 entries. This closes Section 7 ("hard gate") item "#86 is fixed/live-validated if confirmed" for the resumed 50-run campaign below. |
 | 3 | Fix #246 (cluster-scoped tool args) | **DONE — live-proven** | See `PHASE1_EVIDENCE_LOG.md` 2026-09-06 entry. Committed `6315ed3`. Unit tests 11/11 pass, full suite 491/491 pass, ruff clean, deployed to test env, live-tested (list_nodes, describe_node x4, 5 normal namespaced tools) — zero errors, namespace present/absent exactly as designed. |
 | 4 | Verify #203 (CONTENT_AUTHZ / response guard) | **DONE** | Verified live, not re-implemented. Response guard deployed + actively blocking (real BLOCKED event 2026-09-06T19:28Z). Both `iap` and `model_armor` authz extensions confirmed `fail_open=false` in live state. Floor settings confirmed HIGH+INSPECT_ONLY (`inspect_and_block=false`). RESPONSE_BODY gap re-confirmed present (3-day log spot-check, zero events) — unchanged platform limitation. Fail-open alert present, never fired. Google Support case confirmed still draft/unfiled. See evidence log. |
 | 5 | Verify #202 (floor-setting block mode) | **DONE — determined NOT PERFORMED, left OPEN** | The diagnostic itself requires temporarily flipping global floor settings to block mode, which this task's own Section 5 rule forbids. Precondition unmet → correctly left open, not forced closed, not treated as a 50-run blocker (live config confirmed safe: inspect-only, no fabrication behavior observed in any run this session). PR #199's code fix (`_is_model_armor_blocked_result`) confirmed still present/wired at `agent/mcp_client.py:405,787`. See evidence log. |

@@ -96,14 +96,14 @@ Architecture](architecture/mcp-architecture.md).
   successful reads through it still aren't audit-logged (`DATA_READ` audit
   logging for `connectgateway.googleapis.com` is off) — these two gaps
   remain open.
-- Remaining known limitation: the custom MCP is still single-cluster-per-
-  deployment (`get_k8s_clients()`'s `@lru_cache(maxsize=1)`) — one Cloud Run
-  revision reaches exactly one non-GKE cluster at a time. What's still
-  needed is enumerated concretely in [GKE vs Non-GKE
-  Access](architecture/gke-vs-nongke.md) — converting the manual Fleet/RBAC
-  steps to Terraform, turning on `DATA_READ` audit logging, and (if a second
-  non-GKE cluster is needed) either a second Cloud Run service or per-request
-  context selection.
+- ~~Remaining known limitation: the custom MCP is still single-cluster-per-
+  deployment~~ — **RESOLVED 2026-09-07** (issue #86): `get_k8s_clients(cluster_id)`
+  is `@lru_cache(maxsize=32)`, keyed per cluster; one shared Cloud Run service
+  correctly serves many clusters with proven isolation. What's still needed is
+  enumerated concretely in [GKE vs Non-GKE Access](architecture/gke-vs-nongke.md)
+  — converting the manual Fleet/RBAC steps to Terraform and turning on
+  `DATA_READ` audit logging remain open; the multi-cluster limitation itself
+  does not.
 
 ## Related ADRs
 

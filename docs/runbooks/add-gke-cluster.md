@@ -39,4 +39,4 @@
 
 ---
 
-**Related pages:** [Cluster Routing](../architecture/cluster-routing.md) · [Adding a Non-GKE / On-Prem Cluster](add-non-gke-cluster.md)
+**Related pages:** [Cluster Routing](../architecture/cluster-routing.md) · [Connect Gateway (on-prem cluster setup, including "Adding a second on-prem cluster")](../connect-gateway-onprem.md)

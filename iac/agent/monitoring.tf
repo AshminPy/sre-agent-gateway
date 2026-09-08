@@ -305,6 +305,32 @@ resource "google_logging_metric" "mcp_model_armor_guard_init_failed" {
   depends_on = [google_project_service.apis]
 }
 
+# Section 11 (2026-09-08): closes a real gap the Section 5/6 dynamic Connect
+# Gateway migration introduced without a matching alert -- the generic
+# custom_mcp_failures alert below already catches any k8s_mcp tool failure,
+# but doesn't distinguish "the underlying Connect Gateway connection itself
+# failed" (RBAC/impersonation, SSL, network) from an ordinary Kubernetes-side
+# error (pod not found, etc.). Filter built from a REAL observed failure log
+# line (live-tested this session against the actual sre-lab cluster):
+# `ERROR sre-mcp:security.py:405 guarded tool=list_pods failed:
+# ...connectgateway.googleapis.com...` -- textPayload, same reasoning as the
+# metric above (plain logging.basicConfig output, severity always DEFAULT).
+# "failed:" scopes this to the real failure log line shape, not the (also
+# connectgateway.googleapis.com-mentioning) successful-connection INFO line.
+resource "google_logging_metric" "mcp_connect_gateway_failure" {
+  name    = "sre_agent/mcp_connect_gateway_failure"
+  project = var.project_a_id
+  filter  = "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"sre-k8s-mcp\" AND textPayload:\"guarded tool=\" AND textPayload:\"failed:\" AND textPayload:\"connectgateway.googleapis.com\""
+
+  metric_descriptor {
+    metric_kind  = "DELTA"
+    value_type   = "INT64"
+    display_name = "SRE Agent Custom MCP Connect Gateway Failure"
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
 # Total investigation wall-clock latency, from the per-run structured log
 # (jsonPayload.total_latency_s — rca_builder.py, measured against
 # investigation["started_at"]). Backs the excessive-latency alert.
@@ -498,15 +524,21 @@ resource "google_monitoring_alert_policy" "token_usage_warning" {
 # ── PRODUCTION-LAUNCH-PLAN.md Priority 10 — the 8 missing alerts implemented ────────
 #
 # 11 alerts were named as missing in the plan. 8 are added below — the 8 most
-# concrete/implementable given what the code can actually observe today. 3 are
-# deliberately SKIPPED, with the reason recorded here rather than silently dropped:
+# concrete/implementable given what the code can actually observe today.
+# Originally 3 were deliberately SKIPPED (reasons recorded here rather than
+# silently dropped); connect-gateway failures is no longer one of them as of
+# 2026-09-08 (Section 11) -- see google_monitoring_alert_policy.
+# mcp_connect_gateway_failure, added separately below. The remaining 2:
 #
 #   - PD webhook failures        — SKIPPED. No PagerDuty integration code exists yet
 #     (Priority 2 is not started — confirmed by `grep -ri pagerduty agent/` finding
 #     nothing but a docstring mention). There is no webhook to fail.
-#   - connect-gateway failures   — SKIPPED. No GKE Fleet / Connect Gateway code exists
-#     yet (Priority 3 is not started — confirmed: no gkehub/Connect-Gateway resources
-#     in iac/, mcp_client.py only reaches GKE directly + the custom Cloud Run MCP).
+#   - connect-gateway failures   — NO LONGER SKIPPED as of 2026-09-08 (Section 11):
+#     this comment previously said "no GKE Fleet / Connect Gateway code exists yet,"
+#     which became false on 2026-09-07 (issue #86 / dynamic Connect Gateway
+#     migration, see mcp/server.py's get_k8s_clients()). See
+#     google_monitoring_alert_policy.mcp_connect_gateway_failure below for the
+#     real alert this stale gap is now closed by.
 #   - agent-gateway failures     — SKIPPED. agent_gateway.tf's IAP authz extension runs
 #     in DRY_RUN (logs decisions, never blocks — see agent_gateway.tf's comment above
 #     google_network_services_authz_extension.iap), and the gateway does not emit an
@@ -802,6 +834,42 @@ resource "google_monitoring_alert_policy" "mcp_model_armor_guard_init_failed" {
   notification_channels = [google_monitoring_notification_channel.email_oncall.name]
   documentation {
     content   = "The custom MCP's Model Armor response guard failed to construct its client at process startup -- response sanitization is PERMANENTLY disabled for this Cloud Run revision until redeployed/restarted, not just for one call. Check MODEL_ARMOR_RESPONSE_TEMPLATE and IAM permissions, then redeploy.\nQuery: `resource.type=\"cloud_run_revision\" resource.labels.service_name=\"sre-k8s-mcp\" textPayload:\"model_armor_guard_init_failed\"`"
+    mime_type = "text/markdown"
+  }
+  depends_on = [time_sleep.wait_for_metrics]
+}
+
+# Section 11 (2026-09-08): distinct from custom_mcp_failures below -- this
+# specifically catches the underlying Connect Gateway connection itself
+# failing (RBAC/impersonation rejection, TLS, network), separate from an
+# ordinary Kubernetes-side error the same generic alert would also catch.
+# Real, disclosed limitation of the underlying metric (not hidden): this
+# fires on ANY Connect-Gateway-touching failure, including one caused by a
+# caller's own identity lacking cluster RBAC (e.g. a human operator testing
+# manually, as opposed to the deployed service's own identity) -- it cannot
+# distinguish "the platform is broken" from "this specific caller isn't
+# authorized," both look identical in the log text. Treat a single
+# occurrence as "investigate," not "the whole path is down."
+resource "google_monitoring_alert_policy" "mcp_connect_gateway_failure" {
+  project      = var.project_a_id
+  display_name = "SRE Agent — Custom MCP Connect Gateway Failure"
+  combiner     = "OR"
+  conditions {
+    display_name = "Connect Gateway connection failure > 0 in 5 minutes"
+    condition_threshold {
+      filter          = "metric.type=\"logging.googleapis.com/user/sre_agent/mcp_connect_gateway_failure\" AND resource.type=\"cloud_run_revision\""
+      duration        = "0s"
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      aggregations {
+        alignment_period   = "300s"
+        per_series_aligner = "ALIGN_SUM"
+      }
+    }
+  }
+  notification_channels = [google_monitoring_notification_channel.email_oncall.name]
+  documentation {
+    content   = "A custom-MCP tool call failed with an error that mentions connectgateway.googleapis.com -- likely an RBAC/impersonation rejection, TLS issue, or network problem reaching an on-prem cluster via Connect Gateway, distinct from an ordinary Kubernetes-side error. Check the exact error text before assuming platform-wide breakage -- this also fires for a caller identity that simply isn't authorized (e.g. manual testing), not only for real outages.\nQuery: `resource.type=\"cloud_run_revision\" resource.labels.service_name=\"sre-k8s-mcp\" textPayload:\"connectgateway.googleapis.com\" textPayload:\"failed:\"`"
     mime_type = "text/markdown"
   }
   depends_on = [time_sleep.wait_for_metrics]

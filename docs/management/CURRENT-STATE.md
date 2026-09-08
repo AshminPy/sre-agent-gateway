@@ -53,11 +53,14 @@ requirement:
   fix fails live there with a real "URL already in use by another service" error, a
   previously-unknown platform constraint. Small in scope, but now blocked on
   understanding that constraint before a second attempt — see §10 for the exact error.
-- **#86 — Multi-cluster support is single-cluster in disguise.** Real correctness bug, not
-  just a missing feature: for anything other than the default cluster, a single
-  `@lru_cache(maxsize=1)` K8s client and single-scalar IAM mean the agent silently
-  misbehaves. Secondary concern: overly broad Agent Engine IAM (project-wide
-  `principalSet`). Large scope — a genuine redesign, not a quick fix.
+- **#86 — RESOLVED 2026-09-07.** Multi-cluster support was single-cluster in disguise
+  (a single `@lru_cache(maxsize=1)` K8s client). Fixed: `get_k8s_clients(cluster_id)`
+  is now `@lru_cache(maxsize=32)`, keyed per cluster, with proven concurrent-isolation
+  (`mcp/tests/test_multi_cluster_isolation.py`'s real concurrent-threading test) and a
+  live end-to-end proof (real pod created on the real cluster, correctly retrieved
+  through the deployed service). Secondary concern (overly broad Agent Engine IAM,
+  project-wide `principalSet`) remains open, tracked separately — not part of what
+  #86 itself reported.
 - **#35 → downgraded, see NICE TO HAVE.** (Verified: the affected script is emergency-only,
   not auto-invoked in CI — lower blast radius than the title implies. See M017-style
   re-check below.)

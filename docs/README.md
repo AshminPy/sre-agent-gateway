@@ -68,6 +68,8 @@
 | [Adding a Non-GKE / On-Prem Cluster](../archive/SUPERSEDED_2026-09-07_add-non-gke-cluster.md) | ARCHIVED 2026-09-07 — superseded by the live production build, see [GKE vs Non-GKE](architecture/gke-vs-nongke.md) |
 | [Adding a New MCP Server](runbooks/add-mcp-server.md) | Template for future sources (Elastic, Prometheus, etc.) |
 | [Updating Existing MCP Tools](runbooks/update-mcp-tool.md) | Add/remove/rename/change-schema procedures |
+| [Operate (Day-2 Operations)](runbooks/operate.md) | Invoke, inspect logs/metrics/traces/evidence, diagnose, review/promote/revoke memory, roll back — one coherent entry point |
+| [Switch LLM/Model](runbooks/switch-llm-model.md) | Supported profiles, configuration, validation, rollback, cross-vendor limitations |
 
 ### Governance
 | Page | Covers |
