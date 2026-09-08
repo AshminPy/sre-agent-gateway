@@ -108,6 +108,16 @@ resource "google_cloud_run_v2_service" "mcp" {
         name  = "MODEL_ARMOR_RESPONSE_TEMPLATE"
         value = google_model_armor_template.sre_agent_response.name
       }
+      # Section 8 correction (2026-09-08): this deployment REQUIRES response
+      # sanitization -- an unexpectedly empty MODEL_ARMOR_RESPONSE_TEMPLATE here
+      # must be treated as a degraded/alertable failure by response_guard.py,
+      # never as the intentional local/dev off-switch (that off-switch's default
+      # is "false", read only when this env var is entirely absent, e.g. running
+      # mcp/server.py locally or under pytest).
+      env {
+        name  = "MODEL_ARMOR_RESPONSE_GUARD_REQUIRED"
+        value = "true"
+      }
     }
   }
 

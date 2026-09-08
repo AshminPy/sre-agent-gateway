@@ -54,12 +54,26 @@ class _FakeClient:
 def _guard_not_configured() -> ModelArmorResponseGuard:
     guard = ModelArmorResponseGuard.__new__(ModelArmorResponseGuard)
     guard._client = None
+    guard._degraded = False
     return guard
 
 
 def _guard_with_client(client) -> ModelArmorResponseGuard:
     guard = ModelArmorResponseGuard.__new__(ModelArmorResponseGuard)
     guard._client = client
+    guard._degraded = False
+    return guard
+
+
+def _guard_degraded() -> ModelArmorResponseGuard:
+    """Section 8 correction (2026-09-08): a guard in the collapsed "not actually
+    checking anything, but must say so" state -- reached either by a required
+    deployment with a missing template, or a template that failed to construct
+    a client. Both origins produce identical on_call_tool behavior by design;
+    see response_guard.py's _degraded docstring for why that's intentional."""
+    guard = ModelArmorResponseGuard.__new__(ModelArmorResponseGuard)
+    guard._client = None
+    guard._degraded = True
     return guard
 
 
@@ -184,8 +198,88 @@ def test_init_failure_logs_alertable_error_not_a_warning(monkeypatch, caplog):
         guard = ModelArmorResponseGuard()
 
     assert guard._client is None
+    assert guard._degraded is True
     assert any("model_armor_guard_init_failed" in r.message for r in caplog.records)
     assert all(r.levelname == "ERROR" for r in caplog.records if "model_armor_guard_init_failed" in r.message)
+
+
+def test_required_but_template_missing_is_alertable_error_not_info(monkeypatch, caplog):
+    """Section 8 correction (2026-09-08): the gap the first fix missed. A deployment
+    that REQUIRES the guard (MODEL_ARMOR_RESPONSE_GUARD_REQUIRED=true) but has no
+    template at all must be treated the same as an init failure -- ERROR level,
+    same alertable log string, guard marked degraded. Must NOT log a plain INFO
+    and silently pass through, the way the non-required (local/dev) case correctly
+    does."""
+    import response_guard
+    monkeypatch.setattr(response_guard, "MODEL_ARMOR_RESPONSE_TEMPLATE", "")
+    monkeypatch.setattr(response_guard, "MODEL_ARMOR_RESPONSE_GUARD_REQUIRED", True)
+
+    with caplog.at_level("ERROR", logger="sre-mcp.response_guard"):
+        guard = ModelArmorResponseGuard()
+
+    assert guard._client is None
+    assert guard._degraded is True
+    assert any("model_armor_guard_init_failed" in r.message for r in caplog.records)
+    assert all(r.levelname == "ERROR" for r in caplog.records if "model_armor_guard_init_failed" in r.message)
+
+
+def test_not_required_and_template_missing_stays_intentional_passthrough(monkeypatch, caplog):
+    """The other half of the same fork: required=false + missing template is the
+    legitimate local/dev off-switch, not a failure -- must stay INFO, not ERROR,
+    and must NOT set _degraded (regression guard so the fix above doesn't
+    over-correct into flagging the intentional case too)."""
+    import response_guard
+    monkeypatch.setattr(response_guard, "MODEL_ARMOR_RESPONSE_TEMPLATE", "")
+    monkeypatch.setattr(response_guard, "MODEL_ARMOR_RESPONSE_GUARD_REQUIRED", False)
+
+    with caplog.at_level("INFO", logger="sre-mcp.response_guard"):
+        guard = ModelArmorResponseGuard()
+
+    assert guard._client is None
+    assert guard._degraded is False
+    assert not any(r.levelname == "ERROR" for r in caplog.records)
+
+
+def test_required_but_template_missing_marks_every_result_uninspected():
+    """The actual behavioral fix, not just the log level: on_call_tool must mark
+    results in the required-but-missing state, exactly like a live sanitize
+    failure -- this is the case the original _init_failed-only design left open."""
+    guard = _guard_degraded()
+    original = _make_result("pod is Running, 0 restarts")
+
+    async def call_next(ctx):
+        return original
+
+    async def _run():
+        return await guard.on_call_tool(_make_context(), call_next)
+
+    result = asyncio.run(_run())
+    assert result is not original
+    assert UNINSPECTED_MARKER in _extract_text(result) or '"_uninspected": true' in _extract_text(result)
+
+
+def test_init_failure_marks_every_subsequent_result_uninspected(monkeypatch):
+    """Covers 'repeated calls after init exception' explicitly: a guard that failed
+    to construct must mark EVERY tool result for the rest of its lifetime, not just
+    the first one -- proves there is no one-shot/reset behavior hiding in on_call_tool."""
+    import json as _json
+    import response_guard
+    monkeypatch.setattr(response_guard, "MODEL_ARMOR_RESPONSE_TEMPLATE", "projects/x/locations/us-central1/templates/y")
+    monkeypatch.setattr("google.cloud.modelarmor_v1.ModelArmorClient", lambda **k: (_ for _ in ()).throw(RuntimeError("permission denied")))
+
+    guard = ModelArmorResponseGuard()
+    assert guard._degraded is True
+
+    async def call_next(ctx):
+        return ToolResult(content=[mt.TextContent(type="text", text=_json.dumps({"pods": []}))])
+
+    async def _run():
+        return await guard.on_call_tool(_make_context(), call_next)
+
+    for _ in range(3):
+        result = asyncio.run(_run())
+        parsed = _json.loads(result.content[0].text)
+        assert parsed["_uninspected"] is True
 
 
 def test_fail_open_marks_real_json_tool_result_without_corrupting_it():

@@ -287,10 +287,15 @@ def evidence_extractor(state: AgentState) -> dict:
         "region": ctx.get("cluster_region", ""),
         "collected_at": collected_at,
         # Section 8 (2026-09-08): "inspected" | "fail_open" -- gates memory promotion,
-        # see agent/main.py's _mb_store call site. Never "not_configured" here; that
-        # case (no MODEL_ARMOR_RESPONSE_TEMPLATE at all) is indistinguishable from
-        # "inspected" at this layer by design -- it's covered separately by the
-        # model_armor_guard_init_failed alert, not per-evidence tracking.
+        # see agent/main.py's _mb_store call site. "not_configured" (no
+        # MODEL_ARMOR_RESPONSE_TEMPLATE, guard not required for this deployment)
+        # is indistinguishable from "inspected" here by design -- that's an
+        # intentional local/dev off-switch, not a failure. Corrected 2026-09-08:
+        # this used to ALSO swallow "required for this deployment but the
+        # template is unexpectedly missing" into the same silent "inspected"
+        # bucket -- mcp/response_guard.py's MODEL_ARMOR_RESPONSE_GUARD_REQUIRED
+        # now makes that case produce "fail_open" here too, same as a live
+        # per-call sanitize failure.
         "inspection_status": inspection_status,
         "resource_type": resource_type,
         "resource_id": resource_id,

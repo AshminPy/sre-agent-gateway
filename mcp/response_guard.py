@@ -39,6 +39,16 @@ log = logging.getLogger("sre-mcp.response_guard")
 
 REGION = os.environ.get("REGION", "us-central1")
 MODEL_ARMOR_RESPONSE_TEMPLATE = os.environ.get("MODEL_ARMOR_RESPONSE_TEMPLATE", "")
+# Section 8 correction (2026-09-08): distinguishes "no template configured, and
+# that's fine" (local/dev, this var absent by default) from "no template
+# configured, but this deployment REQUIRES one" (the deployed custom MCP
+# service — iac/agent/cloudrun_mcp.tf always sets this to "true"). Without
+# this, an unexpectedly-empty MODEL_ARMOR_RESPONSE_TEMPLATE in production was
+# indistinguishable from the intentional local/dev off-switch, and every tool
+# result would go out silently unmarked and read downstream as "inspected".
+MODEL_ARMOR_RESPONSE_GUARD_REQUIRED = (
+    os.environ.get("MODEL_ARMOR_RESPONSE_GUARD_REQUIRED", "false").lower() == "true"
+)
 
 
 # Section 8 (2026-09-08): kept in sync with agent/nodes/evidence_extractor.py's own
@@ -123,8 +133,30 @@ class ModelArmorResponseGuard(Middleware):
 
     def __init__(self):
         self._client = None
+        # Section 8 correction (2026-09-08): ONE flag for "sanitization is not
+        # actually happening right now, and every result must say so" -- covers
+        # both ways that can be true: a configured client that failed to
+        # construct (below), and a deployment that REQUIRES the guard but has no
+        # template at all (right below). Deliberately not a larger state
+        # machine: on_call_tool only ever needs a yes/no answer to "was this
+        # response actually checked".
+        self._degraded = False
         if not MODEL_ARMOR_RESPONSE_TEMPLATE:
-            log.info("MODEL_ARMOR_RESPONSE_TEMPLATE not set — response sanitization disabled")
+            if MODEL_ARMOR_RESPONSE_GUARD_REQUIRED:
+                # Reuses the EXACT existing "model_armor_guard_init_failed" log
+                # string/metric/alert (iac/agent/monitoring.tf) rather than adding
+                # a new metric+alert pair -- an operator who sees this alert takes
+                # the same action either way (fix config, redeploy), so it is the
+                # same alertable condition, not a distinct one.
+                log.error(
+                    "model_armor_guard_init_failed event=required_template_missing "
+                    "MODEL_ARMOR_RESPONSE_GUARD_REQUIRED=true but "
+                    "MODEL_ARMOR_RESPONSE_TEMPLATE is unset — response sanitization "
+                    "PERMANENTLY disabled for this process/revision"
+                )
+                self._degraded = True
+            else:
+                log.info("MODEL_ARMOR_RESPONSE_TEMPLATE not set — response sanitization disabled")
             return
         try:
             from google.api_core.client_options import ClientOptions
@@ -150,6 +182,7 @@ class ModelArmorResponseGuard(Middleware):
                 "response sanitization PERMANENTLY disabled for this process/revision",
                 exc,
             )
+            self._degraded = True
 
     async def on_call_tool(
         self,
@@ -158,8 +191,16 @@ class ModelArmorResponseGuard(Middleware):
     ) -> ToolResult:
         result = await call_next(context)
 
+        if self._degraded:
+            # Sanitization is required for this deployment (or was configured)
+            # but is not actually happening -- every result must be marked, not
+            # just the ones that hit a live per-call exception below.
+            return _mark_uninspected(result)
+
         if not self._client:
-            # Not configured — behave exactly as if this middleware were absent.
+            # Not configured, and not required for this deployment -- behave
+            # exactly as if this middleware were absent (intentional local/dev
+            # off-switch, not a failure).
             return result
 
         text = _extract_text(result)
