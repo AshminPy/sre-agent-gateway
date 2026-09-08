@@ -766,3 +766,89 @@ a documented legacy fallback per the code's own comments; deleting them is a sep
 smaller cleanup, not done in this entry). The known agent/MCP version-skew risk (above)
 remains real until the agent is redeployed with today's `cluster_id`-sending code — not
 yet done, disclosed, not hidden.
+
+---
+## 2026-09-08 — Section 7: causal verification and remediation improvements
+
+**Investigation method:** dispatched a fresh-context Explore agent to answer 10 concrete
+factual questions against agent/nodes/task_planner.py, task_evaluator.py,
+evidence_extractor.py, rca_builder.py, agent/confidence/*, prompts.py, main.py — each
+question required file:line evidence, no speculation. Independently cross-checked its
+findings against a pre-existing internal review
+(docs/management/confidence-genericity-review-2026-08-28.md, written 2026-08-28/29 before
+this assignment existed) which had already root-caused two of the same gaps and explicitly
+deferred them as backlog ("Phase B/C," "design only, not implemented"). Two independent
+investigations converging on the same real gaps is strong evidence they're real, not
+artifacts of one investigation's framing.
+
+**Verified already fixed, not re-implemented:** the review doc's item 3 ("the
+deterministic-gap → planner disconnect") — task_planner.py already reads
+`investigation["completeness"]["missing_required_domains"]` and TASK_PLANNER_USER already
+has the exact "Deterministically confirmed missing evidence domain(s)" line the review
+proposed. Confirmed via direct grep before doing any work, avoiding duplicate effort.
+
+**Fix 1 — temporal-relevance dead code (most material finding).** `incident_time_context`
+in rca_builder.py was a correctly-designed dict that was NEVER populated — grepped the
+entire agent/ tree for `incident_reported_at`/`incident_start`/`incident_end` and found
+exactly 3 occurrences, all `.get()` reads in rca_builder.py itself, nothing anywhere ever
+set them. Consequence, traced through scorer.py's `derive_outcome()`: `temporal_relevance
+== "relevant"` is a hard gate for the CONFIRMED outcome, and with `incident_time_context`
+always empty, `verify_primary_claim()` forces `temporal_relevance = "unknown"`
+unconditionally (verifier.py:496-497) — **CONFIRMED was structurally unreachable in
+production**, not just unlikely. Fixed by threading an optional caller-supplied incident
+time from `agent/main.py`'s `_prepare_investigation_envelope` through
+`input_normalizer.py` into `resolved_context`; defaults to the request's own receipt time
+when absent, explicitly labeled "(approximate — request receipt time, not
+caller-confirmed)" rather than presented as fact. Added one line to VERIFIER_SYSTEM
+telling the model how to weight an approximate anchor differently from a real one.
+
+**Fix 2 — "no human review required" wording bug (assignment explicitly flagged this).**
+Found the exact strings: `agent/main.py:117` and `:221`. The `:221` instance sat two lines
+above `status_line = "...AWAITING HUMAN ACTION"` in the SAME rendered report — a direct,
+visible self-contradiction. Corrected the text to reflect what `requires_human_review`
+actually means (diagnosis doesn't need re-verification) vs. what it doesn't mean (a human
+is never needed to act — this agent is read-only by design, confirmed via grep: no
+create/patch/delete/exec call exists anywhere in the reasoning path). Machine fields
+unchanged for any dashboard already consuming them, per the assignment's explicit
+instruction to preserve backward compatibility.
+
+**Fix 3 — confidence rendered without an uncalibrated disclaimer.** The code is careful
+internally (`POLICY_VERSION = "1.0.0-uncalibrated"`, multiple docstrings saying "never a
+probability") but the human-facing report rendered a bare `"NN%"` with zero caveat — added
+one inline.
+
+**Fix 4 — remediation had zero structure (assignment's Remediation requirements section).**
+`suggested_remediation` was `["<step 1>", "<step 2>"]` — no link to the supported cause, no
+prerequisites/scope/benefit/risk/rollback anywhere in the schema (confirmed via grep: zero
+hits for `rollback`/`prerequisite`/`affected_scope`/`expected_benefit` in the whole
+pipeline). New `RemediationItem` dataclass + `normalize_remediation_items()`
+(`agent/confidence/claim_builder.py`) deterministically computes `tied_to_primary_cause`/
+`item_type` from whether `primary_claim` is actually non-None — never trusts the model's
+own self-label, matching this codebase's existing pattern for `grounding_status`/
+`support_strength`. Added a bounded, precise resource-identifier check (only fires on an
+explicit "pod X"/"deployment X" mention that matches nothing collected — deliberately
+narrow to avoid false-positiving on ordinary hyphenated English words like "read-only").
+Bumped `rca_builder`'s `max_tokens` 3072→4096 preemptively, since this exact function has a
+documented prior MAX_TOKENS truncation bug (same design doc, item 7) and the new schema is
+meaningfully more verbose per item.
+
+**Explicitly deferred, disclosed not hidden:** full differential-diagnosis reasoning
+(forming 2+ competing hypotheses and picking evidence that discriminates between them,
+per the target workflow's step 3) remains a real, larger gap in `task_planner.py`'s
+evidence-targeting logic. The narrower already-scoped fix (targeting the deterministic
+missing-domain list) works; the broader multi-hypothesis-driven tool selection would be a
+meaningfully larger, riskier change to a pipeline with passing golden-case evals, and was
+judged out of scope for this pass without a dedicated design review — not silently skipped,
+stated here plainly.
+
+**Regression found and fixed during verification (not hidden):** the new wall-clock-based
+incident-time default broke `tests/test_main_stream_query.py`'s "same payload produces the
+same envelope" invariant — two separate calls now legitimately get two different receipt
+times. Fixed by excluding `reported_at` from the strict comparison, following the exact
+precedent that same test file already established for timestamp/latency fields elsewhere,
+while still asserting the structural invariant (`reported_at_approximate` agreement, and
+every other field) holds.
+
+**Verification:** ruff clean. Full suite: 548 passed, 0 failed (up from 532; +15 new tests,
+1 existing assertion updated to match the new structured shape by design, 1 existing test
+fixed for the real regression above). Pushed: `origin/phase1-final-readiness-review`.
