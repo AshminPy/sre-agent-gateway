@@ -251,14 +251,17 @@ def _build_rca_report(
             ev_descriptions.setdefault(ref, []).append(trace_str)
 
     memory_ctx = payload.get("memory_context", "") or ""
-    # Three distinct states, three distinct lines. "No prior similar incidents
-    # found" is a factual claim about the memory store and is only true when
-    # Memory Bank actually answered.
+    # Four distinct states, four distinct lines (Section 8, 2026-09-08, added the
+    # pending-review state). "No prior similar incidents found" is a factual claim
+    # about the memory store and is only true when Memory Bank actually answered
+    # AND had zero records -- not when records exist but are unreviewed.
     if memory_ctx == MEMORY_RECALL_UNAVAILABLE:
         memory_note = (
             "UNKNOWN — Memory Bank could not be reached, so prior incidents were "
             "NOT checked (this is not the same as 'none found')"
         )
+    elif "pending human review" in memory_ctx:
+        memory_note = memory_ctx  # already a complete, honest sentence -- see _mb_recall()
     elif memory_ctx:
         memory_note = (
             f"Prior context recalled ({len(memory_ctx)} chars) — agent used past investigations"
@@ -1339,12 +1342,22 @@ class SREAgent:
     # ── Memory helpers ────────────────────────────────────────────────
 
     @classmethod
-    def _mb_store(cls, cluster: str, namespace: str, pod: str, root_cause: str, confidence: float, incident_type: str = "") -> None:
+    def _mb_store(cls, cluster: str, namespace: str, pod: str, root_cause: str, confidence: float, incident_type: str = "", run_id: str = "") -> None:
         """Write investigation RCA to Vertex AI Memory Bank (persistent across sessions).
 
-        Each memory stores: cluster, namespace, pod, incident_type, root_cause, confidence, and
-        status=pending_review so SREs can validate and delete inaccurate memories
-        (prevents RCA poisoning). Scoped by cluster+namespace for precise retrieval.
+        Each memory stores: cluster, namespace, pod, incident_type, root_cause, confidence,
+        status, run_id, and policy_version. Scoped by cluster+namespace for precise retrieval.
+
+        Section 8 (2026-09-08): status=pending_review is now a REAL, persisted, parseable
+        field -- ADR-010 documented this as "DECIDED design intent — NOT YET IMPLEMENTED...
+        do not represent this as a built control" before this fix; _mb_recall() below now
+        actually filters on it, closing that gap. run_id/policy_version are the "source
+        run/evidence references, model/policy version" the assignment requires -- a reviewer
+        can trace a memory back to its exact originating investigation and GCS evidence
+        (gs://<evidence-bucket>/<run_id>/...). Encoded into the same fact-string key=value
+        format _parse_fact() already parses (not the SDK's separate `metadata` field) --
+        this is the codebase's own already-proven, already-tested pattern; a new,
+        unverified SDK code path is not justified for what a proven one already does.
 
         Dedup key: pod + incident_type. Stable identifiers from K8s — not LLM text — so
         the same scenario is never written twice regardless of how Gemini phrases the RCA.
@@ -1365,18 +1378,22 @@ class SREAgent:
                     log.info("Memory Bank: duplicate RCA skipped for %s/%s/%s (%s)", cluster, namespace, pod, incident_type)
                     return
 
+            from agent.confidence.policy import POLICY
             fact = (
                 f"cluster={cluster} namespace={namespace} pod={pod} "
                 f"incident_type={incident_type} "
                 f"root_cause={root_cause[:300]} "
-                f"confidence={confidence:.2f}"
+                f"confidence={confidence:.2f} "
+                f"status=pending_review "
+                f"run_id={run_id} "
+                f"policy_version={POLICY.version}"
             )
             cls._mb_client.agent_engines.memories.create(
                 name=MEMORY_BANK_RESOURCE,
                 fact=fact,
                 scope={"cluster": cluster, "namespace": namespace},
             )
-            log.info("Memory Bank: stored RCA for %s/%s (confidence=%.2f)", cluster, namespace, confidence)
+            log.info("Memory Bank: stored RCA for %s/%s (confidence=%.2f, status=pending_review, run_id=%s)", cluster, namespace, confidence, run_id)
         except Exception as exc:
             log.warning("Memory Bank store failed (%s) — skipped", exc)
 
@@ -1420,7 +1437,34 @@ class SREAgent:
                 # The one honest empty: Memory Bank answered, and had nothing.
                 return ""
 
-            recalled = memories[:3]
+            # Section 8 (2026-09-08): ADR-010 documented this exact gate as "decided but
+            # not built" -- every memory used to be recalled the instant it existed,
+            # regardless of review state. Only status=approved memories are now used as
+            # trusted context; pending_review/rejected/revoked are excluded. A memory
+            # written before this fix has no status= field at all (_parse_fact returns
+            # None for it) and is correctly excluded too -- nothing has ever been through
+            # a real approval step, so nothing pre-existing is grandfathered in as
+            # trusted. See scripts/review_memory.py for the review operation.
+            approved = [m for m in memories if cls._parse_fact(m.memory.fact).get("status") == "approved"]
+            if not approved:
+                # Same false-claim class the MEMORY_RECALL_UNAVAILABLE sentinel already
+                # exists to prevent: returning "" here would render downstream as "No
+                # prior similar incidents found" (main.py's memory_note), which is FALSE
+                # when N records exist and are simply unreviewed -- not the same as zero
+                # records ever having existed. A short, honest, non-empty note instead;
+                # still framed as a caveat, never as usable context (prompts already
+                # treat all memory as "hint only, do not cite as evidence").
+                log.info(
+                    "Memory Bank: %d memories exist for %s/%s but none are status=approved "
+                    "-- excluded from recall, not treated as 'no prior incidents'",
+                    len(memories), cluster, namespace,
+                )
+                return (
+                    f"({len(memories)} prior incident record(s) exist for this cluster/namespace "
+                    "but are pending human review — not yet available as validated context)"
+                )
+
+            recalled = approved[:3]
             lines = [f"  {m.memory.fact}" for m in recalled]
             log.info("Memory Bank: recalled %d memories for %s/%s", len(lines), cluster, namespace)
 
@@ -1612,7 +1656,7 @@ class SREAgent:
                     cluster, namespace, pod,
                 )
             elif confidence_band == "auto":
-                cls._mb_store(cluster, namespace, pod, root_cause, confidence, incident_type)
+                cls._mb_store(cluster, namespace, pod, root_cause, confidence, incident_type, result.get("run_id", ""))
             else:
                 log.info(
                     "Memory Bank write skipped — confidence_band=%s (only 'auto' writes persist)",

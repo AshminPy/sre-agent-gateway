@@ -1,6 +1,6 @@
 # ADR-010: Human approval required before a memory write becomes "trusted"
 
-Status: DECIDED design intent — NOT YET IMPLEMENTED. Fields exist for this purpose; nothing reads them today. Do not represent this as a built control.
+Status: IMPLEMENTED 2026-09-08 (Section 8 of the new-assignment expansion work). `agent/main.py`'s `_mb_store()` now writes `status=pending_review` (plus `run_id`/`policy_version`) into every memory's fact string; `_mb_recall()` only returns `status=approved` memories to future investigations. The review operation is `scripts/review_memory.py` (list/approve/reject/revoke — a CLI, not a new UI, using the Memory Bank SDK's public `get()`/`delete()`/`create()`, since no public `update()` exists). See `PHASE1_EVIDENCE_LOG.md`'s Section 8 entry for verification evidence. The rest of this document (context/decision/alternatives/reasoning) describes the design that was actually built — kept as-is since it's still accurate, not just historical.
 
 ## Context
 

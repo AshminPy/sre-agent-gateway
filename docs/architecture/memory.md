@@ -1,7 +1,7 @@
 # Memory
 
-> **Implementation Status:** IMPLEMENTED (write gate + recall) — human-approval review workflow for memory is PLANNED, not built
-> **Last Verified:** 2026-08-08 — `agent/main.py:620-980`
+> **Implementation Status:** IMPLEMENTED — write gate, recall, AND human-approval review workflow (`status=pending_review`/`approved`/`rejected`/`revoked`, `scripts/review_memory.py`) all built 2026-09-08, see ADR-010.
+> **Last Verified:** 2026-09-08 — `agent/main.py` (`_mb_store`, `_mb_recall`), `scripts/review_memory.py`
 > **Source of Truth:** `agent/main.py:747-838` (`_mb_store`, `_mb_recall`)
 > **Owner:** SRE Agent platform team.
 
@@ -49,10 +49,10 @@ The recalled summary becomes part of the `rca_builder` node's prompt context —
 
 ## Review lifecycle / deletion / retention / ownership
 
-- **Review**: PLANNED, not built (see above) — currently no human-approval step exists between a memory being written and it being recalled into future investigations.
-- **Deletion**: not automated in this codebase — an SRE reviewing/deleting a memory would need to do so via the Vertex AI Memory Bank console/API directly, per `agent/.env.example`'s own guidance.
+- **Review**: BUILT (2026-09-08, see ADR-010) — every memory is written `status=pending_review` and is excluded from `_mb_recall()` until an SRE runs `scripts/review_memory.py approve --name <memory name>`. `reject`/`revoke` are also supported; all three are auditable (`reviewed_by`, optional `reason` persisted in the fact string).
+- **Deletion**: not automated as a *deletion* — the review script's `reject`/`revoke` commands mark a memory permanently excluded from recall (equivalent in effect), but the underlying record is delete-then-recreated with the new status, not erased outright. A true hard-delete still requires the Vertex AI Memory Bank console/API directly.
 - **Retention**: not explicitly configured in this repo's Terraform (Memory Bank retention is a Vertex AI platform-level setting) — **STATUS: UNKNOWN**, verify directly against the live Memory Bank resource if retention needs to be documented precisely.
-- **Ownership**: SRE Agent platform team owns the write-gate logic; the Run/Ops team is the intended reviewer of memory content once that review workflow is built.
+- **Ownership**: SRE Agent platform team owns the write-gate/review-script logic; the Run/Ops team is the intended reviewer of memory content using `scripts/review_memory.py`.
 
 ## Fallback behavior when Memory Bank is unavailable/unset
 
