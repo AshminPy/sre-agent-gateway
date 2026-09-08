@@ -688,3 +688,81 @@ legitimately changed (now mentions both fields, not just `kube_context`).
 against a real second on-prem cluster — none exists in this environment. It is unit/mock
 -tested only. `sre-lab` was deliberately NOT migrated to it. Live validation is real work
 for whoever onboards the next actual on-prem cluster, not something proven here.
+
+---
+## 2026-09-07 — sre-lab migrated to dynamic Connect Gateway + live end-to-end proof
+
+**Trigger:** you confirmed the target bar explicitly ("plug and play... without storing
+any static kubeconfig credentials anywhere") and, after reviewing the compatibility risk
+and backup plan, approved migrating `sre-lab` itself and live-verifying — not just
+building the mechanism.
+
+**Deployed in two separate, independently-verified steps** (not one big change):
+
+**Step 1 — new image, `sre-lab` still on old path (regression check).** Built
+`sre-k8s-mcp:4b4c2ae52faa3cd5897a16abdb2923fa25298be6` via `gcloud builds submit` (build
+`6d37611c`, SUCCESS). Backed up pre-apply state first: live image was
+`...:7624897239d597c3b6e26bd1e38ba32fe55be3ac` (revision `sre-k8s-mcp-00035-9jp`), live
+env vars had NO `CLUSTER_CONFIG_BUCKET` at all (confirms Section 5's registry mechanism
+had never actually gone live before today — the "already-live-validated sre-lab
+connection" everyone (including me) referenced all week was the OLD single-global-context
+mechanism, not the registry). `clusters.json` pre-apply backed up to
+`/tmp/phase1_readiness/clusters_json_backup_pre_migration.json`. Applied via `terraform
+apply` in `iac/agent`: `1 added, 3 changed, 0 destroyed` (new IAM binding, new image, new
+env var). New revision `sre-k8s-mcp-00036-mrx` came up `Ready: True`, clean FastMCP
+startup in logs, no exceptions.
+
+**Compatibility risk found and disclosed before applying**: the live agent (reasoning
+engine, last updated 2026-09-06T23:41 UTC) predates this morning's `cluster_id`
+-enforcement commit (`1ad31d2`, 2026-09-07T11:00 UTC) — it does not send `cluster_id` on
+custom-MCP calls. Impact scoped and accepted: GKE investigations unaffected (separate
+Google-managed gke_remote_mcp path); only sre-lab/custom-MCP calls, or a rare GKE-Remote-
+MCP-fails-over-to-custom-MCP case, would be rejected until the agent is also redeployed —
+acceptable on this personal test project with no real traffic. One-command rollback
+prepared and kept ready (full image + env var revert via `gcloud run services update`),
+not needed.
+
+**Live verification of step 1**: granted my own account temporary, resource-scoped
+`roles/run.invoker` on just this Cloud Run service (least-privilege, immediately revoked
+after testing). `gcloud run services proxy` → `GET /readyz` → `{"ready":true,
+"clusters_registered":2}` — first real proof the registry mechanism works live at all.
+
+**Step 2 — migrate sre-lab's registry entry to the dynamic fields.** `iac/agent/
+variables.tf`: added `fleet_project_number="327234009108"` (verified via `gcloud projects
+describe`) and `fleet_membership="sre-lab"` to the `sre-lab` default entry;
+`kube_context` deliberately left in place (unused once fleet_project_number takes
+priority in `get_k8s_clients()`'s branch order) so reverting is a one-line var change,
+not a re-add. `terraform plan`: `0 to add, 1 to change, 0 to destroy` (registry content
+only — no image/service change, confirming this step touches nothing but data). Applied.
+Verified live: `gsutil cat gs://sreagent-t2-demo-cluster-config/clusters.json` shows the
+new fields present for `sre-lab`.
+
+**Real end-to-end live proof** (real MCP protocol call via the `mcp` Python SDK's
+`streamable_http_client`, through the local Cloud Run proxy, to the actual deployed
+service running as the real `sre-k8s-mcp-runtime` identity — not a mock, not my personal
+identity which lacks the impersonation RBAC binding):
+- `list_pods(cluster_id="sre-lab", namespace="test-incidents")` on an empty namespace →
+  `{"pods":[],"count":0}` — real success, matches what direct `kubectl` showed
+  independently.
+- `list_pods(cluster_id="sre-lab", namespace="kube-system")` → cleanly rejected:
+  `{"error":"namespace 'kube-system' is outside cluster 'sre-lab's allowed namespaces
+  ['test-incidents']","ok":false}` — proves `enforce_cluster_namespace_scope()` is
+  correctly active over the new dynamic path too, not a raw passthrough.
+- Created a real pod (`live-verify-test`, nginx:alpine) directly on the cluster, re-ran
+  the same call → `{"pods":[{"name":"live-verify-test","phase":"Running",...}],
+  "count":1}` — full, accurate real data returned end-to-end through Cloud Run → dynamic
+  Connect Gateway construction → real sre-lab cluster. Deleted the test pod immediately
+  after.
+
+**Cleanup**: temporary `run.invoker` binding revoked (confirmed via `get-iam-policy` —
+only the agent's own identity remains), local `gcloud run services proxy` process killed,
+test pod deleted, one-off test scripts removed.
+
+**What this proves and what it doesn't**: `sre-lab` now runs entirely on the dynamic
+Connect Gateway mechanism, live-verified end to end including its security enforcement.
+`mcp/connect-gateway-kubeconfig.yaml` (the static file) and its Dockerfile `KUBECONFIG`
+env var are now unused dead weight for `sre-lab` specifically — not yet deleted (left as
+a documented legacy fallback per the code's own comments; deleting them is a separate,
+smaller cleanup, not done in this entry). The known agent/MCP version-skew risk (above)
+remains real until the agent is redeployed with today's `cluster_id`-sending code — not
+yet done, disclosed, not hidden.

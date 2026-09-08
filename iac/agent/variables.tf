@@ -89,11 +89,16 @@ variable "additional_clusters" {
       allowed_namespaces = ["test-incidents"]
       owner              = "sre-platform"
       enabled            = true
-      # Preserves exactly the value previously passed as the single global
-      # var.custom_mcp_kube_context env var -- migrating this cluster from
-      # "the only cluster this MCP service knows about" to "one registry
-      # entry among possibly many" changes nothing about how it connects.
-      kube_context = "connectgateway_sreagent-t2-demo_global_sre-lab"
+      # Migrated 2026-09-07 to the dynamic Connect Gateway mechanism (no
+      # static, image-baked kubeconfig file involved) -- live-verified via
+      # the deployed sre-k8s-mcp-runtime identity (real RBAC binding
+      # gateway-impersonate-...-sre-k8s-mcp-runtime-sre-lab already existed
+      # for it, unlike a personal user identity). kube_context left set
+      # below, unused while fleet_project_number is populated, purely so
+      # reverting this migration is a one-line change, not a re-add.
+      kube_context         = "connectgateway_sreagent-t2-demo_global_sre-lab"
+      fleet_project_number = "327234009108"
+      fleet_membership     = "sre-lab"
     }
   }
 
