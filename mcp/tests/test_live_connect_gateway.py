@@ -48,10 +48,17 @@ def _set_context(monkeypatch):
 
 
 def _call(server_mod, name, args):
+    # Section 10 (2026-09-08): _call_tool_mcp is a private FastMCP API that no
+    # longer exists as of fastmcp 4.0.3 (mcp/requirements.txt pins an unbounded
+    # ">=2.3.4", so a fresh install always resolves to whatever's newest --
+    # confirmed root cause via a real AttributeError, not assumed). FastMCP.
+    # call_tool() is the documented PUBLIC replacement -- same real tool
+    # execution (validation -> k8s API call -> redact -> trim -> audit log,
+    # middleware applied by default, matching real request handling), simpler
+    # return shape (a ToolResult directly, no tuple-unwrapping needed).
     async def _run():
-        res = await server_mod.mcp._call_tool_mcp(name, args)
-        blocks = res[0] if isinstance(res, tuple) else res
-        blocks = getattr(blocks, "content", blocks)
+        res = await server_mod.mcp.call_tool(name, args)
+        blocks = res.content
         text = blocks[0].text if blocks else None
         try:
             return json.loads(text)

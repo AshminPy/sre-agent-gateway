@@ -98,8 +98,19 @@ jobs:
 
       # test_live_connect_gateway.py auto-skips when its kubeconfig context isn't
       # present (pytest.mark.skipif checking `kubectl config get-contexts`) -- a clean
-      # runner has no such context, so this runs the full suite unmodified. Confirmed
-      # locally with KUBECONFIG=/dev/null: 57 passed, 7 skipped, 64 total.
+      # runner has no such context, so this runs the full suite unmodified, always
+      # skipping those 7 here regardless of the fix below.
+      #
+      # Section 10 (2026-09-08): those 7 tests themselves were real-cluster-broken
+      # for anyone running them WITH credentials (a private FastMCP API,
+      # mcp._call_tool_mcp, no longer exists as of fastmcp 4.0.3 -- root-caused to
+      # mcp/requirements.txt's unbounded ">=2.3.4" pin, now exact-pinned). Fixed and
+      # live-verified against the real sre-lab cluster: 6/7 pass for real; the 7th
+      # (list_nodes Forbidden-shape assertion) is specific to Connect Gateway's
+      # restricted "view" ClusterRole and correctly doesn't apply when run against a
+      # direct, unrestricted kubeconfig context -- a test/identity mismatch, not a
+      # defect. This CI step's own runner-level behavior (skip, not run) is
+      # unaffected either way.
       - name: Run MCP pytest
         run: |
           cd mcp

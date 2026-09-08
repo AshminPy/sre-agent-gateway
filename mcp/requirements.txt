@@ -1,8 +1,16 @@
-fastmcp>=2.3.4
-kubernetes>=29.0.0
-google-auth>=2.29.0
-google-cloud-logging>=3.10.0
-google-cloud-storage>=2.16.0
-google-cloud-modelarmor>=0.7.1
-pydantic>=2.7.2
-uvicorn>=0.31.1
+# Section 10 (2026-09-08): pinned exact (==), not floating (>=). Root-caused the
+# mcp/tests/test_live_connect_gateway.py FastMCP-drift failures directly to this
+# file: fastmcp's unbounded ">=2.3.4" meant a fresh install (dev venv AND the
+# deployed container both install from this exact file, confirmed identical) could
+# resolve to any future major version -- 4.0.3 removed the private _call_tool_mcp
+# API that test file depended on. Exact-pinning here means dev and deployed
+# environments always match what was actually tested, and a future breaking
+# release needs a deliberate version bump + re-test here, not a silent drift.
+fastmcp==4.0.3
+kubernetes==36.0.3
+google-auth==2.56.3
+google-cloud-logging==3.16.2
+google-cloud-storage==3.13.1
+google-cloud-modelarmor==0.7.1
+pydantic==2.13.4
+uvicorn==0.52.4
