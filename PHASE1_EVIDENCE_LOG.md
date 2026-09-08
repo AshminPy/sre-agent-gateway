@@ -911,3 +911,34 @@ what's now actually built, with the real verification evidence linked here.
 pre-Section-8). `mcp/tests/`: 85 passed, 7 failed — confirmed identical to the
 already-known FastMCP API-drift failures (Section 10 addresses this directly, not
 caused by this section's work). `terraform validate`: clean.
+
+---
+## 2026-09-08 — Section 9: model portability and capacity controls
+
+**Already correct, verified not rebuilt:** the adapter abstraction (`agent/llm/base.py`'s
+`LLMClient` ABC — Gemini SDK confirmed the only provider-specific import anywhere in
+`agent/`) and the fake-provider contract tests the section explicitly requires
+(`tests/test_llm_contract.py` already proves the registry/capability/accounting contract
+against a non-Gemini fake provider, credential-free).
+
+**Fixed:**
+1. Concurrent-run accounting cross-contamination — the process-wide cached LLM adapter's
+   session/usage counters were plain instance attributes; two concurrent investigations
+   could zero/blend each other's totals. Now `contextvars.ContextVar`-backed. Proven with
+   a real multi-threaded test (`tests/test_gemini_adapter_concurrent_sessions.py`).
+2. 5xx errors previously got zero retries (only 429 did) — extended the same bounded
+   backoff to 500/503/504.
+3. `max_instances` was unset in Terraform (live value was `0`) — set to an explicit,
+   documented `10` (WebSearch-confirmed real Terraform field on
+   `google_vertex_ai_reasoning_engine`; live `terraform plan`: 0 destroyed).
+4. `docs/architecture/llm-adapter.md` (new): the bounded, concrete 7-step checklist for a
+   real second vendor — not implemented, since no target/credentials were given, per the
+   section's own explicit instruction.
+
+**Deferred, disclosed:** a genuine concurrent-load capacity report (the section explicitly
+warns against inferring this from a sequential campaign) — real load-testing work for
+later, not fabricated here. Runtime per-profile compatibility probing beyond the existing
+static capability declaration — judged unnecessary for 2 known-compatible Gemini profiles.
+
+**Verification:** full suite 571 passed, 0 failed (up from 566). `terraform validate` +
+live `terraform plan` clean, 0 destroyed. ruff clean.
