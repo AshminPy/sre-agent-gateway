@@ -376,6 +376,23 @@ resource "time_sleep" "wait_for_metrics" {
     google_logging_metric.evidence_storage_failures,
     google_logging_metric.investigation_latency,
     google_logging_metric.mcp_model_armor_fail_open,
+    # 2026-09-08 fix: these two were added to iac/agent/monitoring.tf earlier
+    # this session but never wired into this sleep's own depends_on -- their
+    # alert policies correctly depend on time_sleep.wait_for_metrics, but the
+    # sleep itself didn't wait on THEM, so it could finish before these two
+    # metrics finished propagating in GCP. Confirmed live: first apply attempt
+    # failed with "Cannot find metric(s) that match type ...
+    # mcp_model_armor_guard_init_failed" / "...mcp_connect_gateway_failure".
+    google_logging_metric.mcp_model_armor_guard_init_failed,
+    google_logging_metric.mcp_connect_gateway_failure,
+    # 2026-09-08: same gap, pre-existing (not introduced today) -- these three
+    # each have an alert policy depending on this sleep but were never listed
+    # here either. Harmless on a stable environment (already propagated long
+    # ago), but a real landmine on a from-scratch apply. Closing the whole
+    # class of bug rather than leaving it for the next fresh environment.
+    google_logging_metric.invocations,
+    google_logging_metric.confidence_band,
+    google_logging_metric.loop_exit_reason,
   ]
 }
 
