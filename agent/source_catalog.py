@@ -54,9 +54,22 @@ SOURCE_CATALOG: Dict[str, Dict[str, Any]] = {
         # catalog entry + a new adapter module exposing a function named
         # `primary_tool` with signature (cluster_id, <query_field>, start_ts,
         # end_ts) -- mcp_router.py and mcp_client.py read these three fields
-        # generically and never hardcode a source name or query language. See
-        # tests/test_mcp_router.py's test_second_catalog_source_requires_zero_
-        # router_or_client_code_changes for the proof.
+        # generically and never hardcode a source name or query language.
+        #
+        # Correction (2026-09-08 audit): this comment used to cite
+        # tests/test_mcp_router.py's "test_second_catalog_source_requires_zero_
+        # router_or_client_code_changes" as proof -- that test does not exist.
+        # The real proof for the CLIENT-dispatch layer is
+        # tests/test_mcp_client_catalog_dispatch.py::
+        # test_second_catalog_source_requires_zero_client_code_changes, which
+        # registers a completely fake second source and calls the unmodified
+        # mcp_client.call_tool() -- a genuine test, but it covers dispatch, not
+        # routing. mcp_router.py's own Section 6 tests (tests/test_mcp_router.py)
+        # only ever exercise "prometheus" -- no fake second source is routed
+        # through it. The "zero router code changes" half of this claim is
+        # currently an inference from reading mcp_router.py's generic branch
+        # (no source name hardcoded there), not something a dedicated test
+        # proves. Add that test before treating this as fully proven.
         "primary_tool":      "query_range",
         "query_field":       "promql",
         "query_field_hint":  "a valid PromQL expression targeting the named pod/namespace where possible",

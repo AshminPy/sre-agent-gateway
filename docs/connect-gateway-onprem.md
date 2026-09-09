@@ -336,9 +336,19 @@ a second physical on-prem cluster would have needed a new context added to that 
 plus an image rebuild + redeploy. Not a new MCP deployment, and not an agent-code
 change, but not truly zero-touch either.
 
-**This has been replaced with a dynamic mechanism** for any NEW on-prem cluster (the
-existing `sre-lab` entry is deliberately left on the static path, unmigrated — see
-"preserve the existing working cluster connection during migration" below). Adding a
+**This has been replaced with a dynamic mechanism.** Section 5/B correction
+(2026-09-08): the paragraph below used to say `sre-lab` was deliberately left on the
+static path, unmigrated -- that is now stale. `sre-lab` **was** migrated to the
+dynamic path (commit `bc35959`, "migrate sre-lab to dynamic Connect Gateway,
+live-verified end to end", 2026-09-07) -- `iac/agent/variables.tf`'s `sre-lab` entry
+sets `fleet_project_number`, and `mcp/server.py`'s dynamic-Connect-Gateway branch
+takes priority over the static kube_context path whenever it's set. The static
+kubeconfig file (`mcp/connect-gateway-kubeconfig.yaml`) is still present in the
+image, but `sre-lab` no longer uses it day to day -- it now only matters for
+`K8S_MCP_KUBE_CONTEXT`'s local-dev/registry-outage fallback path (see this repo's
+Section 2 correction for why that fallback is now gated behind an explicit
+distinction between "not configured" and "configured but unreadable", rather than
+silently used interchangeably with the real per-cluster registry). Adding a
 genuinely new on-prem cluster now needs only:
 
 1. Fleet registration + Connect Agent install (manual, authorized-operator action —
@@ -360,8 +370,10 @@ already-live-proven static kubeconfig already used successfully (WebSearch, 2026
 
 **What is and isn't verified:** the dynamic path is covered by unit tests
 (`mcp/tests/test_dynamic_connect_gateway.py`) with the Kubernetes SDK and Google auth
-mocked — it has **not** been run against a real second on-prem cluster (none exists in
-this environment). `sre-lab` itself was NOT switched to this path, specifically so its
-one real, live-validated connection is never put at risk by an unverified change — this
-is a live-validation gap for the NEXT genuinely new on-prem cluster onboarded, not a
-claim that this is already proven end-to-end.
+mocked, AND is live-verified end to end for `sre-lab` itself (commit `bc35959`,
+2026-09-07 -- `sre-lab` runs this exact dynamic path in production today, not the
+static one, correcting this section's own earlier claim otherwise). What is **not**
+yet proven: a genuinely SECOND on-prem cluster, onboarded from zero using only the
+4 steps above -- confirmed via git history and live GCS/Fleet queries (2026-09-08)
+that no second on-prem cluster has ever existed in this project. That live proof
+(`sre-lab-2`) is the subject of a dedicated onboarding exercise, not yet claimed here.

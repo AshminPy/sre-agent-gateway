@@ -19,11 +19,17 @@ responses already pass through.
 This is ONE middleware, registered ONCE (mcp.add_middleware in server.py),
 wrapping every tools/call response via FastMCP's on_call_tool hook — no
 per-tool code. It mirrors the same call shape agent/main.py's _sanitize()
-already uses in production for the agent's own query text / final RCA summary
-(SanitizeModelResponseRequest, FilterMatchState.MATCH_FOUND) — that call
-sanitizes the bookends only (user query in, final text out), never the raw
-tool responses flowing through the middle of an investigation. This file
-closes that specific gap on the MCP side.
+uses (SanitizeModelResponseRequest, FilterMatchState.MATCH_FOUND) for the
+agent's own query text / final RCA summary -- that call sanitizes the
+bookends only (user query in, final text out), never the raw tool responses
+flowing through the middle of an investigation, so this file closes that
+specific gap on the MCP side regardless of whether the bookend call itself
+is active. Section 7 correction (2026-09-08): that bookend call is only
+ACTIVE when MODEL_ARMOR_TEMPLATE is set, which agent_engine.tf only does
+when Agent Gateway is off -- in the actual deployed configuration (gateway
+on, iac/agent/model_armor.tf's own corrected comment has the detail) it is
+currently inactive, this file's own per-call inspection is independent of
+that and unaffected either way.
 """
 from __future__ import annotations
 

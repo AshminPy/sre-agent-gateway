@@ -98,15 +98,6 @@ locals {
       # Make gateway-denied (403) MCP tool calls fail fast instead of hanging the
       # turn as a broken-stream TaskGroup/TimeoutError.
       ADK_ENABLE_MCP_GRACEFUL_ERROR_HANDLING = "true"
-      # TEMPORARY diagnostic marker (2026-09-05, #203 CONTENT_AUTHZ
-      # investigation) -- forces a fresh reasoning-engine redeploy so the
-      # next test doesn't reuse a >1hr-old warm container whose connection to
-      # the custom MCP appears to bypass Agent Gateway's per-request
-      # interception once established (custom-MCP calls stopped appearing in
-      # gateway logs ~40min into that container's uptime, while other
-      # traffic kept logging normally). Remove once this investigation
-      # concludes either way.
-      PHASE1_CONTENT_AUTHZ_FORCE_FRESH_CONTAINER = "2026-09-05-01"
     },
     # ── App-level Model Armor: gateway-OFF only (issue #203, PARTIALLY reverted 2026-09-05) ──
     # Attempted to make this unconditional (issue #203's original ask) now that
