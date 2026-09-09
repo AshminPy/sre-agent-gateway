@@ -32,7 +32,6 @@ import json
 import logging
 import tempfile
 import time
-from functools import lru_cache
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
@@ -100,13 +99,26 @@ _CLUSTER_REGISTRY_CACHE: dict = {}
 _CLUSTER_REGISTRY_LOADED_AT: float = 0.0
 _CLUSTER_REGISTRY_TTL = 300.0  # 5 min -- matches agent/mcp_client.py's own TTL
 
+# Section 2 correction (2026-09-08): distinguishes "no registry configured at all"
+# (CLUSTER_CONFIG_BUCKET unset -- true local dev) from "a registry IS configured but
+# could not be read this time" (a real deployed-environment outage: GCS unreachable,
+# IAM revoked, malformed object, etc.) -- both used to collapse into the same empty
+# {} with no way to tell them apart, which let resolve_cluster() treat a genuine
+# outage as "no registry" and return a permissive placeholder that (via
+# get_k8s_clients()'s own local-dev fallback) could silently connect ANY requested
+# cluster_id to whatever K8S_MCP_KUBE_CONTEXT/default kubeconfig this process
+# happens to have -- a different, wrong cluster in every real deployment.
+_CLUSTER_REGISTRY_LOAD_FAILED: bool = False
+
 
 def _load_cluster_registry() -> dict:
     """Load clusters.json from the SAME GCS bucket the agent itself reads
     (CLUSTER_CONFIG_BUCKET, granted via google_storage_bucket_iam_member
     .mcp_runtime_cluster_config_reader). Returns {} if the bucket env var is
     unset or the object can't be read -- callers must treat an empty
-    registry as "no cluster is known", not "fall back to something".
+    registry as "no cluster is known", not "fall back to something". See
+    resolve_cluster()'s docstring for why an unset bucket and a failed read
+    are no longer treated the same way despite both landing here as {}.
 
     Deliberately a standalone copy of agent/mcp_client.py's
     _build_cluster_registry(), not an import from agent/ -- this module has
@@ -114,8 +126,10 @@ def _load_cluster_registry() -> dict:
     (same reasoning security.py's own docstring gives for being
     dependency-light).
     """
+    global _CLUSTER_REGISTRY_LOAD_FAILED
     bucket_name = os.environ.get("CLUSTER_CONFIG_BUCKET", "").strip()
     if not bucket_name:
+        _CLUSTER_REGISTRY_LOAD_FAILED = False
         return {}
     try:
         from google.cloud import storage as gcs
@@ -123,7 +137,9 @@ def _load_cluster_registry() -> dict:
         data = json.loads(blob.download_as_text())
     except Exception as exc:
         logger.error("cluster registry load failed (bucket=%s): %s", bucket_name, exc)
+        _CLUSTER_REGISTRY_LOAD_FAILED = True
         return {}
+    _CLUSTER_REGISTRY_LOAD_FAILED = False
 
     registry: dict = {}
     for c in data.get("clusters", []):
@@ -184,11 +200,27 @@ def resolve_cluster(cluster_id: str) -> dict:
     cluster_id to be a non-empty string (checked below) -- it only skips the
     "is this a REAL registered cluster" check, not the "was one asked for
     at all" check.
+
+    Section 2 correction (2026-09-08): that placeholder is ONLY for the
+    "no bucket configured" case. If CLUSTER_CONFIG_BUCKET IS set (always true
+    in a deployed environment) but the read failed this call --
+    _CLUSTER_REGISTRY_LOAD_FAILED is True -- this raises instead. A registry
+    outage in deployed multi-cluster mode must be a SAFE FAILURE naming the
+    requested cluster_id, never a silent fall-through to a placeholder that
+    could route the request to a different cluster than the one asked for.
     """
     if not cluster_id or not isinstance(cluster_id, str):
         raise ClusterNotFoundError("cluster_id is required and must be a non-empty string")
     registry = _get_cluster_registry()
     if not registry:
+        if _CLUSTER_REGISTRY_LOAD_FAILED:
+            raise ClusterNotFoundError(
+                f"cluster_id '{cluster_id}' could not be validated -- the cluster "
+                "registry is configured (CLUSTER_CONFIG_BUCKET is set) but is "
+                "currently unreadable (see server logs for the underlying GCS "
+                "error). Refusing to guess or fall back to a default cluster; "
+                "retry once the registry is readable again."
+            )
         return _NO_REGISTRY_PLACEHOLDER_ENTRY
     entry = registry.get(cluster_id.strip())
     if entry is None:
@@ -214,15 +246,28 @@ def resolve_cluster(cluster_id: str) -> dict:
 set_cluster_resolver(resolve_cluster)
 
 
-@lru_cache(maxsize=32)
-def get_k8s_clients(cluster_id: str):
+_K8S_CLIENT_CACHE: dict = {}
+# Section 2 correction (2026-09-08): 45 min -- safely under the ~60 min lifetime of a
+# real GCP access token. The Workload-Identity and dynamic-Connect-Gateway branches
+# below each bake ONE token string into `configuration.api_key` at construction time
+# and never refresh it; a bare @lru_cache (the previous implementation) would keep
+# returning that same client -- and therefore that same, eventually-expired token --
+# for the rest of the process lifetime, surfacing as intermittent 401s under
+# sustained traffic. The kube_context (kubeconfig exec-plugin) branch isn't affected
+# by this specific risk (the kubernetes client re-invokes the exec credential
+# provider itself), but goes through the same TTL cache for uniformity -- rebuilding
+# it is cheap (just re-runs config.load_kube_config()).
+_K8S_CLIENT_TOKEN_TTL = 2700.0
+
+
+def _build_k8s_clients(cluster_id: str):
     """
-    Lazy, per-cluster K8s client — initializes on first call for a given
-    cluster_id, then cached for that exact cluster_id only (lru_cache keys
-    on its argument, so distinct cluster_ids never share or overwrite each
-    other's cached client -- this replaces the old @lru_cache(maxsize=1)
-    single global client that made this server capable of ever talking to
-    only one cluster for its entire process lifetime, see issue #86).
+    Builds a fresh, per-cluster K8s client -- see get_k8s_clients() below for the
+    TTL-cached wrapper every tool actually calls. Cluster isolation itself comes
+    from cluster_id being resolved through resolve_cluster() -- an unknown,
+    disabled, or non-'custom' id raises ClusterNotFoundError before any
+    connection is attempted. There is no path from here to a DIFFERENT
+    cluster than the one that was validated.
 
     cluster_id is resolved through resolve_cluster() -- an unknown,
     disabled, or non-'custom' id raises ClusterNotFoundError before any
@@ -273,6 +318,17 @@ def get_k8s_clients(cluster_id: str):
                 "kube_context nor fleet_project_number configured -- fix the Terraform "
                 "registry entry, do not fall back to a default connection"
             )
+    elif _CLUSTER_REGISTRY_LOAD_FAILED:
+        # Section 2 correction (2026-09-08): matches resolve_cluster()'s own guard --
+        # defense-in-depth in case this function is ever reached without guarded()
+        # having already rejected the call. A registry outage must never fall through
+        # to the local-dev branch below, which would silently connect this cluster_id
+        # to whatever K8S_MCP_KUBE_CONTEXT/default kubeconfig this process has.
+        raise ClusterNotFoundError(
+            f"cluster_id '{cluster_id}' could not be validated -- the cluster registry "
+            "is configured but currently unreadable; refusing to construct a client "
+            "that could silently connect to the wrong cluster."
+        )
     else:
         # No registry configured at all -- local-dev-only fallback, see
         # docstring above. Never reached in a deployed environment, which
@@ -419,6 +475,35 @@ def get_k8s_clients(cluster_id: str):
             client.BatchV1Api(api_client),
             client.AutoscalingV2Api(api_client),
         )
+
+
+def get_k8s_clients(cluster_id: str):
+    """TTL-cached wrapper around _build_k8s_clients() -- every tool calls THIS, never
+    _build_k8s_clients() directly. Section 2 correction (2026-09-08): replaces the
+    previous bare @lru_cache(maxsize=32), which had no expiry at all -- see
+    _K8S_CLIENT_TOKEN_TTL's comment above for why that let a cached client
+    permanently retain an expired bearer token. Per-cluster keying (issue #86) is
+    unchanged: distinct cluster_ids never share or evict each other's entry.
+
+    A failed build (ClusterNotFoundError or any other exception) is never cached --
+    the next call retries _build_k8s_clients() fully, same as @lru_cache's own
+    behavior of not memoizing exceptions.
+    """
+    cached = _K8S_CLIENT_CACHE.get(cluster_id)
+    if cached is not None:
+        clients, created_at = cached
+        if time.time() - created_at < _K8S_CLIENT_TOKEN_TTL:
+            return clients
+    clients = _build_k8s_clients(cluster_id)
+    _K8S_CLIENT_CACHE[cluster_id] = (clients, time.time())
+    return clients
+
+
+def _get_k8s_clients_cache_clear() -> None:
+    _K8S_CLIENT_CACHE.clear()
+
+
+get_k8s_clients.cache_clear = _get_k8s_clients_cache_clear
 
 
 # ── Tools — Pod ───────────────────────────────────────────────────
