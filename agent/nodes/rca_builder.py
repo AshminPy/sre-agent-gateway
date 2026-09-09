@@ -103,19 +103,49 @@ def _enriched_evidence_digest(state: AgentState) -> tuple:
     return "\n".join(lines), enriched
 
 
-def _derive_status(state: AgentState) -> str:
+# loop_controller.py's own abnormal-exit set (kept in sync manually — that function
+# has no exported constant for it). A run that exits early for one of these reasons
+# never got a real chance to gather sufficient evidence; that's a genuine tooling/
+# system failure, not a per-call blip.
+_ABNORMAL_LOOP_EXIT_REASONS = frozenset({
+    "stuck_detected", "zero_new_facts", "oscillation_detected", "timeout",
+    "consecutive_tool_failures", "token_budget_exceeded", "safety_budget_exceeded",
+})
+
+
+def _derive_status(state: AgentState, evidence_storage_failed_count: int = 0) -> str:
     """Top-level pass/fail signal for this run.
 
     PRODUCTION-LAUNCH-PLAN.md Priority 10: "a top-level status field (so the errors
     metric may never fire from RCA-path failures)". iac/agent/monitoring.tf's
-    pre-existing `errors` log-based metric filters on jsonPayload.status=="error", but no
-    log entry has ever set that field — so it could never fire, regardless of how many
-    real failures occurred. "error" here means a real system/tooling failure was
-    recorded during the run (routing safe-stop, tool failure, evidence-storage failure,
-    abnormal loop exit — anything that appended to state["errors"]) — not a low-
+    pre-existing `errors` log-based metric filters on jsonPayload.status=="error".
+    "error" here means a real system/tooling failure was recorded during the run
+    (routing safe-stop, evidence-storage failure, abnormal loop exit) — not a low-
     confidence-but-clean RCA outcome, which outcome/confidence_band already cover.
+
+    Section 10 correction (2026-09-09, live-discovered via the Phase 1 50-case
+    campaign): the original implementation returned "error" whenever
+    state["errors"] was non-empty at all -- but tool_executor.py appends ONE entry
+    to state["errors"] for EVERY individual tool-call failure, including a single
+    transient blip the agent successfully worked around on a later step. Cross-
+    checked live: 13 of 14 runs the old logic flagged "error" had root-cause
+    confidence 0.54-0.95 and completeness 0.79-0.97 -- genuinely correct,
+    high-quality investigations, not failures. Only a run whose upstream status is
+    genuinely "failed" (context_resolver/mcp_router/input_normalizer -- the same
+    signal loop_controller.py's own upstream_failed check and
+    scripts/run_50case_campaign.py's grade() already treat as authoritative), one
+    that exited the loop abnormally, or one with a real evidence-storage (GCS)
+    write failure actually reflects "a real system/tooling failure" per this
+    function's own documented intent.
     """
-    return "error" if state.get("errors") else "success"
+    inv = state.get("investigation", {})
+    if inv.get("status") == "failed":
+        return "error"
+    if inv.get("loop_exit_reason") in _ABNORMAL_LOOP_EXIT_REASONS:
+        return "error"
+    if evidence_storage_failed_count > 0:
+        return "error"
+    return "success"
 
 
 def _evidence_storage_stats(state: AgentState) -> dict:
@@ -231,7 +261,7 @@ def _write_observability_log(
             # Top-level pass/fail — see _derive_status(). Restores the pre-existing
             # `errors` log-based metric (iac/agent/monitoring.tf), which filters on
             # jsonPayload.status=="error" but no entry ever set this field before.
-            "status":             _derive_status(state),
+            "status":             _derive_status(state, evidence_storage["evidence_storage_failed_count"]),
 
             # PagerDuty incident id — placeholder until PRODUCTION-LAUNCH-PLAN.md
             # Priority 2 (PagerDuty incident integration) is built. Always None today;

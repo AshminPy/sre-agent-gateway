@@ -152,8 +152,14 @@ def test_rca_builder_log_has_all_priority10_fields_and_reuses_task1_routing_fiel
     assert "trace_id" in entry
     assert isinstance(entry["trace_id"], str)
 
-    # top-level status — restores the pre-existing `errors` log-based metric.
-    assert entry["status"] == "success"
+    # top-level status — restores the pre-existing `errors` log-based metric. This
+    # fixture's ev_003 always has gcs_write_failed=True (see _rca_state()), which
+    # _derive_status() correctly counts as a real failure -- see agent/nodes/
+    # rca_builder.py's 2026-09-09 correction. Asserting "success" here (pre-fix) was
+    # itself a latent test bug: it only passed because the old _derive_status()
+    # never looked at evidence-storage failures at all, not because this state was
+    # actually a clean run (evidence_storage_ok is asserted False two lines below).
+    assert entry["status"] == "error"
 
     # PagerDuty placeholder field — present, None until Priority 2 wires a real value.
     assert "pagerduty_incident_id" in entry
