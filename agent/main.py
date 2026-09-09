@@ -95,22 +95,35 @@ def _extract_root_cause(summary: dict) -> str:
 
 
 def _primary_claim_cites_uninspected_evidence(result: dict) -> bool:
-    """Section 8 (2026-09-08): a confirmed root cause built on evidence Model Armor
-    never got to check (mcp/response_guard.py's fail-open path) must not be silently
-    promoted to trusted Memory Bank -- gates only on the SPECIFIC evidence the primary
-    causal claim actually cites (agent/nodes/evidence_extractor.py's inspection_status
-    field), not on every evidence item collected during the investigation; an
-    unrelated uninspected side-evidence item that never contributed to the claim
-    isn't a reason to distrust the claim itself."""
-    primary_id = result.get("primary_causal_claim_id")
+    """Section 8 correction (2026-09-08): the original version of this function read
+    `primary_causal_claim_id`/`claims` from the TOP LEVEL of `result` -- but the real
+    return shape of investigate()/query() (see _finalize_investigation_result's
+    `return {...}` below) nests those fields one level down, inside `result["summary"]`
+    (rca_builder.py's own returned dict, threaded through as `final_summary` ->
+    `summary`), and never exposed `evidence_store` at the top level at all. That meant
+    this predicate ALWAYS returned False against a real production result -- it only
+    ever passed its own unit tests because those tests hand-built a dict shaped the way
+    this function assumed, not the way investigate() actually returns. Confirmed by
+    tracing the exact code path, not assumed. Fixed by reading from the real locations;
+    `evidence_store` is now also exposed at the top level of the final result (see the
+    `return {...}` in _finalize_investigation_result) specifically so this predicate has
+    something real to check.
+
+    Gates only on the SPECIFIC evidence the primary causal claim actually cites
+    (agent/nodes/evidence_extractor.py's inspection_status field), not on every
+    evidence item collected during the investigation -- an unrelated uninspected
+    side-evidence item that never contributed to the claim isn't a reason to distrust
+    the claim itself."""
+    summary = result.get("summary") or {}
+    primary_id = summary.get("primary_causal_claim_id")
     if not primary_id:
         return False
     primary = next(
-        (c for c in (result.get("claims") or []) if c.get("claim_id") == primary_id), None,
+        (c for c in (summary.get("claims") or []) if c.get("claim_id") == primary_id), None,
     )
     if not primary:
         return False
-    evidence_store = result.get("evidence_store", {}) or {}
+    evidence_store = result.get("evidence_store") or {}
     return any(
         evidence_store.get(eid, {}).get("inspection_status") == "fail_open"
         for eid in primary.get("supporting_evidence_ids", [])
@@ -776,6 +789,13 @@ def _finalize_investigation_result(result: dict, started_at: float, payload: dic
         "root_cause_confidence":      summary.get("root_cause_confidence", {}),
         "tool_calls":         len(tool_history),
         "evidence_ids":       evidence_ids,
+        # Section 8 correction (2026-09-08): exposed at the top level specifically so
+        # _primary_claim_cites_uninspected_evidence() (the memory-write safety gate)
+        # has real evidence to check -- it previously had no way to see this at all.
+        # Same lookup _build_rca_report already uses below; not new raw content, just
+        # not-previously-surfaced. Entries carry a GCS raw_ref pointer, not raw tool
+        # output inline, so this doesn't change what's exposed, only where.
+        "evidence_store":     result.get("evidence_store", {}) or {},
         "run_id":             result.get("run_id", ""),
         "summary":            summary,
         "executive_summary":  _build_executive_summary(summary, inv, ctx),
@@ -1648,21 +1668,34 @@ class SREAgent:
             confidence_band = result.get("confidence_band", "escalate")
             incident_type = obs.get("incident_type", "") if isinstance(obs, dict) else ""
             # Persist to Vertex AI Memory Bank (cross-session) and in-process list (same session)
-            if confidence_band == "auto" and _primary_claim_cites_uninspected_evidence(result):
+            #
+            # Section 8 correction (2026-09-08): the uninspected-evidence check now
+            # gates BOTH memory paths, not just Memory Bank -- the in-process
+            # `_save_memory` list is cross-run context within this warm container
+            # (_recall_memory reads it back into later investigations' prompts) just
+            # as much as Memory Bank is cross-session; a conclusion built on evidence
+            # Model Armor never got to check must not become trusted context via
+            # EITHER path. This is independent of confidence_band -- an uninspected
+            # citation is an evidence-integrity problem, not a confidence problem, so
+            # it blocks in-process save even for non-"auto" bands (which _save_memory
+            # was never confidence-gated for in the first place -- unchanged there).
+            if _primary_claim_cites_uninspected_evidence(result):
                 log.error(
                     "memory_write_blocked_uninspected_evidence cluster=%s namespace=%s "
                     "pod=%s -- primary causal claim cites evidence that bypassed Model "
-                    "Armor inspection (fail-open); refusing to promote to trusted memory",
+                    "Armor inspection (fail-open); refusing to promote to trusted memory "
+                    "(both Memory Bank and in-process)",
                     cluster, namespace, pod,
                 )
-            elif confidence_band == "auto":
-                cls._mb_store(cluster, namespace, pod, root_cause, confidence, incident_type, result.get("run_id", ""))
             else:
-                log.info(
-                    "Memory Bank write skipped — confidence_band=%s (only 'auto' writes persist)",
-                    confidence_band,
-                )
-            cls._save_memory(query_text, root_cause, cluster, namespace)
+                if confidence_band == "auto":
+                    cls._mb_store(cluster, namespace, pod, root_cause, confidence, incident_type, result.get("run_id", ""))
+                else:
+                    log.info(
+                        "Memory Bank write skipped — confidence_band=%s (only 'auto' writes persist)",
+                        confidence_band,
+                    )
+                cls._save_memory(query_text, root_cause, cluster, namespace)
 
         # 5. Model Armor — sanitize output (redacts PII that leaked from k8s logs)
         #

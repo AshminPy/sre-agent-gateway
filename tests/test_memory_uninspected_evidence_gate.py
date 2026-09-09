@@ -2,14 +2,25 @@
 Model Armor inspection (mcp/response_guard.py's fail-open path) must not be silently
 promoted to trusted Memory Bank. Tests agent/main.py's
 _primary_claim_cites_uninspected_evidence() gate directly.
+
+Section 8 correction (2026-09-08): `_result()` now builds the REAL production shape
+-- `primary_causal_claim_id`/`claims` nested under `summary` (matching
+_finalize_investigation_result's actual `return {...}`), `evidence_store` at the top
+level. The original version of this helper (and the function under test) used a flat
+top-level shape that never matched what investigate() actually returns -- these tests
+passed while the real wiring was silently broken. See
+tests/test_finalize_query_memory_gate.py for end-to-end proof that _finalize_query()
+itself (not just this predicate in isolation) honors the gate.
 """
 from agent.main import _primary_claim_cites_uninspected_evidence
 
 
 def _result(primary_id, claims, evidence_store):
     return {
-        "primary_causal_claim_id": primary_id,
-        "claims": claims,
+        "summary": {
+            "primary_causal_claim_id": primary_id,
+            "claims": claims,
+        },
         "evidence_store": evidence_store,
     }
 
