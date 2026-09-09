@@ -165,11 +165,22 @@ def main():
     ap.add_argument("--seed", type=int, default=None, help="Fixed seed for reproducible ordering (default: time-based)")
     ap.add_argument("--limit", type=int, default=None, help="Run only the first N of the randomized order (for smoke testing this runner)")
     ap.add_argument("--out", type=str, default="PHASE1_50CASE_RESULTS.jsonl")
+    ap.add_argument("--case-ids", type=str, default=None,
+                     help="Comma-separated case IDs to run instead of the required-50 set "
+                          "(e.g. a supplemental coverage batch). Skips the len==50 assertion.")
     args = ap.parse_args()
 
-    cases = [c for c in GOLDEN_CASES if c["payload"]["resource_hints"].get("cluster") in ("sre-test-cluster", "sre-lab", "sre-lab-2")]
-    bonus = [c for c in GOLDEN_CASES if c["payload"]["resource_hints"].get("cluster") not in ("sre-test-cluster", "sre-lab", "sre-lab-2")]
-    assert len(cases) == 50, f"expected exactly 50 cluster-scoped cases, got {len(cases)}"
+    if args.case_ids:
+        wanted = set(args.case_ids.split(","))
+        cases = [c for c in GOLDEN_CASES if c["id"] in wanted]
+        found = {c["id"] for c in cases}
+        missing = wanted - found
+        assert not missing, f"case IDs not found in GOLDEN_CASES: {missing}"
+        bonus = []
+    else:
+        cases = [c for c in GOLDEN_CASES if c["payload"]["resource_hints"].get("cluster") in ("sre-test-cluster", "sre-lab", "sre-lab-2")]
+        bonus = [c for c in GOLDEN_CASES if c["payload"]["resource_hints"].get("cluster") not in ("sre-test-cluster", "sre-lab", "sre-lab-2")]
+        assert len(cases) == 50, f"expected exactly 50 cluster-scoped cases, got {len(cases)}"
 
     seed = args.seed if args.seed is not None else int.from_bytes(os.urandom(4), "big")
     rng = random.Random(seed)

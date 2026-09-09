@@ -892,4 +892,108 @@ GOLDEN_CASES = [
         "expected_keywords": ["Init", "container"],
         "expected_confidence_min": 0.5,
     },
+
+    # ── Section 9 coverage supplement (2026-09-09) ───────────────────────
+    # Added after user review of the original 51-case manifest flagged real gaps
+    # against real, supported tool capability (not cosmetic pattern repeats):
+    # multi-container/sidecar fault attribution, StatefulSet/PVC, DaemonSet, Job,
+    # HPA, and a genuine no-issue baseline. Every fixture below was created live
+    # and its expected_keywords are copied verbatim from real observed
+    # kubectl describe/get output (see TROUBLESHOOTING_LOG.md-equivalent session
+    # evidence) -- none of this text is invented. Run and reported as a SEPARATE
+    # supplemental batch, not blended into the original 50-case first-attempt
+    # score, per the "preserve first-attempt results, never rerun" rule.
+    {
+        "id": "sidecar-fault-gke-001",
+        "payload": {
+            "user_query": "Pod sidecar-fault-gke-001 in test-incidents is reported unhealthy by monitoring, but the main app container looks fine. Investigate which container is actually failing and why.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "sidecar-fault-gke-001", "cluster": "sre-test-cluster"},
+        },
+        # Multi-container pod: "app" is healthy, "logshipper" crashloops. Tests that
+        # the agent attributes the fault to the CORRECT container, not the pod as a
+        # whole. Verified live: logshipper container state reason=CrashLoopBackOff.
+        "expected_trajectory": ["get_k8s_resource", "get_k8s_logs"],
+        "expected_keywords": ["logshipper", "CrashLoopBackOff"],
+        "expected_confidence_min": 0.5,
+    },
+    {
+        "id": "job-failure-lab2-001",
+        "payload": {
+            "user_query": "Job job-failure-lab2-001 in test-incidents has failed. Investigate why and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "", "cluster": "sre-lab-2"},
+        },
+        # Job resource kind (list_jobs/describe_job), not a Pod -- pod hint left
+        # empty, same precedent as selector-001's Service-only case. Originally
+        # attempted on GKE; moved here after live FailedScheduling/FailedScaleUp
+        # events showed the shared Autopilot cluster is genuinely capacity-
+        # constrained right now (GCE out of resources, then GCE quota exceeded) --
+        # real infra evidence, not a fixture bug. Verified live on sre-lab-2:
+        # Job condition reason=BackoffLimitExceeded, message="Job has reached the
+        # specified backoff limit".
+        "expected_trajectory": ["describe_job", "list_events"],
+        "expected_keywords": ["BackoffLimitExceeded", "backoff limit"],
+        "expected_confidence_min": 0.5,
+    },
+    {
+        "id": "daemonset-lab2-001",
+        "payload": {
+            "user_query": "DaemonSet daemonset-lab2-001 in test-incidents has pods crashing on every node. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "", "cluster": "sre-lab-2"},
+        },
+        # Verified live: DaemonSet pod container state reason=CrashLoopBackOff
+        # after 6 restarts.
+        "expected_trajectory": ["describe_daemonset", "list_events"],
+        "expected_keywords": ["CrashLoopBackOff", "DaemonSet"],
+        "expected_confidence_min": 0.5,
+    },
+    {
+        "id": "statefulset-pvc-lab1-001",
+        "payload": {
+            "user_query": "StatefulSet statefulset-pvc-lab1-001 in test-incidents has a pod stuck Pending. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "statefulset-pvc-lab1-001-0", "cluster": "sre-lab"},
+        },
+        # volumeClaimTemplate references a nonexistent StorageClass, so the PVC
+        # can never bind and the pod stays Pending. Verified live: PVC event
+        # reason=ProvisioningFailed, message=storageclass.storage.k8s.io
+        # "nonexistent-fast-ssd" not found.
+        "expected_trajectory": ["describe_statefulset", "describe_pvc"],
+        "expected_keywords": ["StorageClass", "not found", "Pending"],
+        "expected_confidence_min": 0.5,
+    },
+    {
+        "id": "hpa-misconfig-lab2-001",
+        "payload": {
+            "user_query": "HorizontalPodAutoscaler hpa-misconfig-lab2-001 in test-incidents is not scaling the workload at all. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "", "cluster": "sre-lab-2"},
+        },
+        # HPA's scaleTargetRef points at a Deployment that was never created.
+        # Verified live: HPA condition reason=FailedGetScale, message=
+        # deployments.apps "ghost-deploy-does-not-exist" not found.
+        "expected_trajectory": ["describe_hpa"],
+        "expected_keywords": ["FailedGetScale", "ghost-deploy-does-not-exist"],
+        "expected_confidence_min": 0.45,
+    },
+    {
+        "id": "healthy-baseline-lab1-001",
+        "payload": {
+            "user_query": "Can you check the health of pod healthy-baseline-lab1-001 in test-incidents? We want to confirm there's no issue before a migration.",
+            "incident": {"severity": "P4"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "healthy-baseline-lab1-001", "cluster": "sre-lab"},
+        },
+        # Genuine no-issue baseline: Running, 1/1, 0 restarts, no config/secret
+        # dependency. Tests false-positive resistance -- the agent must not
+        # invent a root cause when there isn't one. Keyword is intentionally
+        # loose (informational only, does not gate pass/fail in run_50case_
+        # campaign.py's grade(), same as insufficient-evidence-001's pattern) --
+        # the real check is that zero_evidence stays False (Running-state evidence
+        # was actually gathered) and no fabricated claim appears.
+        "expected_trajectory": ["describe_pod_detail"],
+        "expected_keywords": ["Running"],
+        "expected_confidence_min": 0.0,
+    },
 ]
