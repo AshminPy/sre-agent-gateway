@@ -12,6 +12,12 @@ name: terraform-apply
 # no separate approval gate added here, matching the trust level the
 # push-to-main trigger already has. Does not weaken or replace the
 # push-to-main trigger; that remains the real "deploy on merge" path.
+# NOTE: GitHub requires this trigger to be declared in BOTH the default
+# branch's copy of this file AND the target ref's own copy -- confirmed by
+# direct reproduction (2026-09-08): dispatching against a branch whose own
+# copy lacked this block failed with "does not have a workflow_dispatch
+# trigger in this branch" even though main already had it. This is not a
+# caching delay, it's the actual documented-by-behavior rule.
 on:
   push:
     branches: [main]

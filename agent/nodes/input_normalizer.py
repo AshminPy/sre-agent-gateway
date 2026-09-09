@@ -59,6 +59,14 @@ def input_normalizer(state: AgentState) -> dict:
         "environment_hint":  (hints.get("environment") or "").strip(),
         "deployment":        hints.get("deployment") or extracted.get("deployment", ""),
         "severity":          envelope.get("incident", {}).get("severity", "unknown"),
+        # Section 7 (2026-09-08): threaded through unchanged from the incoming payload
+        # (agent/main.py's _prepare_investigation_envelope) so rca_builder's verifier
+        # has a real incident_time_context to reason against -- see
+        # docs/management/confidence-genericity-review-2026-08-28.md #15.2.
+        "incident_reported_at":            envelope.get("incident", {}).get("reported_at", ""),
+        "incident_reported_at_approximate": envelope.get("incident", {}).get("reported_at_approximate", False),
+        "incident_start":                  envelope.get("incident", {}).get("start", ""),
+        "incident_end":                    envelope.get("incident", {}).get("end", ""),
     }
 
     hints_applied = bool(hints.get("cluster") or hints.get("namespace") or hints.get("pod"))

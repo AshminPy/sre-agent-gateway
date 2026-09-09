@@ -1,5 +1,7 @@
-from agent.confidence.claim_builder import build_claims, build_hypotheses, detect_contradictions
-from agent.confidence.models import ClaimType
+from agent.confidence.claim_builder import (
+    build_claims, build_hypotheses, detect_contradictions, normalize_remediation_items,
+)
+from agent.confidence.models import ClaimType, Claim
 
 from tests.conftest import CLUSTER, make_evidence
 
@@ -199,3 +201,111 @@ def test_detect_contradictions_phantom_contradiction_reference_is_ignored():
     )
     contradictions = detect_contradictions(claims, {}, evidence_store, {"cluster_name": CLUSTER})
     assert contradictions == []
+
+
+# ── normalize_remediation_items() — Section 7, 2026-09-08 ──────────────────
+
+_FAKE_CLAIM = Claim(
+    claim_id="claim_001", text="OOMKilled", claim_type=ClaimType.OBSERVED_FACT,
+    supporting_evidence_ids=["ev_001"],
+)
+
+
+def test_string_item_with_no_verified_cause_is_diagnostic_not_remediation():
+    """No primary_claim (None) means no confirmed root cause exists yet -- an item can't
+    honestly claim to address one, regardless of what the model's own text sounds like."""
+    items = normalize_remediation_items(
+        {"suggested_remediation": ["Restart the pod."]}, None, {},
+    )
+    assert len(items) == 1
+    assert items[0].tied_to_primary_cause is False
+    assert items[0].item_type == "diagnostic_next_step"
+
+
+def test_string_item_with_verified_cause_is_tied_remediation():
+    items = normalize_remediation_items(
+        {"suggested_remediation": ["Raise the memory limit."]}, _FAKE_CLAIM, {},
+    )
+    assert len(items) == 1
+    assert items[0].tied_to_primary_cause is True
+    assert items[0].item_type == "remediation"
+    assert items[0].action == "Raise the memory limit."
+
+
+def test_structured_item_fields_pass_through():
+    items = normalize_remediation_items(
+        {"suggested_remediation": [{
+            "action": "Increase memory limit to 1Gi",
+            "type": "remediation",
+            "prerequisites": "Confirm no other pods are memory-constrained on this node",
+            "affected_scope": "This deployment only",
+            "expected_benefit": "Prevents future OOMKills at this workload's normal usage",
+            "risk": "Slightly higher memory reservation, may affect node bin-packing",
+            "recovery_verification": "Watch for OOMKilled restarts over the next hour",
+            "rollback": "Revert the limit to its previous value",
+        }]},
+        _FAKE_CLAIM, {},
+    )
+    assert len(items) == 1
+    item = items[0]
+    assert item.prerequisites == "Confirm no other pods are memory-constrained on this node"
+    assert item.affected_scope == "This deployment only"
+    assert item.expected_benefit.startswith("Prevents future OOMKills")
+    assert item.risk.startswith("Slightly higher memory")
+    assert item.recovery_verification.startswith("Watch for OOMKilled")
+    assert item.rollback == "Revert the limit to its previous value"
+    assert item.tied_to_primary_cause is True
+
+
+def test_model_self_labeled_diagnostic_step_is_never_tied_even_with_a_verified_cause():
+    """The model itself can correctly say an item is just a diagnostic next step, even
+    when a root cause WAS confirmed -- e.g. 'also check X for a possible contributing
+    factor.' Must be respected, not forced to remediation just because a cause exists."""
+    items = normalize_remediation_items(
+        {"suggested_remediation": [{
+            "action": "Also check the node's disk pressure as a possible contributing factor.",
+            "type": "diagnostic_next_step",
+        }]},
+        _FAKE_CLAIM, {},
+    )
+    assert items[0].tied_to_primary_cause is False
+    assert items[0].item_type == "diagnostic_next_step"
+
+
+def test_empty_action_items_are_skipped_not_crashed_on():
+    items = normalize_remediation_items(
+        {"suggested_remediation": ["", {"action": "  "}, {"no_action_key": True}, 42, None]},
+        _FAKE_CLAIM, {},
+    )
+    assert items == []
+
+
+def test_non_list_suggested_remediation_returns_empty_not_crashes():
+    assert normalize_remediation_items({"suggested_remediation": "not a list"}, _FAKE_CLAIM, {}) == []
+    assert normalize_remediation_items({}, _FAKE_CLAIM, {}) == []
+
+
+def test_identifier_warning_fires_for_unrecognized_named_resource():
+    items = normalize_remediation_items(
+        {"suggested_remediation": ["Restart pod totally-different-pod-xyz to clear the issue."]},
+        _FAKE_CLAIM, {"namespace": "prod", "pod": "checkout-service-abc123"},
+    )
+    assert "totally-different-pod-xyz" in items[0].identifier_warning
+    assert "doesn't match any resource" in items[0].identifier_warning
+
+
+def test_identifier_warning_absent_when_resource_matches():
+    items = normalize_remediation_items(
+        {"suggested_remediation": ["Restart pod checkout-service-abc123 to clear the issue."]},
+        _FAKE_CLAIM, {"namespace": "prod", "pod": "checkout-service-abc123"},
+    )
+    assert items[0].identifier_warning == ""
+
+
+def test_identifier_warning_absent_for_generic_action_with_no_resource_mention():
+    """Must not false-positive on ordinary text that never names a specific resource."""
+    items = normalize_remediation_items(
+        {"suggested_remediation": ["Increase the memory limit and monitor for one hour."]},
+        _FAKE_CLAIM, {"namespace": "prod", "pod": "checkout-service-abc123"},
+    )
+    assert items[0].identifier_warning == ""

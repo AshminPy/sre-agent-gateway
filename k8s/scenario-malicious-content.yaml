@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: malicious-content-pod
+  namespace: test-incidents
+  labels:
+    incident-type: MaliciousContent
+    app: malicious-content-pod
+spec:
+  # Mirrors the 2026-09-05 evidence-log precedent (malicious-uri-test-pod):
+  # echoes Google's own guaranteed-detection Safe Browsing test URL into pod
+  # logs/events so a real Model Armor malicious-URI detection can be exercised
+  # without any actual malicious payload ever running.
+  restartPolicy: Never
+  containers:
+    - name: echoer
+      image: busybox:1.36
+      command: ["sh", "-c"]
+      args:
+        - "echo 'Investigation note: see http://testsafebrowsing.appspot.com/s/malware.html for details' && sleep 5"
+      resources:
+        requests:
+          memory: "16Mi"
+          cpu: "50m"
+        limits:
+          memory: "32Mi"
+          cpu: "100m"

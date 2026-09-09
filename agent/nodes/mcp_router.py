@@ -9,9 +9,13 @@ from agent.llm import llm_json
 from agent.mcp_client import (
     MCP_REGISTRY, _get_cluster_registry,
     GKE_REMOTE_TOOLS, CUSTOM_K8S_TOOLS,
-    get_tools_for_source,
+    get_tools_for_source, _CUSTOM_TOOLS_WITHOUT_NAMESPACE,
 )
-from agent.prompts import MCP_ROUTER_PHASE2_SYSTEM, MCP_ROUTER_PHASE2_USER
+from agent.prompts import (
+    MCP_ROUTER_PHASE2_SYSTEM, MCP_ROUTER_PHASE2_USER,
+    MCP_ROUTER_ADDITIONAL_SOURCE_SYSTEM, MCP_ROUTER_ADDITIONAL_SOURCE_USER,
+)
+from agent.source_catalog import select_additional_source
 from agent.otel import trace_node, log_node_tokens
 
 log = logging.getLogger("sre-agent.mcp_router")
@@ -140,6 +144,81 @@ def mcp_router(state: AgentState) -> dict:
             "errors": [f"mcp_router: {reason} — cannot route safely, investigation stopped."],
         }
 
+    # ── Section 6: capability-based additional-source check ────────────
+    # Runs BEFORE the deterministic Kubernetes-only Phase 1 below. With every
+    # catalog entry disabled (today's real state, see agent/source_catalog.py),
+    # select_additional_source() always returns None and this block is a
+    # complete no-op -- the Kubernetes routing below is byte-for-byte the same
+    # as before this existed. Only when a real source is enabled AND
+    # authorized for this cluster AND the planner's own stated gap matches one
+    # of its declared capabilities does this branch ever fire.
+    additional_source = select_additional_source(cluster_name, task_plan, primary_gap)
+    if additional_source is not None:
+        limits = additional_source.get("query_limits", {})
+        max_window = limits.get("max_window_seconds", 3600)
+        # Read entirely from the catalog entry -- never hardcode a source's tool
+        # name or query language here. Adding Elastic/Grafana/git MCP later is a
+        # new catalog entry + adapter module only; this block does not change.
+        primary_tool     = additional_source.get("primary_tool", "query")
+        query_field      = additional_source.get("query_field", "query")
+        query_field_hint = additional_source.get("query_field_hint", "a bounded, read-only query")
+        action, usage = llm_json(
+            MCP_ROUTER_ADDITIONAL_SOURCE_SYSTEM.format(
+                source_id=additional_source["source_id"],
+                approved_tools=", ".join(sorted(additional_source.get("approved_tools", []))),
+                max_window_seconds=max_window,
+            ),
+            MCP_ROUTER_ADDITIONAL_SOURCE_USER.format(
+                user_query=user_query or "not provided",
+                source_id=additional_source["source_id"],
+                matched_capability=additional_source["matched_capability"],
+                namespace=namespace,
+                pod=pod or "not specified",
+                task_plan=task_plan,
+                primary_gap=primary_gap,
+                evidence_count=evidence_count,
+                evidence_digest=_evidence_digest(state),
+                query_field=query_field,
+                query_field_hint=query_field_hint,
+                max_window_seconds=max_window,
+            ),
+            max_tokens=200,
+        )
+        log_node_tokens("mcp_router", state["run_id"], step, usage)
+
+        from agent.llm import llm_json_failed
+        if llm_json_failed(action) or not action or not action.get(query_field):
+            log.warning(
+                "mcp_router: additional-source query construction failed for source=%s -- "
+                "falling through to Kubernetes routing instead of failing the whole step",
+                additional_source["source_id"],
+            )
+        else:
+            import time as _time
+            from agent.llm.accounting import accumulate_usage
+            window = min(int(action.get("window_seconds") or max_window), max_window)
+            now = _time.time()
+            log.info(
+                "mcp_router → source=%s tool=%s %s=%s window=%ds",
+                additional_source["source_id"], primary_tool, query_field, action[query_field], window,
+            )
+            return {
+                "selected_mcp": additional_source["source_id"],
+                "current_action": {
+                    "tool": primary_tool,
+                    "arguments": {
+                        "cluster_id": cluster_name,
+                        query_field: action[query_field],
+                        "start_ts": now - window,
+                        "end_ts": now,
+                    },
+                    "mcp_source": additional_source["source_id"],
+                    "reason": action.get("reason", ""),
+                },
+                "investigation": accumulate_usage(state["investigation"], usage),
+            }
+        # falls through to Kubernetes routing below on any failure above
+
     cluster_type = cluster_info.get("cluster_type", "gke")
     selected_mcp = "gke_remote_mcp" if cluster_type == "gke" else "k8s_mcp"
     if selected_mcp not in MCP_REGISTRY:
@@ -227,7 +306,46 @@ def mcp_router(state: AgentState) -> dict:
 
     # ── AUTO-FILL for custom K8s MCP ─────────────────────────────
     if mcp_source == "k8s_mcp":
-        args.setdefault("namespace", namespace)
+        # Section 5 redesign: the shared custom MCP now serves multiple clusters
+        # from one Cloud Run deployment (see mcp/server.py's resolve_cluster()) --
+        # every tool call must carry the exact cluster_id this investigation
+        # already resolved (the SAME cluster_name that decided selected_mcp above
+        # via the Phase 1 deterministic routing). This is a forced OVERWRITE, not
+        # setdefault: the model's own JSON response must never be allowed to name
+        # a different cluster_id than the one this investigation was actually
+        # resolved to -- evidence text is untrusted input, and letting an
+        # LLM-controlled field pick the target cluster would reopen exactly the
+        # cross-cluster-evidence risk this redesign closes (issue #86).
+        if args.get("cluster_id") not in (None, cluster_name):
+            log.warning(
+                "mcp_router: overriding model-supplied cluster_id=%r with the "
+                "investigation's actual resolved cluster '%s' for tool '%s' -- "
+                "a tool call must never target a different cluster than the one "
+                "this investigation was resolved to",
+                args.get("cluster_id"), cluster_name, tool,
+            )
+        args["cluster_id"] = cluster_name
+        # issue #246: cluster-scoped tools (list_nodes, describe_node) take no
+        # namespace param at all -- injecting one made every call fail with
+        # the MCP server's own "unexpected_keyword_argument" validation error.
+        if tool not in _CUSTOM_TOOLS_WITHOUT_NAMESPACE:
+            args.setdefault("namespace", namespace)
+        elif "namespace" in args:
+            # The auto-fill guard above only stops US from ADDING a namespace --
+            # it does nothing if the model's own raw arguments already included
+            # one (e.g. it copied "namespace" from a prior namespaced call in the
+            # same investigation). That would still reach the MCP server and
+            # fail with the identical unexpected_keyword_argument error the
+            # auto-fill fix was meant to prevent. Strip it here too, with a
+            # clear reason logged, rather than letting an unsupported argument
+            # reach the tool contract silently.
+            log.warning(
+                "mcp_router: stripping unsupported 'namespace' argument the model "
+                "supplied directly for cluster-scoped tool '%s' (args=%s) -- this "
+                "tool takes no namespace parameter",
+                tool, args,
+            )
+            args.pop("namespace", None)
         if tool in ("describe_pod_detail", "get_current_logs",
                     "get_previous_logs", "list_events") and pod:
             args.setdefault("pod_name", pod)

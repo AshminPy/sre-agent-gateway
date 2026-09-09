@@ -19,14 +19,21 @@ responses already pass through.
 This is ONE middleware, registered ONCE (mcp.add_middleware in server.py),
 wrapping every tools/call response via FastMCP's on_call_tool hook — no
 per-tool code. It mirrors the same call shape agent/main.py's _sanitize()
-already uses in production for the agent's own query text / final RCA summary
-(SanitizeModelResponseRequest, FilterMatchState.MATCH_FOUND) — that call
-sanitizes the bookends only (user query in, final text out), never the raw
-tool responses flowing through the middle of an investigation. This file
-closes that specific gap on the MCP side.
+uses (SanitizeModelResponseRequest, FilterMatchState.MATCH_FOUND) for the
+agent's own query text / final RCA summary -- that call sanitizes the
+bookends only (user query in, final text out), never the raw tool responses
+flowing through the middle of an investigation, so this file closes that
+specific gap on the MCP side regardless of whether the bookend call itself
+is active. Section 7 correction (2026-09-08): that bookend call is only
+ACTIVE when MODEL_ARMOR_TEMPLATE is set, which agent_engine.tf only does
+when Agent Gateway is off -- in the actual deployed configuration (gateway
+on, iac/agent/model_armor.tf's own corrected comment has the detail) it is
+currently inactive, this file's own per-call inspection is independent of
+that and unaffected either way.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 
@@ -38,6 +45,72 @@ log = logging.getLogger("sre-mcp.response_guard")
 
 REGION = os.environ.get("REGION", "us-central1")
 MODEL_ARMOR_RESPONSE_TEMPLATE = os.environ.get("MODEL_ARMOR_RESPONSE_TEMPLATE", "")
+# Section 8 correction (2026-09-08): distinguishes "no template configured, and
+# that's fine" (local/dev, this var absent by default) from "no template
+# configured, but this deployment REQUIRES one" (the deployed custom MCP
+# service — iac/agent/cloudrun_mcp.tf always sets this to "true"). Without
+# this, an unexpectedly-empty MODEL_ARMOR_RESPONSE_TEMPLATE in production was
+# indistinguishable from the intentional local/dev off-switch, and every tool
+# result would go out silently unmarked and read downstream as "inspected".
+MODEL_ARMOR_RESPONSE_GUARD_REQUIRED = (
+    os.environ.get("MODEL_ARMOR_RESPONSE_GUARD_REQUIRED", "false").lower() == "true"
+)
+
+
+# Section 8 (2026-09-08): kept in sync with agent/nodes/evidence_extractor.py's own
+# copy of this exact string by comment, not by shared import -- mcp/ and agent/ are
+# separate deployable services/containers with no shared Python import path in
+# production, the same reason the two already-existing truncation-marker strings in
+# this codebase are each their own local literal rather than a shared constant.
+UNINSPECTED_MARKER = (
+    "[UNINSPECTED: Model Armor response check unavailable for this tool result — "
+    "content was not verified]"
+)
+
+
+def _mark_uninspected(result: ToolResult) -> ToolResult:
+    """Marks this result as NOT verified by Model Armor -- WITHOUT breaking how
+    agent/mcp_client.py::_extract_content() actually reads a response.
+
+    Verified against that exact function before choosing this approach: it checks
+    result["structuredContent"] FIRST if present, else reads ONLY content[0] and
+    json.loads()'s its text -- any block after index 0 is silently ignored, and
+    prepending a non-JSON text block at index 0 would have replaced the real content
+    with the marker string entirely (a severe, easy-to-miss regression). Every tool
+    in this server returns a JSON-serializable dict (mcp/security.py's
+    _postprocess), so injecting a real "_uninspected": true KEY into that same
+    dict -- in both structured_content and content[0], whichever the caller reads --
+    survives round-trip and is detected by evidence_extractor.py without altering
+    the actual evidence content at all.
+    """
+    marked_structured = result.structured_content
+    if isinstance(marked_structured, dict):
+        marked_structured = {**marked_structured, "_uninspected": True}
+
+    marked_content = list(result.content) if result.content else []
+    if marked_content:
+        first = marked_content[0]
+        text = getattr(first, "text", None)
+        if text:
+            try:
+                payload = json.loads(text)
+            except Exception:
+                payload = None
+            if isinstance(payload, dict):
+                payload["_uninspected"] = True
+                marked_content[0] = mt.TextContent(type="text", text=json.dumps(payload))
+            else:
+                # Not JSON-shaped (should not happen for this server's tools) --
+                # fall back to a separate marker block. A content[0]-only reader
+                # ignores it (no worse than doing nothing); never overwrites real
+                # content.
+                marked_content.append(mt.TextContent(type="text", text=UNINSPECTED_MARKER))
+
+    return ToolResult(
+        content=marked_content or result.content,
+        structured_content=marked_structured,
+        is_error=result.is_error,
+    )
 
 
 def _extract_text(result: ToolResult) -> str:
@@ -66,8 +139,30 @@ class ModelArmorResponseGuard(Middleware):
 
     def __init__(self):
         self._client = None
+        # Section 8 correction (2026-09-08): ONE flag for "sanitization is not
+        # actually happening right now, and every result must say so" -- covers
+        # both ways that can be true: a configured client that failed to
+        # construct (below), and a deployment that REQUIRES the guard but has no
+        # template at all (right below). Deliberately not a larger state
+        # machine: on_call_tool only ever needs a yes/no answer to "was this
+        # response actually checked".
+        self._degraded = False
         if not MODEL_ARMOR_RESPONSE_TEMPLATE:
-            log.info("MODEL_ARMOR_RESPONSE_TEMPLATE not set — response sanitization disabled")
+            if MODEL_ARMOR_RESPONSE_GUARD_REQUIRED:
+                # Reuses the EXACT existing "model_armor_guard_init_failed" log
+                # string/metric/alert (iac/agent/monitoring.tf) rather than adding
+                # a new metric+alert pair -- an operator who sees this alert takes
+                # the same action either way (fix config, redeploy), so it is the
+                # same alertable condition, not a distinct one.
+                log.error(
+                    "model_armor_guard_init_failed event=required_template_missing "
+                    "MODEL_ARMOR_RESPONSE_GUARD_REQUIRED=true but "
+                    "MODEL_ARMOR_RESPONSE_TEMPLATE is unset — response sanitization "
+                    "PERMANENTLY disabled for this process/revision"
+                )
+                self._degraded = True
+            else:
+                log.info("MODEL_ARMOR_RESPONSE_TEMPLATE not set — response sanitization disabled")
             return
         try:
             from google.api_core.client_options import ClientOptions
@@ -80,10 +175,20 @@ class ModelArmorResponseGuard(Middleware):
             )
             log.info("ModelArmorResponseGuard ready: %s", MODEL_ARMOR_RESPONSE_TEMPLATE)
         except Exception as exc:
-            log.warning(
-                "ModelArmorResponseGuard init failed (%s) — response sanitization disabled",
+            # Section 8 (2026-09-08): this used to be log.warning with no alertable
+            # signal -- a configured guard that fails to INITIALIZE degraded to
+            # permanently-uninspected (self._client stays None for the process
+            # lifetime) with only a one-time WARNING log, no metric, no alert. The
+            # existing mcp_model_armor_fail_open alert (iac/agent/monitoring.tf)
+            # only fires on the per-call sanitize_model_response exception below,
+            # never on init failure -- a distinct log-based metric for this exact
+            # string is added in the same Terraform change as this fix.
+            log.error(
+                "model_armor_guard_init_failed event=init_error error=%s — "
+                "response sanitization PERMANENTLY disabled for this process/revision",
                 exc,
             )
+            self._degraded = True
 
     async def on_call_tool(
         self,
@@ -92,8 +197,16 @@ class ModelArmorResponseGuard(Middleware):
     ) -> ToolResult:
         result = await call_next(context)
 
+        if self._degraded:
+            # Sanitization is required for this deployment (or was configured)
+            # but is not actually happening -- every result must be marked, not
+            # just the ones that hit a live per-call exception below.
+            return _mark_uninspected(result)
+
         if not self._client:
-            # Not configured — behave exactly as if this middleware were absent.
+            # Not configured, and not required for this deployment -- behave
+            # exactly as if this middleware were absent (intentional local/dev
+            # off-switch, not a failure).
             return result
 
         text = _extract_text(result)
@@ -128,7 +241,16 @@ class ModelArmorResponseGuard(Middleware):
                 "model_armor_fail_open event=sanitize_error tool=%s error=%s",
                 _tool_name(context), exc,
             )
-            return result
+            # Section 8 (2026-09-08): "not inspected" used to be invisible past this
+            # point -- the original result was returned completely unmodified, so
+            # evidence_extractor/rca_builder/memory-write had no way to know this
+            # specific tool response bypassed Model Armor. Fixed the SAME way this
+            # codebase already marks truncation (evidence_extractor.py's "...[middle
+            # truncated...]..." convention) -- a machine-parseable text marker that
+            # survives through the exact same content path every downstream reader
+            # already processes, rather than inventing a new out-of-band channel
+            # through the MCP wire protocol.
+            return _mark_uninspected(result)
 
         if blocked:
             log.warning(

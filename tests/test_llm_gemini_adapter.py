@@ -134,15 +134,18 @@ def test_reset_session_zeros_all_counters():
     # issue #74: the adapter instance is cached process-wide and reused across
     # investigations -- reset_session() must fully zero every session counter,
     # not just some, or a stale field would leak into the next investigation.
+    # Section 9 (2026-09-08): counters now live behind self._session() (a
+    # contextvars.ContextVar-backed dict), not flat instance attributes.
     adapter = GeminiAdapter(model="gemini-2.5-flash")
-    adapter._session_input = 100
-    adapter._session_cached_input = 20
-    adapter._session_output = 50
-    adapter._session_reasoning = 10
-    adapter._session_tool = 5
-    adapter._session_total = 185
-    adapter._session_calls = 3
-    adapter._session_duration_s = 4.2
+    session = adapter._session()
+    session["input"] = 100
+    session["cached_input"] = 20
+    session["output"] = 50
+    session["reasoning"] = 10
+    session["tool"] = 5
+    session["total"] = 185
+    session["calls"] = 3
+    session["duration_s"] = 4.2
 
     adapter.reset_session()
 
@@ -171,8 +174,9 @@ def test_investigate_resets_the_shared_adapter_session_before_each_run(monkeypat
     # the FIRST investigation's leftover session totals mixed into its own.
     import agent.llm as llm_facade
 
-    llm_facade._client._session_calls = 7  # simulate leftover state from a prior run
-    llm_facade._client._session_total = 12345
+    leftover = llm_facade._client._session()
+    leftover["calls"] = 7  # simulate leftover state from a prior run
+    leftover["total"] = 12345
 
     from agent.llm import reset_session
     reset_session()

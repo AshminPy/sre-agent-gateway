@@ -191,7 +191,9 @@ def test_guarded_rejects_invalid_namespace():
 
 
 def test_guarded_passes_valid_args_through():
-    @sec.guarded(namespace_fields=("namespace",), name_fields=("pod_name",))
+    # require_cluster_id=False: this test exercises generic arg passthrough, not
+    # cluster scoping -- see the dedicated cluster_id tests below for that.
+    @sec.guarded(namespace_fields=("namespace",), name_fields=("pod_name",), require_cluster_id=False)
     def fn(namespace: str, pod_name: str) -> dict:
         return {"namespace": namespace, "pod_name": pod_name}
 
@@ -200,7 +202,7 @@ def test_guarded_passes_valid_args_through():
 
 
 def test_guarded_never_raises_on_unexpected_exception():
-    @sec.guarded()
+    @sec.guarded(require_cluster_id=False)
     def fn() -> dict:
         raise RuntimeError("kaboom")
 
@@ -208,8 +210,39 @@ def test_guarded_never_raises_on_unexpected_exception():
     assert result == {"error": "kaboom", "ok": False}
 
 
+def test_guarded_error_log_line_is_single_line_for_metric_filter(caplog):
+    """Section 10 correction, live-discovered 2026-09-09: iac/agent/monitoring.tf's
+    mcp_connect_gateway_failure metric requires "guarded tool=", "failed:", AND
+    "connectgateway.googleapis.com" in the SAME textPayload -- proven live that a
+    real multi-line Kubernetes ApiException (str(e) contains embedded newlines) gets
+    split across separate Cloud Logging entries by Cloud Run's stdout ingestion, so
+    the filter could never match. This proves the fix: the logged line has zero
+    embedded newlines, and every substring the metric filter needs survives in ONE
+    record."""
+    multiline_error = (
+        '(401)\nReason: Unauthorized\nHTTP response headers: {...}\n'
+        'HTTP response body: [{\n  "error": {\n    "code": 401,\n'
+        '    "details": [{"metadata": {"service": "connectgateway.googleapis.com"}}]\n  }\n}]\n'
+    )
+
+    @sec.guarded(require_cluster_id=False)
+    def fn() -> dict:
+        raise RuntimeError(multiline_error)
+
+    with caplog.at_level("ERROR", logger="sre-mcp"):
+        fn()
+
+    error_records = [r for r in caplog.records if "guarded tool=" in r.message]
+    assert len(error_records) == 1
+    logged_line = error_records[0].message
+    assert "\n" not in logged_line
+    assert "guarded tool=" in logged_line
+    assert "failed:" in logged_line
+    assert "connectgateway.googleapis.com" in logged_line
+
+
 def test_guarded_redacts_return_value():
-    @sec.guarded()
+    @sec.guarded(require_cluster_id=False)
     def fn() -> dict:
         return {"data": {"password": "hunter2"}}
 
@@ -221,7 +254,7 @@ def test_guarded_enforces_rate_limit(monkeypatch):
     limiter = sec.RateLimiter(max_calls=2, window_s=60)
     monkeypatch.setattr(sec, "_rate_limiter", limiter)
 
-    @sec.guarded()
+    @sec.guarded(require_cluster_id=False)
     def fn() -> dict:
         return {"ok": True}
 

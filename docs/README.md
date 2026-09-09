@@ -65,9 +65,11 @@
 | [Deployment Failures](runbooks/deployment-failure.md) | Deploy failure, regression, CI/CD failure, Terraform drift |
 | [Data and Integration Failures](runbooks/data-and-integration-failure.md) | Evidence/memory failures, PagerDuty (N/A today) |
 | [Adding a New GKE Cluster](runbooks/add-gke-cluster.md) | Full onboarding runbook |
-| [Adding a Non-GKE / On-Prem Cluster](runbooks/add-non-gke-cluster.md) | The full build (not just a config change) |
+| [Adding a Non-GKE / On-Prem Cluster](../archive/SUPERSEDED_2026-09-07_add-non-gke-cluster.md) | ARCHIVED 2026-09-07 — superseded by the live production build, see [GKE vs Non-GKE](architecture/gke-vs-nongke.md) |
 | [Adding a New MCP Server](runbooks/add-mcp-server.md) | Template for future sources (Elastic, Prometheus, etc.) |
 | [Updating Existing MCP Tools](runbooks/update-mcp-tool.md) | Add/remove/rename/change-schema procedures |
+| [Operate (Day-2 Operations)](runbooks/operate.md) | Invoke, inspect logs/metrics/traces/evidence, diagnose, review/promote/revoke memory, roll back — one coherent entry point |
+| [Switch LLM/Model](runbooks/switch-llm-model.md) | Supported profiles, configuration, validation, rollback, cross-vendor limitations |
 
 ### Governance
 | Page | Covers |
@@ -113,7 +115,7 @@
 | [Floor-Settings Production Plan (2026-08-25)](management/floor-settings-production-plan-2026-08-25.md) | Model Armor floor-setting history — **referenced by `iac/agent/model_armor.tf`, do not move** |
 | [Observability Architecture Review (2026-08-23)](management/observability-architecture-review-2026-08-23.md) | Phase-0 observability gap review |
 | [RCA — TF 1.4.7 + Network Grant Removal (2026-08-26)](management/rca-2026-08-26-tf147-and-network-grant-removal.md) | Status: PARTIAL — CI smoke test still red for an unrelated, pre-existing reason |
-| [Next Slice: Connect Gateway Onboarding (2026-08-31)](management/next-slice-connect-gateway-onboarding-2026-08-31.md) | **Planned, not built** — the concrete follow-up workstream for full Connect Gateway/non-GKE onboarding (Fleet Terraform, baked auth plugin, live external-cluster E2E), deferred out of this run |
+| [Next Slice: Connect Gateway Onboarding (2026-08-31)](../archive/SUPERSEDED_2026-09-05_next-slice-connect-gateway-onboarding-2026-08-31.md) | ARCHIVED 2026-09-05 — the scoped work was built and proven live, see [PHASE1_RELEASE_VALIDATION_REPORT.md](management/PHASE1_RELEASE_VALIDATION_REPORT.md) |
 | ADR-001 … ADR-012 | Architecture decision records — [001 two-project split](ADR-001-two-project-split.md) · [002 agent identity and gateway](ADR-002-agent-identity-and-gateway.md) · [003 LangGraph orchestration](ADR-003-langgraph-orchestration.md) · [004 MCP tool-access protocol](ADR-004-mcp-tool-access-protocol.md) · [005 read-only by design](ADR-005-read-only-by-design.md) · [006 evidence before RCA](ADR-006-evidence-before-rca.md) · [007 two confidence dimensions](ADR-007-two-confidence-dimensions.md) · [008 confidence not accuracy](ADR-008-confidence-not-accuracy.md) · [009 GCS durable evidence archive](ADR-009-gcs-durable-evidence-archive.md) · [010 human approval before trusted memory](ADR-010-human-approval-before-trusted-memory.md) · [011 Terraform-managed cluster registry](ADR-011-terraform-managed-cluster-registry.md) · [012 GKE Remote MCP vs custom MCP](ADR-012-gke-remote-mcp-vs-custom-mcp.md) |
 
 ### Promotion to the company repo
@@ -132,7 +134,7 @@
 | [Connect Gateway / On-Prem](connect-gateway-onprem.md) | The non-GKE access path |
 | [Custom K8s MCP](custom-k8s-mcp.md) | The Cloud Run MCP fallback |
 | [Trace Content Capture](trace-content-capture.md) | What tracing does and does not record |
-| [Tool-Scaling Baseline (corrected)](baselines/tool-scaling-baseline-2026-08-09-corrected.md) | The official baseline. [Original run](baselines/tool-scaling-baseline-2026-08-09.md) kept as history |
+| [Tool-Scaling Baseline (corrected)](baselines/tool-scaling-baseline-2026-08-09-corrected.md) | The official baseline. [Original run](../archive/SUPERSEDED_2026-08-09_tool-scaling-baseline.md) kept as history |
 | [E2E Honest Baseline](testing/e2e-honest-baseline-2026-08-09-notification-relay.md) | Real end-to-end test evidence. **Referenced by tests and `agent/mcp_client.py`** — do not move |
 
 ---

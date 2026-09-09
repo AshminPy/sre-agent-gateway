@@ -65,6 +65,19 @@ SCENARIOS = {
         "severity":  "medium",
         "query": "Pod imagepull-pod in test-incidents on cluster sre-lab cannot pull its image. Investigate.",
     },
+    # Section 6/7 (2026-09-08): sre-lab-2 -- a genuinely SECOND, independently
+    # onboarded on-prem cluster (see iac/agent/variables.tf's additional_clusters
+    # entry) -- proves plug-and-play onboarding and A<->B isolation for real,
+    # not only against the original sre-lab. labtwo-marker-pod carries a unique
+    # env marker (UNIQUE_MARKER=LAB_TWO_ONLY) so cross-cluster leakage is
+    # directly observable in the returned evidence, not inferred.
+    "onprem2": {
+        "namespace": "test-incidents",
+        "cluster":   "sre-lab-2",
+        "pod":       "labtwo-marker-pod",
+        "severity":  "low",
+        "query": "Describe pod labtwo-marker-pod in test-incidents on cluster sre-lab-2 and report its environment variables.",
+    },
 
     # ── Complex (namespace: test-incidents) ──────────────────────────────
     "rollout": {

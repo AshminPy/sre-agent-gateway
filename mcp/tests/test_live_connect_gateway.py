@@ -48,10 +48,17 @@ def _set_context(monkeypatch):
 
 
 def _call(server_mod, name, args):
+    # Section 10 (2026-09-08): _call_tool_mcp is a private FastMCP API that no
+    # longer exists as of fastmcp 4.0.3 (mcp/requirements.txt pins an unbounded
+    # ">=2.3.4", so a fresh install always resolves to whatever's newest --
+    # confirmed root cause via a real AttributeError, not assumed). FastMCP.
+    # call_tool() is the documented PUBLIC replacement -- same real tool
+    # execution (validation -> k8s API call -> redact -> trim -> audit log,
+    # middleware applied by default, matching real request handling), simpler
+    # return shape (a ToolResult directly, no tuple-unwrapping needed).
     async def _run():
-        res = await server_mod.mcp._call_tool_mcp(name, args)
-        blocks = res[0] if isinstance(res, tuple) else res
-        blocks = getattr(blocks, "content", blocks)
+        res = await server_mod.mcp.call_tool(name, args)
+        blocks = res.content
         text = blocks[0].text if blocks else None
         try:
             return json.loads(text)
@@ -63,7 +70,7 @@ def _call(server_mod, name, args):
 def test_live_list_pods_kube_system():
     import server
     server.get_k8s_clients.cache_clear()
-    result = _call(server, "list_pods", {"namespace": "kube-system"})
+    result = _call(server, "list_pods", {"cluster_id": "sre-lab", "namespace": "kube-system"})
     assert "pods" in result
     assert result["count"] > 0, "kube-system must have real pods on a live cluster"
 
@@ -72,7 +79,7 @@ def test_live_describe_deployment_coredns():
     import server
     server.get_k8s_clients.cache_clear()
     result = _call(server, "describe_deployment",
-                    {"namespace": "kube-system", "deployment_name": "coredns"})
+                    {"cluster_id": "sre-lab", "namespace": "kube-system", "deployment_name": "coredns"})
     assert result["name"] == "coredns"
     assert result["replicas"]["desired"] >= 1
 
@@ -80,7 +87,7 @@ def test_live_describe_deployment_coredns():
 def test_live_daemonset_kube_proxy():
     import server
     server.get_k8s_clients.cache_clear()
-    result = _call(server, "describe_daemonset", {"namespace": "kube-system", "name": "kube-proxy"})
+    result = _call(server, "describe_daemonset", {"cluster_id": "sre-lab", "namespace": "kube-system", "name": "kube-proxy"})
     assert result["name"] == "kube-proxy"
     assert "status" in result
 
@@ -88,7 +95,7 @@ def test_live_daemonset_kube_proxy():
 def test_live_service_kubernetes():
     import server
     server.get_k8s_clients.cache_clear()
-    result = _call(server, "describe_service", {"namespace": "default", "service_name": "kubernetes"})
+    result = _call(server, "describe_service", {"cluster_id": "sre-lab", "namespace": "default", "service_name": "kubernetes"})
     assert result["type"] == "ClusterIP"
 
 
@@ -96,7 +103,7 @@ def test_live_configmap_with_dotted_name_regression():
     """The exact case that caught the DNS-1123-subdomain-vs-label validation bug."""
     import server
     server.get_k8s_clients.cache_clear()
-    result = _call(server, "get_configmap", {"namespace": "kube-system", "name": "kube-root-ca.crt"})
+    result = _call(server, "get_configmap", {"cluster_id": "sre-lab", "namespace": "kube-system", "name": "kube-root-ca.crt"})
     assert "data" in result
     assert "ca.crt" in result["data"]
 
@@ -107,7 +114,7 @@ def test_live_list_nodes_returns_structured_forbidden_not_a_crash():
     dict, never an unhandled exception."""
     import server
     server.get_k8s_clients.cache_clear()
-    result = _call(server, "list_nodes", {})
+    result = _call(server, "list_nodes", {"cluster_id": "sre-lab"})
     assert result.get("ok") is False
     assert "error" in result
     assert "orbidden" in result["error"] or "403" in result["error"]
@@ -116,6 +123,6 @@ def test_live_list_nodes_returns_structured_forbidden_not_a_crash():
 def test_live_invalid_namespace_rejected_before_reaching_cluster():
     import server
     server.get_k8s_clients.cache_clear()
-    result = _call(server, "list_pods", {"namespace": "../../etc"})
+    result = _call(server, "list_pods", {"cluster_id": "sre-lab", "namespace": "../../etc"})
     assert result.get("ok") is False
     assert "not a valid Kubernetes namespace" in result["error"]

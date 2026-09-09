@@ -1,12 +1,13 @@
 # ADR-012: GKE Remote MCP for GKE clusters, a separate custom MCP for non-GKE/on-prem
 
-Status: Accepted design; GKE path Accepted and live-verified; custom MCP path code-complete but NOT deployed today — see Tradeoffs
+Status: Accepted design; GKE path Accepted and live-verified; custom MCP path now also live and operational in production — see Tradeoffs
 
-> **Re-verified 2026-08-20:** still accurate. `enable_custom_mcp` still defaults to `false`
-> (`iac/agent/variables.tf`), and issue #85 ("Custom Cloud Run MCP fallback is
-> non-operational as deployed") remains **open** — no Load Balancer or Serverless NEG
-> exists in `iac/`, so the service has no network path even when enabled. No change needed
-> to this decision.
+> **Re-verified 2026-09-07:** the 2026-08-20 finding below (custom MCP not deployed, issue
+> #85 open) is superseded. The custom MCP is now live and operational in production, with
+> real end-to-end proof (Agent → Agent Gateway → custom Cloud Run MCP → Connect Gateway →
+> the `sre-lab` on-prem cluster), independently re-confirmed multiple times 2026-09-05/06/07.
+> See [MCP Architecture](architecture/mcp-architecture.md) for the current status and
+> evidence.
 
 ## Context
 
@@ -48,8 +49,8 @@ determined once cluster identity is resolved (`mcp_router.py:133-136`):
 - **Only support GKE, treat non-GKE/on-prem as explicitly out of scope** —
   rejected as a permanent stance; a real, documented need exists for on-prem
   investigation (the `onprem-001` golden case exists specifically to exercise
-  this path), even though — as the Tradeoffs below make plain — that need is
-  not actually met by the live deployment today.
+  this path), and — as the Tradeoffs below describe — that need is now met
+  by the live deployment.
 - **Route by trying GKE Remote MCP for everything and only falling back to
   custom MCP on failure, with no explicit cluster-type check** — rejected in
   favor of the current type-based routing, because a non-GKE cluster would
@@ -70,41 +71,39 @@ Architecture](architecture/mcp-architecture.md).
 
 ## Tradeoffs
 
-**Be precise about the honest, current split — this is "built, not
-deployed," not "doesn't exist":**
+**Be precise about the current, live split:**
 
 - The GKE path is real, live, and load-bearing today — this half of the
   decision is fully realized in production.
-- The custom MCP server's *code* is complete and proven working when run and
-  tested manually: 18 of 19 real tool calls succeeded against a `kind`
-  cluster (`sre-lab`) through a manually-configured Connect Gateway
-  registration; the one expected failure (`list_nodes`, forbidden) was
-  surfaced as a clean structured error, not a crash — proof the `@guarded()`
-  error handling works as designed.
-- But the *deployed* Cloud Run service cannot reach any cluster today, for
-  three independent reasons: (1) `enable_custom_mcp` defaults `false` and is
-  not overridden in the live `iac/agent/terraform.tfvars` — the service
-  isn't even deployed; (2) even if deployed,
-  `INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER` requires an Internal Load
-  Balancer + Serverless NEG that doesn't exist anywhere in this repo's
-  Terraform; (3) the deployed container's own env vars set only
-  `PROJECT_ID` — none of the connectivity variables `mcp/server.py` needs
-  (`GKE_CLUSTER_ENDPOINT`, `K8S_MCP_KUBE_CONTEXT`) are set, so even a
-  reachable container would fall through to a "load local kubeconfig" branch
-  with no kubeconfig file inside a Cloud Run container.
-- Practical consequence: the GKE-failure fallback to `k8s_mcp` currently
-  degrades to a tool failure rather than a working handoff, and the on-prem
-  path is unproven in production — a real gap, not a documentation gap. The
-  Connect Gateway infrastructure behind it is also not Terraform-managed
-  today (manual `gcloud` setup only), and successful reads through it aren't
-  currently audit-logged (`DATA_READ` audit logging for
-  `connectgateway.googleapis.com` is off).
-- What's needed to close this gap is enumerated concretely in [GKE vs
-  Non-GKE Access](architecture/gke-vs-nongke.md#whats-needed-to-actually-wire-this-together)
-  — building the Load Balancer/NEG, setting the connectivity env vars,
-  granting `roles/gkehub.gatewayReader`, converting the manual Fleet/RBAC
-  steps to Terraform, and extending `clusters.json`'s schema to record which
-  reachability mode a cluster needs.
+- The custom MCP server's *code* is complete and proven working, both
+  standalone and end-to-end in production: 18 of 19 real tool calls
+  succeeded against a `kind` cluster (`sre-lab`) through a manually-
+  configured Connect Gateway registration; the one expected failure
+  (`list_nodes`, forbidden) was surfaced as a clean structured error, not a
+  crash — proof the `@guarded()` error handling works as designed.
+- The *deployed* Cloud Run service is now live and reaches the `sre-lab`
+  on-prem/non-GKE cluster in production: real end-to-end proof exists
+  (Agent → Agent Gateway → custom Cloud Run MCP → Connect Gateway →
+  `sre-lab`), with dozens of successful real investigations, verified
+  2026-09-04 and independently re-confirmed 2026-09-05/06/07 — see
+  [MCP Architecture](architecture/mcp-architecture.md) for the exact
+  evidence and how each of the earlier blockers (ingress path, connectivity
+  env vars, `enable_custom_mcp` flag) was resolved.
+- Practical consequence: the GKE-failure fallback to `k8s_mcp` is now a
+  working handoff, not a degraded failure, and the on-prem path is proven in
+  production, not just standalone. The Connect Gateway infrastructure behind
+  it is still not Terraform-managed today (manual `gcloud` setup only), and
+  successful reads through it still aren't audit-logged (`DATA_READ` audit
+  logging for `connectgateway.googleapis.com` is off) — these two gaps
+  remain open.
+- ~~Remaining known limitation: the custom MCP is still single-cluster-per-
+  deployment~~ — **RESOLVED 2026-09-07** (issue #86): `get_k8s_clients(cluster_id)`
+  is `@lru_cache(maxsize=32)`, keyed per cluster; one shared Cloud Run service
+  correctly serves many clusters with proven isolation. What's still needed is
+  enumerated concretely in [GKE vs Non-GKE Access](architecture/gke-vs-nongke.md)
+  — converting the manual Fleet/RBAC steps to Terraform and turning on
+  `DATA_READ` audit logging remain open; the multi-cluster limitation itself
+  does not.
 
 ## Related ADRs
 

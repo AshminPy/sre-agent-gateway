@@ -123,6 +123,14 @@ def get_initial_state(incident_envelope: Dict[str, Any]) -> AgentState:
             "tokens_total":         0,
             "estimated_cost_usd":   0.0,
             "started_at":           time.time(),
+            # Wall-clock epoch above is for logs/reporting (rca_builder.py's
+            # total_latency_s, main.py's latency_ms) -- never used for elapsed-time
+            # decisions. This graph has no checkpointer (agent/graph.py's g.compile()
+            # takes no checkpointer arg) so an investigation never resumes in a
+            # different process; time.monotonic() is safe for its whole lifetime and
+            # immune to wall-clock jumps (NTP adjustment, DST, manual clock changes)
+            # that would otherwise corrupt loop_controller.py's budget/timeout checks.
+            "started_at_monotonic": time.monotonic(),
             "max_duration_seconds": 540,
         },
         "selected_mcp":       None,

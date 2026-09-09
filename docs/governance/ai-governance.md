@@ -50,7 +50,7 @@ Answers the questions Security, Risk, and Audit are most likely to ask.
 
 **Can incidents leak between sessions?** No — each investigation is a fresh, isolated `AgentState`; nothing carries over except the deliberate, gated Memory Bank recall. See [Context and State](../architecture/context-and-state.md#how-we-prevent-one-investigation-from-contaminating-another).
 
-**How is sensitive information handled?** Redaction at evidence-extraction time (before storage or model exposure); Model Armor was *intended* as an additional content-safety layer but is **currently not active in the live configuration** — see [Security Operations](security.md#️-model-armor--the-most-significant-governance-finding-in-this-review). This should be weighed explicitly if this system will handle more sensitive incident data than it does today.
+**How is sensitive information handled?** Redaction at evidence-extraction time (before storage or model exposure); Model Armor is now live as an additional content-safety layer on two paths — the Agent Gateway `CONTENT_AUTHZ` extension and the custom MCP's application-level response guard (`mcp/response_guard.py`) — see [Security Operations](security.md) for current status and the one remaining permanent platform gap (MCP response-body inspection on the gateway path).
 
 ## Model governance
 

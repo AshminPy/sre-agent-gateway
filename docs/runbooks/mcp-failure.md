@@ -1,6 +1,6 @@
 # Runbook: MCP Server and Tool Failures
 
-> **Last Verified:** 2026-08-08 · **Owner:** SRE Agent platform team
+> **Last Verified:** 2026-09-07 (custom MCP / Connect Gateway sections corrected — see [MCP Architecture](../architecture/mcp-architecture.md)) · **Owner:** SRE Agent platform team
 
 ## 8. MCP server unavailable
 
@@ -9,7 +9,7 @@
 **How to verify**: Cloud Logging, `logName="projects/sreagent-t2-demo/logs/sre-agent-tool-failures" AND jsonPayload.mcp_source="<source>"`. Check the error text in each entry.
 
 **Resolution — if `gke_remote_mcp`**: this is Google-managed (and Preview/Pre-GA per Google's own labeling) — check the GCP status dashboard first. There is no self-hosted component to restart.
-**Resolution — if `k8s_mcp`**: **the custom MCP isn't deployed in production today** (`enable_custom_mcp=false`, no Load Balancer/NEG exists) — see [MCP Architecture](../architecture/mcp-architecture.md). A failure here likely means it's misconfigured to be "on" without its network path built. Don't try to "fix" it live; treat as a known architectural gap, not a live-service outage.
+**Resolution — if `k8s_mcp`**: the custom MCP is **live production infrastructure** — the GitHub repo variable `ENABLE_CUSTOM_MCP=true` has driven every CI apply since 2026-08-07, and the `sre-k8s-mcp` Cloud Run service serves 100% of its traffic (reached via Connect Gateway for non-GKE/on-prem clusters, directly otherwise) — see [MCP Architecture](../architecture/mcp-architecture.md). Treat a failure here as a real service issue: check the Cloud Run service's own revision health/logs first, the same as any other live dependency. This is no longer a known-disabled architectural gap.
 
 ## 9. MCP tool missing
 
@@ -51,13 +51,13 @@ See #8 above (gke_remote_mcp case).
 
 ## 16. Custom MCP failure
 
-See #8 above (k8s_mcp case) — also see [MCP Architecture](../architecture/mcp-architecture.md) for the full "why it's not deployed" picture before spending time debugging a live-service issue that doesn't exist.
+See #8 above (`k8s_mcp` case) — also see [MCP Architecture](../architecture/mcp-architecture.md) for how this path is deployed and wired now that it's live production infrastructure.
 
 ## 17. Connect Gateway failure
 
 **Symptom**: an on-prem/non-GKE investigation fails to reach its cluster.
 
-**Reality check first**: per [GKE vs Non-GKE Access](../architecture/gke-vs-nongke.md), the production agent cannot reach any cluster via Connect Gateway today — this path was only proven manually/locally. If you're seeing this in production, the actual root cause is almost certainly "this path was never wired up," not a transient Connect Gateway outage.
+**Reality check first**: Connect Gateway is live production infrastructure now, not just a manual prototype — the custom MCP has run dozens of real investigations against the `sre-lab` `kind` cluster via Connect Gateway in production (2026-09-04 through 2026-09-07). If you're seeing this failure, treat it as a genuine Connect Gateway/cluster-reachability issue (see the verification steps below), not as "this path was never wired up." (Note: [GKE vs Non-GKE Access](../architecture/gke-vs-nongke.md) has not been re-verified in this pass and may still describe the earlier, superseded state.)
 
 **How to verify (for the manual/prototype path only)**:
 ```bash
@@ -77,7 +77,7 @@ the server rejected our request for an unknown reason (get pods)
 
 **Resolution**: if you're testing the prototype path specifically, scaling `gke-connect-agent` back up in the `gke-connect` namespace (if it was scaled to 0) resolves connectivity — recovery is automatic, no re-registration needed (documented, tested behavior — `docs/connect-gateway-onprem.md`).
 
-**Escalation**: if the actual goal is production on-prem support, this isn't a "fix the failure" task — it's the multi-step build documented in [Adding a Non-GKE / On-Prem Cluster](add-non-gke-cluster.md).
+**Escalation**: production on-prem support already exists for the `sre-lab` cluster via the custom MCP + Connect Gateway path (see [MCP Architecture](../architecture/mcp-architecture.md)). The historical multi-step build plan that describes this as not-yet-built is archived for reference only: `archive/SUPERSEDED_2026-09-07_add-non-gke-cluster.md`.
 
 ---
 

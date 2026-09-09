@@ -1,3 +1,15 @@
+> **SUPERSEDED 2026-09-05.** This document planned the "full Connect Gateway / non-GKE
+> cluster onboarding" as a deferred follow-up workstream. That work has since been built and
+> proven — see
+> [`docs/management/PHASE1_RELEASE_VALIDATION_REPORT.md`](../docs/management/PHASE1_RELEASE_VALIDATION_REPORT.md)
+> (2026-09-05), which documents the exact scoped work (Agent → Agent Gateway → custom Cloud
+> Run MCP → Connect Gateway → the `sre-lab` `kind` cluster) built and validated PASS with live
+> evidence, and
+> [`docs/architecture/mcp-architecture.md`](../docs/architecture/mcp-architecture.md) for the
+> current, live architecture. Kept below unmodified as historical planning evidence.
+
+---
+
 # Next slice: full Connect Gateway / non-GKE cluster onboarding
 
 > **Status: PLANNED — documentation only. Nothing in this file has been built.**
@@ -31,7 +43,7 @@ Two of the three layers named in `docs/architecture/gke-vs-nongke.md` are done; 
 | Layer | State | Evidence |
 |---|---|---|
 | Connect Gateway infra (fleet membership, RBAC) | Proven manually against `kind`, **not Terraform-managed** | `docs/connect-gateway-onprem.md` — no `google_gke_hub_membership` resource anywhere in `iac/` (confirmed by grep) |
-| `mcp/server.py`'s Connect Gateway auth branch | Proven locally, 18/19 tool calls succeeded via `kubectl` context | `docs/custom-k8s-mcp.md:177`; `docs/management/implemented-vs-planned-matrix.md:48` ("Connect Gateway 🔵 — proven manually... no `google_gke_hub_membership` Terraform resource anywhere") |
+| `mcp/server.py`'s Connect Gateway auth branch | Proven locally, 18/19 tool calls succeeded via `kubectl` context | `docs/custom-k8s-mcp.md:177`; `docs/management/implemented-vs-planned-matrix.md:48` ("Connect Gateway 🔵 — proven manually only... no `google_gke_hub_membership` Terraform resource anywhere") |
 | Deployed Cloud Run MCP service reaching a cluster via Connect Gateway | **Not done** — no network path, no baked auth plugin, no IAM binding on the runtime SA | `PRODUCTION-LAUNCH-PLAN.md:588`; `docs/runbooks/add-non-gke-cluster.md` steps 2, 5, 7 |
 
 Deep per-item research already exists for this exact slice: `NEXTSTEPS.md`, item 10

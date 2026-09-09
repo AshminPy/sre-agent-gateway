@@ -2,6 +2,22 @@
 **Phase 0 — Validation only. No code, config, or infra was changed to produce this report.**
 Date: 2026-08-23. Repo: `/Users/ashmin/projects/sre-agent-gateway`.
 
+> **Resolved since this review (added 2026-09-07) — this document is a dated Phase 0 snapshot,
+> not current state. See [Current State](CURRENT-STATE.md) for what's true today.**
+> - **§3 (telemetry fail-open violation) — FIXED.** `agent/main.py:872-899` now separates
+>   "the graph completed successfully" from "the graph crashed," so a failure during
+>   finalization/logging no longer reports a genuinely successful investigation as failed.
+> - **§7 (GCS evidence-store span) — FIXED.** `agent/gcs_client.py:39-45` now wraps the write
+>   in `tracer.start_as_current_span("gcs.write_evidence")`.
+> - **§1's `register_endpoints.py` GRPC-only-hostname landmine — MOOT.** The script was
+>   retired 2026-09-04 (`archive/RETIRED_2026-09-04_register_endpoints.py`); Terraform now
+>   manages Agent Registry endpoint registrations directly (`iac/agent/agent_registry.tf`,
+>   `agent_registry_mcp.tf`, commit `a3f2ba1`).
+> - **§6 (MCP call-level span in `agent/mcp_client.py`) — STILL OPEN.** Confirmed: no
+>   `start_as_current_span` call exists anywhere in `agent/mcp_client.py`. Not done.
+> - **§2 (the 5 broken alerts)** and everything else below is not re-verified by this
+>   addendum — treat the rest of this document as historical unless separately confirmed.
+
 Every claim below is tagged VERIFIED (checked against live GCP, the actual repo, or a direct official-doc fetch) or UNVERIFIED/NOT FOUND (searched for, not confirmed) — never presented as fact without one of those tags, per your instructions.
 
 ---

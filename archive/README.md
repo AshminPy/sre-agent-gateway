@@ -64,3 +64,30 @@ Zero-reference status for all 4 confirmed by a full repo-wide reference sweep be
 (2026-08-30). All inbound links from other docs updated in the same pass; `PRODUCTION-LAUNCH-PLAN.md`
 and `floor-settings-production-plan-2026-08-25.md` were evaluated but deliberately NOT archived —
 both are cited by live code/Terraform comments, not just other docs.
+
+## Added 2026-09-07 (docs-editor pass — see caveats below, inbound links NOT yet updated)
+
+| File | What it was | Status | Superseded/replaced by |
+|---|---|---|---|
+| `SUPERSEDED_2026-09-04_agent-registry-terraform-pilot-import-2026-08-31.md` | Pilot-import prep for Agent Registry endpoints into Terraform | Superseded — its "PARTIAL / BLOCKED-by-design" conclusion was overtaken | Terraform now manages this directly (commit `a3f2ba1`, 2026-09-04) — `../docs/management/CURRENT-STATE.md` §7 |
+| `SUPERSEDED_2026-09-05_next-slice-connect-gateway-onboarding-2026-08-31.md` | Plan for the "next slice" of Connect Gateway / non-GKE onboarding | Superseded — the planned work has since been built and proven | `../docs/management/PHASE1_RELEASE_VALIDATION_REPORT.md` (2026-09-05), `../docs/architecture/mcp-architecture.md` |
+| `SUPERSEDED_2026-09-07_add-non-gke-cluster.md` | Runbook: "Adding a Non-GKE / On-Prem Cluster" | Superseded — its "nothing described here is wired in yet" header is no longer true | `../docs/architecture/mcp-architecture.md`, `../docs/management/PHASE1_RELEASE_VALIDATION_REPORT.md` |
+| `SUPERSEDED_2026-08-09_tool-scaling-baseline.md` | First ("broken harness") tool-scaling baseline run | Superseded — its own sibling explicitly supersedes it | `../docs/baselines/tool-scaling-baseline-2026-08-09-corrected.md` |
+
+**Important caveats for this batch, unlike every earlier batch above:**
+- **These are copies, not moves.** The docs-editor agent that created them has Read/Grep/Glob/Write/Edit
+  tools only — no Bash, no file-delete/move capability. Each **original file still exists at its
+  original path** (`docs/management/agent-registry-terraform-pilot-import-2026-08-31.md`,
+  `docs/management/next-slice-connect-gateway-onboarding-2026-08-31.md`,
+  `docs/runbooks/add-non-gke-cluster.md`, `docs/baselines/tool-scaling-baseline-2026-08-09.md`) and was
+  **not edited or deleted**. Completing the actual move (`git mv`, or review-then-`git rm` the original
+  now that its content is duplicated here) is a manual step still needed.
+- **Inbound references were NOT swept or updated**, unlike the 2026-08-20/2026-08-30 batches above. Known
+  referencing files, found by grep, not yet fixed: `docs/README.md`, `NEXTSTEPS.md`,
+  `openspec/changes/phase-1-mvp-release/tasks.md`, `docs/architecture/gke-vs-nongke.md`,
+  `docs/runbooks/add-gke-cluster.md`, `docs/promotion/02-migration-manifest-template.md`,
+  `docs/architecture/evaluation.md`, and `docs/baselines/tool-scaling-baseline-2026-08-09-corrected.md`
+  (its "Relationship to the first run" section). `docs/runbooks/mcp-failure.md` was updated in the same
+  pass as this archival and already points at the new `add-non-gke-cluster.md` archive path.
+- **`tool-scaling-baseline-2026-08-09-raw.json`** (the paired raw-data file) was **not** copied here —
+  only the `.md` was in scope for this pass. It remains next to the original `.md` in `docs/baselines/`.

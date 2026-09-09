@@ -11,13 +11,13 @@
 | Model input/output tokens | Yes, per investigation | `estimated_cost_usd`, computed from live pricing constants in `agent/gemini_client.py` (`GEMINI_PRICE_INPUT`/`GEMINI_PRICE_OUTPUT` env vars, defaulting to $0.15/$0.60 per 1M tokens — **verify current Gemini pricing directly against Google's published rates before trusting these defaults; they are not automatically kept in sync with Google's price list**) |
 | Agent Engine compute | Not itemized in application metrics — standard Vertex AI billing applies, 2 warm min-instances running continuously (`min_instances=2`, `cpu=4`, `memory=8Gi` per `iac/agent/agent_engine.tf`) | GCP Billing console |
 | Agent Gateway | Standard GCP networking/gateway billing — not itemized here | GCP Billing console |
-| MCP infrastructure | GKE Remote MCP: no separate charge beyond standard GKE API usage. Custom MCP: not currently deployed, so $0 today | GCP Billing console |
+| MCP infrastructure | GKE Remote MCP: no separate charge beyond standard GKE API usage. Custom MCP: now deployed and running (Cloud Run `sre-k8s-mcp`) — real Cloud Run compute cost applies, not itemized separately here | GCP Billing console |
 | GCS (evidence + eval buckets) | Standard storage pricing, bounded by the 90/365-day lifecycle rules | GCP Billing console |
 | Cloud Logging | Standard ingestion/retention pricing — note the confirmed double-emission issue (see [Observability](../operations/observability.md)) roughly doubles log *volume* for several fields, which has a real (if likely small) cost impact | GCP Billing console |
 | Cloud Trace | Standard pricing, sampling rate `OTEL_TRACES_SAMPLER_ARG=1.0` (100% sampled — no cost-saving sampling reduction applied today) | GCP Billing console |
-| Monitoring | Standard log-based-metric + alert-policy pricing, 10 metrics + 11 alerts | GCP Billing console |
-| Networking | Cloud NAT for egress — standard pricing | GCP Billing console |
-| Custom MCP service | $0 today (not deployed) — would add Cloud Run compute + any Load Balancer/NEG cost once built | n/a |
+| Monitoring | Standard log-based-metric + alert-policy pricing, 13 alert policies (`iac/agent/monitoring.tf`) | GCP Billing console |
+| Networking | Cloud NAT for egress — standard pricing. Custom MCP reached via Connect Gateway, not a Load Balancer/NEG | GCP Billing console |
+| Custom MCP service | Real Cloud Run compute cost now applies — the service is deployed and running (`sre-k8s-mcp`), reached via Connect Gateway | GCP Billing console |
 | Memory/evaluation services | Memory Bank: standard Vertex AI pricing for the companion reasoning engine. Eval: no incremental infra cost beyond the eval bucket | GCP Billing console |
 
 ## How to measure cost per investigation

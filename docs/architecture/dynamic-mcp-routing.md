@@ -1,7 +1,7 @@
 # Dynamic MCP Routing
 
-> **Implementation Status:** IMPLEMENTED (deterministic source selection); custom-MCP target itself is PLANNED/BLOCKED — see [MCP Architecture](mcp-architecture.md)
-> **Last Verified:** 2026-08-08 — `agent/nodes/mcp_router.py:110-136`
+> **Implementation Status:** IMPLEMENTED (deterministic source selection); custom-MCP target is also IMPLEMENTED and live in production — see [MCP Architecture](mcp-architecture.md)
+> **Last Verified:** 2026-09-07 — `agent/nodes/mcp_router.py:110-136`
 > **Source of Truth:** `agent/nodes/mcp_router.py:110-136`
 > **Owner:** SRE Agent platform team.
 
@@ -11,7 +11,7 @@ This page is about **which MCP source** the agent uses (`gke_remote_mcp` vs. the
 
 ```
 Cluster type = "gke"   → gke_remote_mcp   (Google-managed)
-Cluster type = anything else → k8s_mcp    (custom Cloud Run MCP — currently PLANNED/BLOCKED, see MCP Architecture)
+Cluster type = anything else → k8s_mcp    (custom Cloud Run MCP — live and operational, see MCP Architecture)
 ```
 
 There is currently no Elastic MCP, Prometheus MCP, or any other source registered — those are **PLANNED**, future work, following the pattern in [Adding a New MCP Server](../runbooks/add-mcp-server.md).
@@ -54,7 +54,7 @@ Via the golden evaluation cases (see [Evaluation](evaluation.md)) — several ca
 flowchart TD
     A["Cluster already resolved<br/>(see Cluster Routing)"] --> B{"cluster_type?"}
     B -->|"gke"| C["gke_remote_mcp<br/>(Google-managed)"]
-    B -->|"custom / other"| D["k8s_mcp<br/>(custom Cloud Run MCP —<br/>PLANNED/BLOCKED today)"]
+    B -->|"custom / other"| D["k8s_mcp<br/>(custom Cloud Run MCP —<br/>live and operational)"]
     C -->|HTTP failure| E["auto-fallback to k8s_mcp<br/>for that tool call"]
     B -->|"registry entry missing/disabled"| F["safe-stop<br/>current_action = done<br/>log: sre-agent-routing-failures"]
 ```

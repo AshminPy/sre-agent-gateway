@@ -171,16 +171,21 @@ config since it's a separately-deployable component with its own
 
 ## Known gaps / follow-ups (not fixed here, documented not hidden)
 
-- **Cloud Run production wiring not done.** `iac/agent/cloudrun_mcp.tf`
-  still only supports the direct-GKE-endpoint + Workload Identity path.
-  Routing the deployed Cloud Run service through Connect Gateway needs
-  `gke-gcloud-auth-plugin`/`gcloud` installed in `mcp/Dockerfile`'s slim
-  image and a `roles/gkehub.gatewayReader` binding for the runtime SA
-  (`google_service_account.mcp_runtime` in that Terraform file) — real infra
-  work, not made here per this task's scope (no `terraform apply`, and
-  the Dockerfile/image change needs its own build+test cycle). Today's
-  proof is the code path (`K8S_MCP_KUBE_CONTEXT` in `get_k8s_clients()`)
-  plus a real live run of the *same* server code locally.
+- **Cloud Run production wiring now done and live.** `iac/agent/cloudrun_mcp.tf`
+  sets `K8S_MCP_KUBE_CONTEXT` (via `var.custom_mcp_kube_context`), and
+  `mcp/Dockerfile` bakes in the Connect Gateway kubeconfig, the
+  `gke-gcloud-auth-plugin`, and the base `google-cloud-cli` package the
+  plugin needs. Real end-to-end proof exists in production (Agent → Agent
+  Gateway → custom Cloud Run MCP → Connect Gateway → the `sre-lab` cluster),
+  verified 2026-09-04 and independently re-confirmed 2026-09-05/06/07 — see
+  [MCP Architecture](architecture/mcp-architecture.md) for the evidence.
+  RESOLVED 2026-09-07 (issue #86, Section 5 of the new-assignment expansion
+  work): `get_k8s_clients(cluster_id)` is now `@lru_cache(maxsize=32)`, keyed
+  per cluster — one shared Cloud Run service correctly serves many clusters
+  concurrently with proven isolation (`mcp/tests/test_multi_cluster_isolation.py`'s
+  real concurrent-threading test). Adding a new on-prem cluster is now a
+  registry entry + Fleet registration, not a new deployment — see
+  `docs/connect-gateway-onprem.md`'s "Adding a second on-prem cluster" section.
 - **Rate limiting is per-process, not distributed.** Fine for
   `min_instance_count=0/max=3` single-tenant internal use
   (`cloudrun_mcp.tf`); would need Memorystore/Redis for a real distributed

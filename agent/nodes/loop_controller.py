@@ -79,40 +79,78 @@ def _is_stuck(state: AgentState) -> bool:
     )
 
 
+def _tool_signature(call: dict) -> tuple:
+    """Canonical (tool, sorted normalized args) signature for stuck/oscillation
+    checks. Args are normalized (str-cast, stripped) so cosmetic differences
+    (int vs str, whitespace) don't defeat a real repeat-detection, but a
+    genuinely different target (a different pod/node/namespace) never
+    collapses into the same signature as a different one -- args ARE part of
+    the identity of "the same call", not noise to discard."""
+    args = call.get("args") or {}
+    normalized = tuple(sorted((k, str(v).strip()) for k, v in args.items()))
+    return (call.get("tool"), normalized)
+
+
 def _is_oscillating(state: AgentState) -> bool:
-    """Oscillating = A→B→A→B pattern in last 4 successful tool calls."""
+    """Oscillating = A→B→A→B pattern in last 4 successful tool calls, where
+    A/B are full (tool, args) signatures, not just tool names.
+
+    Previously compared tool NAME only: describe_pod(pod=A) -> get_logs(pod=A)
+    -> describe_pod(pod=B) -> get_logs(pod=B) matched the name-only pattern
+    (describe/logs/describe/logs) and was wrongly flagged as oscillation, even
+    though the agent was legitimately investigating two different pods, not
+    looping on one. Comparing the full call signature (tool + args) fixes
+    this: two different pods produce four distinct signatures, so the pattern
+    no longer matches.
+    """
     ok_history = [h for h in state.get("tool_history", []) if h.get("ok")]
     if len(ok_history) < 4:
         return False
-    a, b, c, d = ok_history[-4], ok_history[-3], ok_history[-2], ok_history[-1]
-    return (
-        a.get("tool") == c.get("tool") and
-        b.get("tool") == d.get("tool") and
-        a.get("tool") != b.get("tool")
-    )
+    a, b, c, d = (_tool_signature(h) for h in ok_history[-4:])
+    return a == c and b == d and a != b
 
 
 def _is_timed_out(state: AgentState) -> bool:
-    """Timeout = wall-clock elapsed exceeds max_duration_seconds."""
-    inv          = state["investigation"]
-    started_at   = inv.get("started_at", 0)
+    """Timeout = elapsed exceeds max_duration_seconds.
+
+    Uses the monotonic clock (see state.py's started_at_monotonic) rather than
+    time.time() so a wall-clock jump (NTP adjustment, DST, manual clock
+    change) mid-investigation can't corrupt this decision. started_at (wall
+    clock) is kept separately, only for latency reporting/logs.
+    """
+    inv = state["investigation"]
+    started_at_mono = inv.get("started_at_monotonic")
+    if started_at_mono is None:
+        # Defensive fallback only -- every real investigation gets this field from
+        # get_initial_state(); this branch exists for state dicts built elsewhere
+        # (e.g. a test fixture) that predate the field.
+        started_at_mono = inv.get("started_at", 0)
+        now = time.time()
+    else:
+        now = time.monotonic()
     max_duration = inv.get("max_duration_seconds", 300)
-    return started_at > 0 and (time.time() - started_at) > max_duration
+    return started_at_mono > 0 and (now - started_at_mono) > max_duration
 
 
 def _is_safety_budget_exceeded(state: AgentState) -> bool:
-    """True once wall-clock elapsed exceeds SAFETY_BUDGET_SECONDS.
+    """True once elapsed exceeds SAFETY_BUDGET_SECONDS.
 
     Distinct from _is_timed_out()'s max_duration_seconds (540s, unchanged) --
     this is a smaller, earlier check meant to stop the loop from starting
     another expensive round (a full task_planner -> ... -> task_evaluator
     pass) when there is not enough headroom left before the managed Vertex AI
     Agent Engine request/stream boundary (issue #103). It does not, and
-    cannot, interrupt a single call already in progress.
+    cannot, interrupt a single call already in progress. Uses the monotonic
+    clock for the same reason as _is_timed_out() above.
     """
-    inv        = state["investigation"]
-    started_at = inv.get("started_at", 0)
-    return started_at > 0 and (time.time() - started_at) > _SAFETY_BUDGET_SECONDS
+    inv = state["investigation"]
+    started_at_mono = inv.get("started_at_monotonic")
+    if started_at_mono is None:
+        started_at_mono = inv.get("started_at", 0)
+        now = time.time()
+    else:
+        now = time.monotonic()
+    return started_at_mono > 0 and (now - started_at_mono) > _SAFETY_BUDGET_SECONDS
 
 
 def _consecutive_tool_failures(state: AgentState) -> bool:
@@ -171,28 +209,33 @@ def loop_controller(state: AgentState) -> dict:
     over_budget     = _token_budget_exceeded(state)
 
     # ── Exit decision — order matters ─────────────────────────────
+    # Time/token hard limits (safety budget, wall-clock timeout, token
+    # budget) are checked FIRST, unconditionally, before ANY evidence-driven
+    # decision -- including "enough_evidence" itself. Previously "elif enough:
+    # exit_reason = confidence_sufficient" was checked before these limits, so
+    # a run that had ALSO already blown its safety budget / timed out / gone
+    # over its token budget still got reported as confidence_sufficient,
+    # hiding the real, truthful reason it stopped. Concrete repro: step=1/5,
+    # enough=True, one missing domain, elapsed 600s against a 540s
+    # max_duration_seconds, tokens_total=200000 against a 100000 budget --
+    # with the OLD ordering the "enough + missing_domains + step<max_steps"
+    # branch matched first and forced a second iteration, never even
+    # evaluating the already-blown time/token limits in that pass (loop
+    # advanced to step 2, status=running, no exit reason at all). Checking
+    # these three first closes that gap for every entry path, not just this
+    # one branch.
+    #
+    # step >= max_steps ("max_iterations") is NOT part of this same
+    # first-checked group -- it stays checked AFTER the
+    # enough+missing_domains override (its original position), because
+    # that specific interaction is a genuine, already-covered, different
+    # case: "no iteration budget left to chase one more missing domain, but
+    # nothing else is wrong" should still report confidence_sufficient, not
+    # max_iterations -- see test_enough_evidence_with_missing_domain_but_no_budget_left_still_exits.
     exit_reason = None
     missing_domains = state["investigation"].get("completeness", {}).get("missing_required_domains", [])
 
-    if enough and missing_domains and step < max_steps:
-        # issue #69: enough_evidence is the LLM's own self-report -- it was previously
-        # honored unconditionally, even when task_evaluator's deterministic completeness
-        # check (computed in the SAME call, from real AgentState) found required evidence
-        # domains still missing. Real E2E proof: the agent's own evidence_gaps named a
-        # specific unresolved gap, yet the loop still exited with confidence_sufficient.
-        # Force one more iteration instead, as long as iteration budget remains.
-        log.info(
-            "loop_controller: evaluator said enough_evidence but completeness reports "
-            "missing required domain(s) %s -- forcing one more iteration (%d/%d steps)",
-            missing_domains, step, max_steps,
-        )
-
-    elif enough:
-        # Evaluator confirmed sufficient evidence, and either no required domains are
-        # missing or no iteration budget remains to chase them further — exit.
-        exit_reason = "confidence_sufficient"
-
-    elif safety_budget_exceeded:
+    if safety_budget_exceeded:
         # Not enough headroom left before the managed ~300s Vertex AI Agent
         # Engine stream boundary (issue #103) — stop before starting another
         # expensive round rather than risk a raw stream-timeout with no
@@ -207,6 +250,28 @@ def loop_controller(state: AgentState) -> dict:
     elif over_budget:
         # Token hard cap hit — exit before next iteration burns more
         exit_reason = "token_budget_exceeded"
+
+    elif enough and missing_domains and step < max_steps:
+        # issue #69: enough_evidence is the LLM's own self-report -- it was previously
+        # honored unconditionally, even when task_evaluator's deterministic completeness
+        # check (computed in the SAME call, from real AgentState) found required evidence
+        # domains still missing. Real E2E proof: the agent's own evidence_gaps named a
+        # specific unresolved gap, yet the loop still exited with confidence_sufficient.
+        # Force one more iteration instead. Reaching this branch already confirms none of
+        # the three time/token limits above are exceeded, so forcing this one extra
+        # iteration is safe.
+        log.info(
+            "loop_controller: evaluator said enough_evidence but completeness reports "
+            "missing required domain(s) %s -- forcing one more iteration (%d/%d steps)",
+            missing_domains, step, max_steps,
+        )
+
+    elif enough:
+        # Evaluator confirmed sufficient evidence, and either no required domains are
+        # missing or no iteration budget remains to chase them further — exit. Reaching
+        # here already confirms no time/token limit is exceeded, so this exit reason is
+        # truthful (a budget-limited run never reaches this branch).
+        exit_reason = "confidence_sufficient"
 
     elif step >= max_steps:
         # Hard cap — always exit

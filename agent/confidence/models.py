@@ -75,6 +75,45 @@ class Contradiction:
 
 
 @dataclass
+class RemediationItem:
+    """Section 7 (2026-09-08): the LLM's suggested_remediation used to be a flat list of
+    strings with zero structure -- no link to which cause it addressed, no prerequisites,
+    scope, risk, or rollback. This makes each item a real, reviewable recommendation
+    instead of a bare sentence. tied_to_primary_cause is set deterministically here, never
+    trusted from the model's own claim -- see claim_builder.normalize_remediation_items().
+    """
+    action: str
+    tied_to_primary_cause: bool
+    # "remediation" | "diagnostic_next_step" -- forced to diagnostic_next_step whenever
+    # tied_to_primary_cause is False, regardless of what the model itself said.
+    item_type: str = "diagnostic_next_step"
+    prerequisites: str = ""
+    affected_scope: str = ""
+    expected_benefit: str = ""
+    risk: str = "not assessed"
+    recovery_verification: str = ""
+    rollback: str = "not applicable"
+    # Populated by normalize_remediation_items()'s lightweight identifier check -- non-empty
+    # only when the action text names a resource that doesn't match anything actually
+    # collected in this investigation. Advisory, not a hard block.
+    identifier_warning: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "action": self.action,
+            "tied_to_primary_cause": self.tied_to_primary_cause,
+            "item_type": self.item_type,
+            "prerequisites": self.prerequisites,
+            "affected_scope": self.affected_scope,
+            "expected_benefit": self.expected_benefit,
+            "risk": self.risk,
+            "recovery_verification": self.recovery_verification,
+            "rollback": self.rollback,
+            "identifier_warning": self.identifier_warning,
+        }
+
+
+@dataclass
 class Hypothesis:
     hypothesis_id: str
     description: str

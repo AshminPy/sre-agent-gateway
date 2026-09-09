@@ -38,14 +38,17 @@ locals {
   # var.additional_clusters instead.
   default_cluster = {
     (var.gke_cluster_name) = {
-      aliases            = []
-      project            = var.project_b_id
-      region             = var.region
-      type               = "gke"
-      environment        = "production"
-      allowed_namespaces = []
-      owner              = ""
-      enabled            = true
+      aliases              = []
+      project              = var.project_b_id
+      region               = var.region
+      type                 = "gke"
+      environment          = "production"
+      allowed_namespaces   = []
+      owner                = ""
+      enabled              = true
+      kube_context         = "" # GKE entries route via GKE Remote MCP, never the custom MCP
+      fleet_project_number = ""
+      fleet_membership     = ""
     }
   }
 
@@ -54,15 +57,18 @@ locals {
   clusters_json = jsonencode({
     clusters = [
       for name, c in local.all_clusters : {
-        name               = name
-        aliases            = c.aliases
-        project            = c.project
-        region             = c.region
-        type               = c.type
-        environment        = c.environment
-        allowed_namespaces = c.allowed_namespaces
-        owner              = c.owner
-        enabled            = c.enabled
+        name                 = name
+        aliases              = c.aliases
+        project              = c.project
+        region               = c.region
+        type                 = c.type
+        environment          = c.environment
+        allowed_namespaces   = c.allowed_namespaces
+        owner                = c.owner
+        enabled              = c.enabled
+        kube_context         = c.kube_context
+        fleet_project_number = c.fleet_project_number
+        fleet_membership     = c.fleet_membership
       }
     ]
   })

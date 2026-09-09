@@ -6,18 +6,22 @@
 # CONTENT_AUTHZ extension (agent_gateway.tf) passes request_template_id =
 # sre_agent_request and response_template_id = sre_agent_response.
 #
-# Used one way today (issue #203 correction, 2026-09-05): the app layer —
-# agent code calls sanitize_user_prompt / sanitize_model_response
-# (agent/main.py) using the request template, unconditionally, regardless of
-# whether Agent Gateway is on. The gateway's own IAP REQUEST_AUTHZ extension
-# (agent_gateway.tf) is header/attribute-based routing authorization, NOT
-# content inspection — no CONTENT_AUTHZ extension wiring exists or has ever
-# been proven to work here (see agent_gateway.tf's own note and
-# archive/RESOLVED_2026-08-08_MODEL_ARMOR_CONTENT_AUTHZ_TEST.md). The
-# "defense in depth" claim this comment previously made was never real; only
-# this app layer actually inspects the agent's own input/output text. Floor
-# settings (a separate mechanism) cover AI_PLATFORM/GOOGLE_MCP_SERVER traffic,
-# not this.
+# Section 7 correction (2026-09-08): the claim below that the app layer
+# sanitizes "unconditionally, regardless of whether Agent Gateway is on" is
+# STALE and was live-verified false. `agent_engine.tf` only sets
+# MODEL_ARMOR_TEMPLATE (the env var agent/main.py::_sanitize() needs) when
+# `enable_agent_gateway` is FALSE -- the gateway is ON by default
+# (terraform.tfvars), so in the actual deployed configuration the app-layer
+# bookend sanitize is INACTIVE, confirmed via a live startup log line:
+# "MODEL_ARMOR_TEMPLATE not set — safety filter disabled". The real, active
+# content inspection today is the gateway's own CONTENT_AUTHZ extension
+# (agent_gateway.tf, wired and live-verified -- see its own comments) plus
+# Model Armor floor settings (below) -- both genuinely exist now, unlike when
+# this comment was first written (issue #203, 2026-09-05), which correctly
+# described an EARLIER state where CONTENT_AUTHZ wiring did not exist yet.
+# These two templates are used by whichever of the two paths is active for
+# the current `enable_agent_gateway` setting -- never both at once for the
+# same traffic.
 
 # Request-side: prompt injection / jailbreak + malicious URI + RAI. SRE agents
 # ingest raw k8s logs, so input inspection is the high-risk path.

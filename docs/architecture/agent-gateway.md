@@ -1,7 +1,7 @@
 # Agent Gateway
 
-> **Implementation Status:** IMPLEMENTED (IAP REQUEST_AUTHZ, enforcing); Model Armor CONTENT_AUTHZ NOT IMPLEMENTED/BLOCKED at the API level
-> **Last Verified:** 2026-08-08 — `iac/agent/agent_gateway.tf`, live `terraform.tfvars`, `../../archive/RESOLVED_2026-08-08_MODEL_ARMOR_CONTENT_AUTHZ_TEST.md`
+> **Implementation Status:** IMPLEMENTED (IAP REQUEST_AUTHZ, enforcing, fail-closed); Model Armor CONTENT_AUTHZ IMPLEMENTED and wired, with a known permanent platform limitation for MCP tool-response bodies — see below
+> **Last Verified:** 2026-09-07 — `iac/agent/agent_gateway.tf`, `iac/agent/model_armor.tf`, live `terraform.tfvars`, `iac/agent/variables.tf`
 > **Source of Truth:** `iac/agent/agent_gateway.tf:39-125`
 > **Owner:** SRE Agent platform team.
 >
@@ -9,7 +9,7 @@
 
 ## Why Agent Gateway exists
 
-Agent Gateway is a Google-managed egress-governance layer purpose-built for AI agent workloads. Instead of every agent making direct outbound calls to whatever APIs/MCP servers it needs (which would need per-destination network/firewall/IAM plumbing, and would be hard to audit centrally), the agent routes all its egress through one gateway, which authorizes each request against a central registry and can (in principle — see the Model Armor caveat below) inspect content.
+Agent Gateway is a Google-managed egress-governance layer purpose-built for AI agent workloads. Instead of every agent making direct outbound calls to whatever APIs/MCP servers it needs (which would need per-destination network/firewall/IAM plumbing, and would be hard to audit centrally), the agent routes all its egress through one gateway, which authorizes each request against a central registry and inspects content via Model Armor (see the coverage caveat below).
 
 ## Why the agent does not call every MCP server directly
 
@@ -21,10 +21,10 @@ Via its Agent Identity — the SPIFFE-format principal issued to the specific re
 
 ## How Agent Gateway authenticates/authorizes the request
 
-Through an **IAP REQUEST_AUTHZ** extension and policy (`google_network_services_authz_extension.iap` + `google_network_security_authz_policy.iap`, `iac/agent/agent_gateway.tf:78-125`). This is **header/attribute-based authorization** — it checks the calling identity's IAM against the target, it does **not** TLS-terminate or inspect the actual payload content (that would be Model Armor's job, and that path isn't wired — see below).
+Through an **IAP REQUEST_AUTHZ** extension and policy (`google_network_services_authz_extension.iap` + `google_network_security_authz_policy.iap`, `iac/agent/agent_gateway.tf:78-125`). This is **header/attribute-based authorization** — it checks the calling identity's IAM against the target; separately, a Model Armor **CONTENT_AUTHZ** extension is also wired at the gateway to inspect payload content (`google_network_services_authz_extension.model_armor`, `iac/agent/agent_gateway.tf`) — see the "Model Armor CONTENT_AUTHZ" section below for what it does and does not cover.
 
 - **Live enforcement mode**: ENFORCE (see the discrepancy callout above).
-- **Fail-open behavior**: `authz_fail_open = true` (live, `iac/agent/terraform.tfvars:10`). **Operational meaning**: if the IAP authorization extension itself becomes unreachable, the gateway **allows** the request through rather than blocking it. This is a deliberate rollout-safety tradeoff (per the variable's own description), not an oversight — but it is a real risk-acceptance decision worth an explicit sign-off from Security/Risk if that hasn't already happened. It means an IAP outage silently degrades to "unauthorized egress allowed" for the outage's duration, rather than "agent stops working."
+- **Fail-open behavior**: `authz_fail_open = false` (live, `iac/agent/variables.tf` — default changed `true`→`false` 2026-09-05, PR #249). **Operational meaning**: if the IAP authorization extension itself becomes unreachable, the gateway **blocks** the request (fail-closed) rather than allowing it through. This replaces the earlier rollout-safety fail-open default; an IAP outage now degrades to "agent stops working" rather than "unauthorized egress allowed."
 - **Egress permission scope**: the agent identity is granted `roles/iap.egressor`, scoped to the **Agent Registry** resource specifically (registry-wide, not project-wide) — `iac/agent/iap_egressor.tf:13-21`. This means the agent can only egress to destinations that are actually **registered** in the Agent Registry (see [MCP Architecture](mcp-architecture.md#agent-registry)).
 
 ## How MCP servers are registered / how MCP tools are discovered
@@ -69,15 +69,13 @@ Application-level: `sre-agent-tool-failures`, `sre-agent-routing-failures` Cloud
 - **Terraform outputs**: `agent_gateway_id`, `model_armor_request_template`, `model_armor_response_template`, `gke_remote_mcp_url`, `custom_mcp_url` — `iac/agent/outputs.tf:44-47,64-82`.
 - **Gateway logs/metrics**: not currently a distinct, documented source — see the gap noted above.
 
-## Model Armor CONTENT_AUTHZ — confirmed not wired, and why
+## Model Armor CONTENT_AUTHZ — wired and live, with a known permanent platform limitation
 
-Several places in this repo's comments (`iac/agent/model_armor.tf`, `docs/ADR-002-agent-identity-and-gateway.md`) describe or assume a Model Armor `CONTENT_AUTHZ` chain exists at the gateway alongside the IAP `REQUEST_AUTHZ` one. **It does not exist.** A direct attempt to add it (mirroring the working IAP pattern exactly, `service = "modelarmor.googleapis.com"`) failed at `terraform apply` with:
+The gateway has a Model Armor `CONTENT_AUTHZ` extension wired alongside the IAP `REQUEST_AUTHZ` one: `google_network_services_authz_extension.model_armor` (`iac/agent/agent_gateway.tf`, `policy_profile = "CONTENT_AUTHZ"`), referencing the `sre_agent_request`/`sre_agent_response` Model Armor templates (`iac/agent/model_armor.tf`, `enforcement_type = "INSPECT_AND_BLOCK"`). Separately, Model Armor **floor settings** (`google_model_armor_floorsetting`, same file) are live project-wide with `inspect_only = true` (inspect, not block) and HIGH confidence for malicious-URI detection.
 
-```
-Error 400: The request was invalid: unsupported Google API for AuthzExtension: modelarmor.googleapis.com
-```
+**Known, permanent limitation — not a bug, not fixed by this wiring**: Google's platform does not invoke `RESPONSE_BODY`/content inspection for MCP tool-response traffic over Streamable HTTP transport. This means the gateway's CONTENT_AUTHZ inspection does not cover the custom MCP's tool-response bodies. This is an accepted platform limitation, not something this repo can configure around at the gateway layer.
 
-(`../../archive/RESOLVED_2026-08-08_MODEL_ARMOR_CONTENT_AUTHZ_TEST.md:127-136`). This is an API-level rejection, not a config mistake — there is currently no known Terraform-expressible way to wire Model Armor content inspection into Agent Gateway's `AuthzExtension` mechanism. See [Security Operations](../governance/security.md#model-armor) for the full governance picture, including the app-level fallback that's also currently inactive.
+**Compensating control**: for the custom MCP path specifically, an application-level response guard (`mcp/response_guard.py`, live-deployed) inspects tool responses before they reach the agent. This compensates for the gateway gap on that one path — it does not close the underlying platform limitation itself, which remains open for any other traffic the gateway can't invoke RESPONSE_BODY inspection for. See [Security Operations](../governance/security.md#model-armor) for the full governance picture.
 
 ---
 

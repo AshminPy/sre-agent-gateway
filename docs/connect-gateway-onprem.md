@@ -1,11 +1,12 @@
 # On-prem / non-GKE connectivity via GKE Fleet Connect Gateway
 
 Status: **prototype validated** against a real non-GKE cluster (kind, standing in
-for on-prem). Not yet wired into the agent's `mcp_client.py` cluster registry —
-this document is the P3 (`PRODUCTION-LAUNCH-PLAN.md`) deliverable: prove the
+for on-prem), and now also wired into and proven through the live production
+agent path — see the Open Items section below for current status. This
+document is the P3 (`PRODUCTION-LAUNCH-PLAN.md`) deliverable: prove the
 connectivity path, its credential model, its RBAC/audit posture, and its
-failure behavior, before Priority 4 (custom read-only K8s MCP server) routes
-through it.
+failure behavior, ahead of Priority 4 (custom read-only K8s MCP server)
+routing through it.
 
 ## What was proven, and how (2026-08-06/07)
 
@@ -292,11 +293,13 @@ registration if the key-file fallback (step 2 above) was used.
 
 ## Open items / not covered by this task
 
-- **Not wired into the agent.** `mcp_client.py` / `mcp_router.py` still route
-  every non-GKE cluster to the custom K8s MCP server via a direct endpoint +
-  WI bearer token (per `PRODUCTION-LAUNCH-PLAN.md` P4's "Have" line) — this
-  doc proves the Connect Gateway path works standalone; P4 is the follow-up
-  to actually route the agent's MCP calls through it.
+- **Now wired into the agent and live in production.** `mcp_client.py` /
+  `mcp_router.py` route non-GKE clusters to the custom K8s MCP server, which
+  reaches them through the Connect Gateway path this document proved
+  standalone. Real end-to-end proof exists (Agent → Agent Gateway → custom
+  Cloud Run MCP → Connect Gateway → the `sre-lab` cluster), verified
+  2026-09-04 and independently re-confirmed 2026-09-05/06/07 — see
+  [MCP Architecture](architecture/mcp-architecture.md) for the evidence.
 - **DATA_READ audit logging gap** (§6) — needs an explicit decision + IAM
   audit-config change, not made here.
 - **IAM role used for this test was `roles/owner`**, not the recommended
@@ -323,3 +326,54 @@ registration if the key-file fallback (step 2 above) was used.
 - Cluster RBAC objects (cluster-wide, not namespaced): `gateway-impersonate-
   sreagent-t2-demo_ashmin.sub_sre-lab` (Role+Binding),
   `gateway-permission-sreagent-t2-demo_ashmin.sub_sre-lab` (Binding → `view`)
+
+## Adding a second on-prem cluster (2026-09-07 update — read this first)
+
+Everything above this section documents how `sre-lab`'s Connect Gateway path was
+originally proven. That original path connects via a **static kubeconfig context
+baked into the MCP's Docker image** (`mcp/connect-gateway-kubeconfig.yaml`) — meaning
+a second physical on-prem cluster would have needed a new context added to that file
+plus an image rebuild + redeploy. Not a new MCP deployment, and not an agent-code
+change, but not truly zero-touch either.
+
+**This has been replaced with a dynamic mechanism.** Section 5/B correction
+(2026-09-08): the paragraph below used to say `sre-lab` was deliberately left on the
+static path, unmigrated -- that is now stale. `sre-lab` **was** migrated to the
+dynamic path (commit `bc35959`, "migrate sre-lab to dynamic Connect Gateway,
+live-verified end to end", 2026-09-07) -- `iac/agent/variables.tf`'s `sre-lab` entry
+sets `fleet_project_number`, and `mcp/server.py`'s dynamic-Connect-Gateway branch
+takes priority over the static kube_context path whenever it's set. The static
+kubeconfig file (`mcp/connect-gateway-kubeconfig.yaml`) is still present in the
+image, but `sre-lab` no longer uses it day to day -- it now only matters for
+`K8S_MCP_KUBE_CONTEXT`'s local-dev/registry-outage fallback path (see this repo's
+Section 2 correction for why that fallback is now gated behind an explicit
+distinction between "not configured" and "configured but unreadable", rather than
+silently used interchangeably with the real per-cluster registry). Adding a
+genuinely new on-prem cluster now needs only:
+
+1. Fleet registration + Connect Agent install (manual, authorized-operator action —
+   steps 1-3 above, unchanged).
+2. Kubernetes RBAC in the separate `AshminPy/sre-k8s-rbac` repo (unchanged).
+3. One `additional_clusters` Terraform entry with `fleet_project_number` (find it via
+   `gcloud projects describe <project-id> --format='value(projectNumber)'`) and
+   `fleet_membership` (defaults to the map key if the Fleet membership name matches).
+4. `terraform apply` — no image rebuild, no code change.
+
+`mcp/server.py`'s `get_k8s_clients()` builds the Connect Gateway connection at request
+time from these two values (`https://connectgateway.googleapis.com/v1/projects/
+{fleet_project_number}/locations/global/memberships/{fleet_membership}`, authenticated
+with a plain Application Default Credentials bearer token) instead of looking up a
+context in the static file. Verified against Google's own documented Connect Gateway
+membership resource path and confirmed the URL format matches what `sre-lab`'s
+already-live-proven static kubeconfig already used successfully (WebSearch, 2026-09-07
+— see `PHASE1_EVIDENCE_LOG.md`).
+
+**What is and isn't verified:** the dynamic path is covered by unit tests
+(`mcp/tests/test_dynamic_connect_gateway.py`) with the Kubernetes SDK and Google auth
+mocked, AND is live-verified end to end for `sre-lab` itself (commit `bc35959`,
+2026-09-07 -- `sre-lab` runs this exact dynamic path in production today, not the
+static one, correcting this section's own earlier claim otherwise). What is **not**
+yet proven: a genuinely SECOND on-prem cluster, onboarded from zero using only the
+4 steps above -- confirmed via git history and live GCS/Fleet queries (2026-09-08)
+that no second on-prem cluster has ever existed in this project. That live proof
+(`sre-lab-2`) is the subject of a dedicated onboarding exercise, not yet claimed here.

@@ -1,7 +1,7 @@
 # Management / Executive FAQ
 
 > **Implementation Status:** Reference page, plain-English summary of facts established elsewhere in this knowledge base.
-> **Last Verified:** 2026-08-08
+> **Last Verified:** 2026-09-07 (Model Armor answer corrected — see [Current State](CURRENT-STATE.md) §2)
 > **Owner:** SRE Agent platform team.
 
 **What exactly does this system do?**
@@ -47,7 +47,7 @@ Reasonably well for the volume it currently handles; several real gaps would nee
 Today, this would hit a real limitation almost immediately — the cluster registry only supports one cluster before Terraform overwrites any additions. This needs to be fixed first — see [Cluster Routing](../architecture/cluster-routing.md).
 
 **What happens when an MCP server fails?**
-The primary source (GKE Remote MCP) auto-falls-back to a secondary source on failure — except that secondary source isn't actually deployed in production today (see [MCP Architecture](../architecture/mcp-architecture.md)). A GKE Remote MCP outage today has no working fallback.
+The primary source (GKE Remote MCP) auto-falls-back to a secondary source on failure. That secondary source — the custom Cloud Run MCP — is now live production infrastructure (see [MCP Architecture](../architecture/mcp-architecture.md)), so a GKE Remote MCP outage today has a working fallback.
 
 **What happens if Gemini is unavailable?**
 The specific investigation fails; there's no fallback model provider. Transient rate-limit errors are automatically retried.
@@ -59,7 +59,7 @@ Yes, via a Terraform variable — but do so deliberately, with the golden eval s
 Largely, yes — the architecture (Agent Engine, Agent Gateway, Agent Identity, Gemini) is GCP-native by design, not built for portability.
 
 **How is sensitive operational data protected?**
-Redacted before storage/model exposure (secrets, tokens, PII patterns). Intended additional content-safety inspection (Model Armor) is **currently not active** in the live configuration — a real, current gap worth Security's attention, not a hypothetical one. See [Security Operations](../governance/security.md).
+Redacted before storage/model exposure (secrets, tokens, PII patterns). Model Armor content-safety inspection **is active** today, at two layers: a CONTENT_AUTHZ extension wired into Agent Gateway inspects and can block request/response traffic (`INSPECT_AND_BLOCK`), and floor settings additionally inspect for malicious URIs (`inspect_only` mode — logs and flags, doesn't yet block). One limitation is permanent, not a gap to close: Google's Streamable HTTP transport never invokes response-body inspection for MCP tool responses — a compensating application-level guard (`mcp/response_guard.py`) covers custom MCP responses instead. See [Risks and Limitations](risks-and-limitations.md) and [Security Operations](../governance/security.md).
 
 **Can the AI remember incorrect information?**
 It could, in principle — only high-confidence, fully-corroborated investigations are written to long-term memory, but there's no human-approval step before that write happens yet. See [Memory](../architecture/memory.md).

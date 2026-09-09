@@ -1,7 +1,7 @@
 # Executive Overview
 
 > **Implementation Status:** Reference page.
-> **Last Verified:** 2026-08-08
+> **Last Verified:** 2026-09-07 (custom-MCP/on-prem and Model Armor status corrected — see [Current State](CURRENT-STATE.md))
 > **Owner:** SRE Agent platform team.
 
 ## One paragraph
@@ -10,11 +10,11 @@ The SRE AI Agent is an automated Kubernetes incident investigator running on Goo
 
 ## Current state, honestly
 
-**Working and live-verified**: the core investigation loop against GKE clusters, via Google's managed GKE Remote MCP, fronted by Agent Gateway with an Agent Identity (no static credentials anywhere).
+**Working and live-verified**: the core investigation loop against GKE clusters, via Google's managed GKE Remote MCP, fronted by Agent Gateway with an Agent Identity (no static credentials anywhere). The fallback Kubernetes-tool path (custom MCP) and Connect Gateway-based non-GKE cluster access are also live production infrastructure now, not just code — a real Agent → Agent Gateway → custom Cloud Run MCP → Connect Gateway → `kind` cluster (`sre-lab`) investigation path has run dozens of successful real investigations (2026-09-04 through 2026-09-07).
 
-**Working but with real, known gaps**: confidence scoring is a genuine deterministic mechanism, but its specific thresholds are explicitly labeled uncalibrated; observability exists but has a confirmed metric-doubling issue; alerting covers 11 of 14 originally-planned scenarios.
+**Working but with real, known gaps**: confidence scoring is a genuine deterministic mechanism, but its specific thresholds are explicitly labeled uncalibrated; observability exists but has a confirmed metric-doubling issue; alerting covers 11 of 14 originally-planned scenarios. Model Armor content-safety inspection is active (a CONTENT_AUTHZ extension at Agent Gateway inspects and can block request/response traffic; floor settings additionally inspect, not yet block, for malicious URIs) but has one permanent, disclosed platform limitation: Google's Streamable HTTP transport never invokes response-body inspection for MCP tool responses.
 
-**Not working today, despite existing in Terraform/code**: the fallback Kubernetes-tool path (custom MCP), on-prem/non-GKE cluster support, and Model Armor content-safety inspection. Each of these has real code and real Terraform behind it, but none is actually functioning in the live deployment — see [Risks and Limitations](risks-and-limitations.md) for the full list with evidence.
+See [Risks and Limitations](risks-and-limitations.md) for the full, current list with evidence — as of 2026-09-07 none of this system's major capabilities are simply "not working" the way an earlier version of this page described.
 
 ## Why this matters for decision-makers
 

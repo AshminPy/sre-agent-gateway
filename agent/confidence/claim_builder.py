@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 
-from agent.confidence.models import Claim, ClaimType, Contradiction, Hypothesis
+from agent.confidence.models import Claim, ClaimType, Contradiction, Hypothesis, RemediationItem
 
 _CITATION_STOP = {
     "this", "that", "with", "from", "have", "been", "were", "they",
@@ -45,6 +45,90 @@ _NEGATION_MARKERS = {
     "no", "not", "never", "none", "without", "isnt", "doesnt", "wasnt",
     "hasnt", "cannot", "cant", "didnt", "nor",
 }
+
+# Section 4 correction (2026-09-08): deterministic entity-grounding check, independent
+# of and stricter than the bag-of-words overlap above. Real fabrication case
+# (T01-crashloop-gke, PHASE1_EVIDENCE_LOG.md): the RCA claimed the crashing container
+# was named "crashloop-container" -- pattern-matched from the pod name
+# "crashloop-pod" -- while every piece of cited evidence gave the REAL container name
+# as "crasher". The bag-of-words overlap check above did NOT catch this: the claim's
+# OTHER words (error, termination, exit code) still overlapped generically with real
+# evidence, scoring "grounded" despite the specific invented identifier. This check
+# looks for that class of entity specifically -- a concrete, identifier-shaped name a
+# claim asserts as fact -- and requires it to appear verbatim in the claim's own cited
+# evidence text, not just get diluted by unrelated word overlap.
+#
+# Kubernetes resource-name shape: lowercase alphanumeric segments joined by hyphens
+# (pods/deployments/services/nodes/clusters all follow this convention, e.g.
+# "checkout-abc123", "crashloop-container", "sre-test-cluster"). Matches at least one
+# hyphen so single common words ("error", "pod") are never flagged.
+_K8S_IDENTIFIER = re.compile(r"\b[a-z0-9]+(?:-[a-z0-9]+)+\b")
+
+# Known Kubernetes pod/container status reasons -- kubectl's own finite, documented
+# vocabulary (Pod/ContainerStatus.reason). A claim asserting one of these that never
+# appears in its cited evidence is a fabricated causal reason, not a paraphrase --
+# distinct from the hyphenated-identifier check above (these are CamelCase, not
+# hyphenated), so checked separately against the same evidence text.
+_K8S_KNOWN_REASONS = {
+    "crashloopbackoff", "imagepullbackoff", "errimagepull", "invalidimagename",
+    # "evict" not "evicted" -- ordinary English inflection (evicted/eviction/evicting/
+    # Evicted) means an exact-string match false-flagged a genuinely well-supported
+    # claim whose evidence said "EvictionByNodePressure"/"eviction triggered" rather
+    # than the literal word "evicted". Substring containment on the shared stem
+    # covers the common forms without needing a real stemmer. The other entries here
+    # are fixed, compound, CamelCase Kubernetes-specific terms with no comparable
+    # inflection risk.
+    "evict",
+    # "oomkilled" deliberately excluded: real evidence carries it verbatim (K8s API's
+    # own lastState.terminated.reason field), but its numeric signature -- exit code
+    # 137 -- is equally valid supporting evidence that this literal-string check can't
+    # recognize as equivalent (found via a real test regression: a claim citing
+    # evidence containing "exit 137" but not the literal word "OOMKilled" was
+    # incorrectly flagged). Encoding that domain inference is a larger, separate piece
+    # of work, not this smallest-safe-fix pass.
+    "nodenotready", "failedscheduling",
+    "containercreating", "podinitializing", "unschedulable", "deadlineexceeded",
+}
+
+
+def _unsupported_entities(claim_text: str, facts_text_all: str, context_identifiers: set = frozenset()) -> list:
+    """Returns concrete, identifier-shaped entities the claim asserts that never appear
+    verbatim (case-insensitive) in its own cited evidence text. Empty list means nothing
+    to flag -- callers still run the general overlap check above regardless.
+
+    context_identifiers (2026-09-08, false-positive fix found while adding this check --
+    see test_claim_grounding_negation_and_context.py's case1/2/4): the investigation's
+    OWN resolved namespace/pod/cluster name (e.g. "target-pod", "imagepull-pod") is a
+    GIVEN fact of what's being investigated, not something the claim is asserting FROM
+    evidence -- referencing it is not a factual claim that needs evidentiary support,
+    the same reasoning _contextual_generic_keywords already applies to the overlap
+    check above. Without this exclusion, a perfectly legitimate claim that simply names
+    the pod under investigation was flagged "unsupported" whenever that one specific
+    evidence item's own text happened not to repeat the pod's name.
+    """
+    claim_lower = claim_text.lower()
+    facts_lower = facts_text_all.lower()
+    unsupported = []
+    for match in _K8S_IDENTIFIER.finditer(claim_lower):
+        token = match.group(0)
+        if token in context_identifiers:
+            continue
+        # "the pod <name> is/was ..." names the already-known investigation subject
+        # by name -- that is not a fact being asserted FROM evidence (same reasoning
+        # as context_identifiers above, generalized for when the claim's own pod
+        # name happens to differ from whatever resolved_context says, e.g. a
+        # multi-pod investigation). A "container <name>"/other resource reference
+        # gets no such pass -- that IS exactly the class of entity the real
+        # fabrication case invented.
+        preceding = claim_lower[:match.start()].rstrip()
+        if preceding.endswith("pod"):
+            continue
+        if token not in facts_lower:
+            unsupported.append(token)
+    for reason in _K8S_KNOWN_REASONS:
+        if reason in claim_lower and reason not in facts_lower:
+            unsupported.append(reason)
+    return unsupported
 
 
 def _keywords(text: str) -> set:
@@ -136,6 +220,23 @@ def _ground_claim(
     # absence-treated-as-success pattern as the Model Armor incident.
     if not facts_words:
         claim.grounding_status = "empty_evidence"
+        claim.support_strength = 0.0
+        return
+
+    # Section 4 correction (2026-09-08): checked BEFORE the general overlap scoring
+    # below and unconditionally disqualifying -- a claim can score "grounded" on
+    # overall word overlap while still asserting one specific, invented identifier
+    # (the exact T01-crashloop-gke fabrication: real words like "error"/"termination"
+    # overlapped, but the container name itself was invented). No amount of other
+    # overlap should rescue a claim that names something its own evidence never says.
+    context_identifiers = {
+        str(v).strip().lower()
+        for k in ("namespace", "pod", "cluster_name", "cluster")
+        for v in [(resolved_context or {}).get(k)]
+        if v
+    }
+    if _unsupported_entities(claim.text, facts_text_all, context_identifiers):
+        claim.grounding_status = "unsupported_entity"
         claim.support_strength = 0.0
         return
 
@@ -296,6 +397,15 @@ def select_primary_causal_claim(claims: list, rca_result: dict, evidence_store: 
         return None
     if not claim.supporting_evidence_ids:
         return None
+    # Section 4 correction (2026-09-08): a claim asserting a concrete entity its own
+    # cited evidence never mentions must never become "the" root cause, regardless of
+    # its overall word-overlap score -- this is the deterministic check that closes
+    # the T01-crashloop-gke fabrication (a fake container name became
+    # result["likely_root_cause"] because nothing here rejected it before that
+    # assignment). Mechanical, not a causality judgment: the claim's own grounding
+    # computation already flagged it.
+    if claim.grounding_status == "unsupported_entity":
+        return None
     if evidence_store is not None:
         for eid in claim.supporting_evidence_ids:
             ev = evidence_store.get(eid)
@@ -387,3 +497,99 @@ def detect_contradictions(
             idx += 1
 
     return contradictions
+
+
+# Section 7 (2026-09-08): only fires on an EXPLICIT "pod X" / "deployment X" / etc. mention
+# naming a resource that doesn't match anything actually collected -- deliberately narrow.
+# A generic hyphen-scan over the whole action text would false-positive on ordinary English
+# compound words ("read-only", "high-confidence"); requiring a resource-type keyword right
+# before the name is the precise, low-noise signal a human reviewer would also use.
+_RESOURCE_MENTION_RE = re.compile(
+    r"\b(?:pod|deployment|namespace|service|replicaset|node|container)\s+"
+    r"['\"`]?([a-z0-9][a-z0-9-]{1,61}[a-z0-9])['\"`]?",
+    re.IGNORECASE,
+)
+
+
+def _check_identifier_warning(action: str, known_resources: set) -> str:
+    """Section 7: "Validate resource identifiers... where practical." Not a full parser --
+    a bounded, conservative check that only flags a resource name the action text explicitly
+    names that doesn't match anything this investigation actually collected. Advisory, never
+    blocks the item; false negatives (a bad name it misses) are acceptable, false positives
+    that cry wolf on every remediation are not."""
+    if not known_resources:
+        return ""
+    known_lower = {r.lower() for r in known_resources if r}
+    for match in _RESOURCE_MENTION_RE.finditer(action):
+        name = match.group(1).lower()
+        if any(name == r or name in r or r in name for r in known_lower):
+            continue
+        return (
+            f"references '{match.group(1)}', which doesn't match any resource collected "
+            "in this investigation — verify before use"
+        )
+    return ""
+
+
+def normalize_remediation_items(
+    rca_result: dict, primary_claim, resolved_context: dict,
+) -> list:
+    """Coerces the LLM's suggested_remediation into structured RemediationItem objects.
+
+    Accepts both the new structured-object schema (RCA_BUILDER_USER's current prompt) and
+    plain strings (defensive -- a model that ignores the schema, or an older stored RCA
+    being re-rendered, must not crash this function).
+
+    tied_to_primary_cause is set deterministically here, never trusted from the model: True
+    only when primary_claim is not None (a real, verified root cause exists). A remediation
+    cannot honestly claim to address "the supported cause" when there isn't one -- this is
+    the Section 7 requirement "Tie each recommendation to the supported cause or label it as
+    a diagnostic next step," enforced by code, not by asking the model nicely.
+    """
+    raw = rca_result.get("suggested_remediation")
+    if not isinstance(raw, list):
+        return []
+
+    known_resources = {
+        v for v in (
+            resolved_context.get("namespace"),
+            resolved_context.get("pod"),
+            resolved_context.get("deployment"),
+            resolved_context.get("cluster_name"),
+        ) if v
+    }
+    has_verified_cause = primary_claim is not None
+
+    items: list = []
+    for raw_item in raw[:10]:  # bounded -- render layer only shows the first 5 anyway
+        if isinstance(raw_item, str):
+            action = raw_item.strip()
+            if not action:
+                continue
+            items.append(RemediationItem(
+                action=action[:300],
+                tied_to_primary_cause=has_verified_cause,
+                item_type="remediation" if has_verified_cause else "diagnostic_next_step",
+                identifier_warning=_check_identifier_warning(action, known_resources),
+            ))
+            continue
+        if not isinstance(raw_item, dict):
+            continue
+        action = str(raw_item.get("action", "")).strip()
+        if not action:
+            continue
+        model_says_diagnostic = str(raw_item.get("type", "")).lower() == "diagnostic_next_step"
+        tied = has_verified_cause and not model_says_diagnostic
+        items.append(RemediationItem(
+            action=action[:300],
+            tied_to_primary_cause=tied,
+            item_type="remediation" if tied else "diagnostic_next_step",
+            prerequisites=str(raw_item.get("prerequisites") or "")[:200],
+            affected_scope=str(raw_item.get("affected_scope") or "")[:200],
+            expected_benefit=str(raw_item.get("expected_benefit") or "")[:200],
+            risk=str(raw_item.get("risk") or "not assessed")[:200],
+            recovery_verification=str(raw_item.get("recovery_verification") or "")[:200],
+            rollback=str(raw_item.get("rollback") or "not applicable")[:200],
+            identifier_warning=_check_identifier_warning(action, known_resources),
+        ))
+    return items

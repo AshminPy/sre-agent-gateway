@@ -114,15 +114,12 @@ def validate_tail_lines(tail_lines: int) -> int:
 
 
 # ── Namespace/cluster scope limits ──────────────────────────────────
-# K8S_MCP_ALLOWED_NAMESPACES: comma-separated allowlist. Empty/unset = no
-# namespace restriction beyond what the underlying RBAC (view ClusterRole,
-# see docs/connect-gateway-onprem.md) already enforces server-side.
-#
-# Cluster scope is enforced structurally, not by an argument check: no tool
-# in this server accepts a cluster/endpoint/context argument — the target
-# cluster is fixed at process start by get_k8s_clients() (env-configured
-# once, cached via lru_cache). There is no code path by which a tool call's
-# arguments can redirect this process to a different cluster.
+# K8S_MCP_ALLOWED_NAMESPACES: comma-separated allowlist, applied server-wide
+# regardless of cluster. Empty/unset = no server-wide restriction beyond
+# what the underlying RBAC (view ClusterRole, see
+# docs/connect-gateway-onprem.md) already enforces. This is a SECOND,
+# independent layer on top of the per-cluster allowed_namespaces check below
+# -- both apply; either one can reject a call.
 def _allowed_namespaces() -> set[str] | None:
     raw = os.environ.get("K8S_MCP_ALLOWED_NAMESPACES", "").strip()
     if not raw:
@@ -136,6 +133,82 @@ def enforce_namespace_scope(namespace: str) -> None:
         raise ValidationError(
             f"namespace '{namespace}' is outside this server's allowed scope "
             f"(K8S_MCP_ALLOWED_NAMESPACES={sorted(allowed)})"
+        )
+
+
+# ── Cluster scope (Section 5 redesign) ──────────────────────────────
+# One shared MCP deployment now serves multiple clusters (see server.py's
+# get_k8s_clients()/resolve_cluster()) -- every tool call carries an
+# explicit cluster_id, and this module validates it and its per-cluster
+# namespace scope BEFORE the tool body runs, the same place namespace/name
+# validation already happens below. server.py registers its own
+# resolve_cluster() here via set_cluster_resolver() at import time --
+# calling INTO server.py from here would be circular (server.py already
+# imports `guarded` from this module), so this is dependency injection in
+# the other direction instead of a direct import.
+_cluster_resolver = None
+
+
+def set_cluster_resolver(resolver: Callable[[str], dict]) -> None:
+    """resolver(cluster_id) must return the cluster's registry entry (with at
+    least an 'allowed_namespaces' key) or raise on an unknown/disabled/
+    unauthorized cluster_id — the same contract server.py's
+    resolve_cluster()/ClusterNotFoundError already implement."""
+    global _cluster_resolver
+    _cluster_resolver = resolver
+
+
+# Section 2 correction, live-reproduced (2026-09-08/09): the TTL-cached client
+# (server.py's get_k8s_clients(), _K8S_CLIENT_TOKEN_TTL) closed the "cached
+# client never refreshes" bug, but a fixed TTL is still a GUESS at the real
+# token lifetime -- live-reproduced a real 401 ACCESS_TOKEN_EXPIRED from
+# connectgateway.googleapis.com at ~35 minutes, under the original 45-minute
+# TTL. Rather than re-guess a smaller "safe" number, this makes recovery
+# reactive: on an actual auth failure, evict that cluster's cached client so
+# the VERY NEXT call rebuilds it with a fresh token, instead of waiting out
+# whatever the TTL happens to be. Same dependency-injection pattern as
+# _cluster_resolver above (this module must not import server.py directly).
+_client_cache_invalidator = None
+
+
+def set_client_cache_invalidator(invalidator: Callable[[str], None]) -> None:
+    """invalidator(cluster_id) must evict ONLY that cluster's cached K8s client
+    (never the whole cache) so the next call for it rebuilds from scratch."""
+    global _client_cache_invalidator
+    _client_cache_invalidator = invalidator
+
+
+def _is_expired_credential_error(exc: Exception) -> bool:
+    """Detects the real observed shape (googleapiclient/kubernetes-client
+    ApiException carrying Google's own ACCESS_TOKEN_EXPIRED reason, or a bare
+    401/Unauthorized) without depending on any specific exception class --
+    different auth paths (Workload Identity, dynamic Connect Gateway,
+    kubeconfig exec-plugin) can each raise a different exception type for the
+    same real condition."""
+    text = str(exc)
+    return (
+        "ACCESS_TOKEN_EXPIRED" in text
+        or "invalid_token" in text
+        or ("401" in text and ("Unauthorized" in text or "UNAUTHENTICATED" in text))
+    )
+
+
+def enforce_cluster_namespace_scope(cluster_id: str, namespace: str) -> None:
+    """Validates `namespace` against the SPECIFIC resolved cluster's own
+    allowed_namespaces (registry-driven, per cluster) -- independent of, and
+    in addition to, the server-wide K8S_MCP_ALLOWED_NAMESPACES check above.
+    Raises whatever the registered resolver raises for an invalid cluster_id
+    (server.py's ClusterNotFoundError, a ValueError subclass — caught the
+    same way as ValidationError by guarded() below)."""
+    if _cluster_resolver is None:
+        return  # no resolver registered (e.g. a unit test importing this module
+        # standalone) -- guarded()'s own cluster_id_fields check still runs.
+    entry = _cluster_resolver(cluster_id)
+    allowed = entry.get("allowed_namespaces") or []
+    if allowed and namespace not in allowed:
+        raise ValidationError(
+            f"namespace '{namespace}' is outside cluster '{cluster_id}'s allowed "
+            f"namespaces {sorted(allowed)}"
         )
 
 
@@ -291,15 +364,27 @@ def audit_log(
     )
 
 
-def guarded(namespace_fields: tuple[str, ...] = (), name_fields: tuple[str, ...] = ()) -> Callable:
+def guarded(
+    namespace_fields: tuple[str, ...] = (),
+    name_fields: tuple[str, ...] = (),
+    require_cluster_id: bool = True,
+) -> Callable:
     """
     Decorator applied to every @mcp.tool() function in server.py.
 
-    Order of operations: rate limit → validate → scope-check → call →
-    trim/redact → audit log. Any ValidationError/RateLimitError/unexpected
-    exception is caught and turned into a structured {"error": ...} dict —
-    a tool call NEVER raises out of this server, so one bad argument can't
-    take down the whole MCP process.
+    Order of operations: rate limit → validate cluster_id → validate other
+    args → per-cluster scope-check → call → trim/redact → audit log. Any
+    ValidationError/RateLimitError/unexpected exception is caught and turned
+    into a structured {"error": ...} dict — a tool call NEVER raises out of
+    this server, so one bad argument can't take down the whole MCP process.
+
+    require_cluster_id=True (default, every real K8s tool) means cluster_id
+    must be present and non-empty, and is resolved via the registered
+    cluster resolver (set_cluster_resolver()) BEFORE the tool body runs —
+    an unknown/disabled/unauthorized cluster_id is rejected here, the tool
+    function's own get_k8s_clients() call is defense-in-depth, not the only
+    check. Set False only for a tool that is genuinely cluster-independent
+    (none exist in server.py today).
     """
     namespace_fields = namespace_fields or ()
     name_fields = name_fields or ()
@@ -311,10 +396,19 @@ def guarded(namespace_fields: tuple[str, ...] = (), name_fields: tuple[str, ...]
             try:
                 check_rate_limit()
 
+                cluster_id = kwargs.get("cluster_id")
+                if require_cluster_id:
+                    if not cluster_id or not isinstance(cluster_id, str):
+                        raise ValidationError("cluster_id is required and must be a non-empty string")
+                    if _cluster_resolver is not None:
+                        _cluster_resolver(cluster_id)  # raises on unknown/disabled/unauthorized
+
                 for field in namespace_fields:
                     if field in kwargs and kwargs[field] is not None:
                         ns = validate_namespace(kwargs[field])
                         enforce_namespace_scope(ns)
+                        if require_cluster_id and cluster_id:
+                            enforce_cluster_namespace_scope(cluster_id, ns)
                 for field in name_fields:
                     if field in kwargs and kwargs[field] is not None:
                         validate_name(kwargs[field], field)
@@ -330,7 +424,11 @@ def guarded(namespace_fields: tuple[str, ...] = (), name_fields: tuple[str, ...]
                 audit_log(fn.__name__, kwargs, ok=True, duration_s=duration)
                 return result
 
-            except (ValidationError, RateLimitError) as e:
+            except (ValidationError, RateLimitError, ValueError) as e:
+                # ValueError here also catches server.py's ClusterNotFoundError
+                # (a ValueError subclass) without this module importing anything
+                # from server.py -- see set_cluster_resolver()'s docstring for
+                # why that would be circular.
                 duration = time.time() - start
                 audit_log(fn.__name__, kwargs, ok=False, duration_s=duration, error=str(e))
                 log.warning("guarded tool=%s rejected: %s", fn.__name__, e)
@@ -339,7 +437,32 @@ def guarded(namespace_fields: tuple[str, ...] = (), name_fields: tuple[str, ...]
             except Exception as e:  # noqa: BLE001 — last line of defense, never crash the server
                 duration = time.time() - start
                 audit_log(fn.__name__, kwargs, ok=False, duration_s=duration, error=str(e))
-                log.error("guarded tool=%s failed: %s", fn.__name__, e)
+                # Section 10 correction, live-discovered 2026-09-09: a real
+                # ACCESS_TOKEN_EXPIRED 401 during today's own Section 8 testing
+                # proved iac/agent/monitoring.tf's mcp_connect_gateway_failure metric
+                # filter (requires "guarded tool=", "failed:", AND
+                # "connectgateway.googleapis.com" in the SAME textPayload) can never
+                # match in practice: str(e) for a real Kubernetes ApiException is
+                # multi-line, and Cloud Run's stdout-to-Cloud-Logging ingestion splits
+                # on embedded newlines into SEPARATE log entries -- confirmed directly
+                # via `gcloud logging read`, the stored textPayload for this exact
+                # real event was only "guarded tool=list_events failed: (401)", with
+                # "connectgateway.googleapis.com" landing in a later entry the filter
+                # never sees. Collapsing embedded newlines keeps the full error text
+                # (nothing discarded) in ONE entry, which is what the filter actually
+                # needs -- a metric-filter change alone could not have fixed this; the
+                # emitted log line itself has to stay on one line.
+                log.error("guarded tool=%s failed: %s", fn.__name__, " ".join(str(e).split()))
+                if _client_cache_invalidator is not None and _is_expired_credential_error(e):
+                    cluster_id = kwargs.get("cluster_id")
+                    if cluster_id:
+                        log.error(
+                            "guarded tool=%s cluster_id=%s: expired-credential error "
+                            "detected, evicting cached client so the next call rebuilds "
+                            "it with a fresh token",
+                            fn.__name__, cluster_id,
+                        )
+                        _client_cache_invalidator(cluster_id)
                 return {"error": str(e), "ok": False}
 
         return wrapper

@@ -98,15 +98,6 @@ locals {
       # Make gateway-denied (403) MCP tool calls fail fast instead of hanging the
       # turn as a broken-stream TaskGroup/TimeoutError.
       ADK_ENABLE_MCP_GRACEFUL_ERROR_HANDLING = "true"
-      # TEMPORARY diagnostic marker (2026-09-05, #203 CONTENT_AUTHZ
-      # investigation) -- forces a fresh reasoning-engine redeploy so the
-      # next test doesn't reuse a >1hr-old warm container whose connection to
-      # the custom MCP appears to bypass Agent Gateway's per-request
-      # interception once established (custom-MCP calls stopped appearing in
-      # gateway logs ~40min into that container's uptime, while other
-      # traffic kept logging normally). Remove once this investigation
-      # concludes either way.
-      PHASE1_CONTENT_AUTHZ_FORCE_FRESH_CONTAINER = "2026-09-05-01"
     },
     # ── App-level Model Armor: gateway-OFF only (issue #203, PARTIALLY reverted 2026-09-05) ──
     # Attempted to make this unconditional (issue #203's original ask) now that
@@ -179,7 +170,25 @@ resource "google_vertex_ai_reasoning_engine" "sre_agent" {
     deployment_spec {
       # Match the codelab agent's deploy_config: min 2 warm instances + 4 vCPU /
       # 8Gi so the runtime is provisioned the same way (deploy_agent.py).
-      min_instances   = 2
+      min_instances = 2
+      # Section 9 (2026-09-08): previously unset anywhere in this repo's Terraform --
+      # docs/architecture/agent-engine.md's own audit called this out explicitly:
+      # "max_instances is not set anywhere... status: UNKNOWN, the platform default
+      # applies" (100, per Google's own docs, confirmed via WebSearch 2026-09-08:
+      # https://docs.cloud.google.com/vertex-ai/generative-ai/docs/agent-engine/deploy).
+      # 10 is a deliberate, explicit ceiling for this Phase 1 rollout -- NOT derived
+      # from a real concurrent load test (none has been run; see
+      # docs/governance/capacity.md), a conservative starting cap chosen to bound
+      # cost/blast-radius while still allowing real headroom above the 2 warm
+      # instances. This is the "simplest supported runtime mechanism" the section
+      # asked for -- the platform's own admission control, not a custom in-app
+      # semaphore (explicitly warned against: "a per-process limiter is not a
+      # global quota controller" -- a per-process limiter couldn't cap TOTAL
+      # concurrency across multiple instances anyway). When this cap is hit, Vertex
+      # AI Agent Engine's own platform layer returns a standard retryable error to
+      # the caller before this container's code ever runs -- no application code
+      # change needed for that half of the requirement.
+      max_instances   = 10
       resource_limits = { cpu = "4", memory = "8Gi" }
 
       dynamic "env" {

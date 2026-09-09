@@ -1,3 +1,15 @@
+> **SUPERSEDED 2026-09-07.** This runbook's own header said "nothing described here is wired
+> into the deployed agent yet." That is no longer true: the custom MCP + Connect Gateway path
+> to a non-GKE cluster is live production infrastructure, proven with dozens of real
+> investigations against the `sre-lab` `kind` cluster (2026-09-04 through 2026-09-07). See
+> [`docs/architecture/mcp-architecture.md`](../docs/architecture/mcp-architecture.md) for the
+> current, live architecture and
+> [`docs/management/PHASE1_RELEASE_VALIDATION_REPORT.md`](../docs/management/PHASE1_RELEASE_VALIDATION_REPORT.md)
+> for the validation evidence. Kept below unmodified as historical planning evidence; do not
+> follow these steps as if the work is still undone.
+
+---
+
 # Runbook: Adding a Non-GKE / On-Prem Cluster
 
 > **Last Verified:** 2026-08-08 · **Owner:** SRE Agent platform team

@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: badcommand-pod
+  namespace: test-incidents
+  labels:
+    incident-type: BadCommand
+    app: badcommand-pod
+spec:
+  restartPolicy: Never
+  containers:
+    - name: badcmd
+      image: busybox:1.36
+      command: ["/bin/this-binary-does-not-exist"]
+      resources:
+        requests:
+          memory: "16Mi"
+          cpu: "50m"
+        limits:
+          memory: "32Mi"
+          cpu: "100m"

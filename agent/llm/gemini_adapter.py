@@ -7,6 +7,7 @@ dynamic pricing is PR 2) the existing Terraform-sourced static pricing.
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import os
@@ -86,10 +87,29 @@ _VERTEX_INPUT_TOKEN_LIMIT_FALLBACK: dict[str, int] = {
 }
 
 
+_EMPTY_SESSION = {
+    "input": 0, "cached_input": 0, "output": 0, "reasoning": 0,
+    "tool": 0, "total": 0, "calls": 0, "duration_s": 0.0,
+}
+
+
 class GeminiAdapter(LLMClient):
     """Vertex AI Gemini adapter. Model is fixed per instance (one adapter = one
     resolved LLM_PROFILE for the process lifetime — matches Agent Engine's
     single-model-per-deployment reality; nothing here switches models mid-run).
+
+    Section 9 (2026-09-08): session/usage counters live in a contextvars.ContextVar,
+    not plain instance attributes. Confirmed real gap via audit: this ONE adapter
+    instance is cached process-wide (agent.llm.registry's module-level singleton) and
+    shared across every investigation a warm container handles. Plain instance
+    attributes would let two concurrent investigations on the same warm instance
+    interleave -- investigation B's reset_session() zeroing investigation A's
+    in-flight counters, and both investigations' usage summing into one shared total
+    attributable to neither correctly (docs/architecture/agent-engine.md's own
+    "flag as UNKNOWN, not independently load-tested" note, closed here rather than
+    left open). ContextVar isolates per asyncio task AND per native thread by
+    Python's own design -- the standard mechanism for exactly this problem, not a
+    custom one invented here.
     """
 
     capabilities = frozenset({CAPABILITY_TOOL_CALLING, CAPABILITY_STRUCTURED_OUTPUT})
@@ -125,24 +145,37 @@ class GeminiAdapter(LLMClient):
         # never re-derived per call. Not reset by reset_session() (that zeroes
         # per-investigation usage counters; this is model metadata, not usage).
         self._max_context_tokens: int | None = None
+        # One ContextVar per adapter instance (there is exactly one live instance --
+        # agent.llm.registry's cached singleton -- but scoping it to the instance
+        # rather than the module avoids any cross-instance leakage in tests that
+        # construct more than one adapter).
+        self._session_var: contextvars.ContextVar = contextvars.ContextVar(
+            f"gemini_session_{id(self)}"
+        )
         self.reset_session()
 
     def reset_session(self) -> None:
-        # issue #74: this instance is cached process-wide (agent.llm.registry) and
-        # reused across every investigation a warm process handles -- these counters
-        # used to accumulate forever (module-level globals before the LLM-adapter
-        # refactor, now instance attributes on the same shared cached instance --
-        # same underlying bug, different mechanism). agent/main.py's investigate()
-        # calls this once at the start of every investigation so get_session_usage()
-        # means "this investigation," not "everything since process start."
-        self._session_input = 0
-        self._session_cached_input = 0
-        self._session_output = 0
-        self._session_reasoning = 0
-        self._session_tool = 0
-        self._session_total = 0
-        self._session_calls = 0
-        self._session_duration_s = 0.0
+        # issue #74 / Section 9 (2026-09-08): this instance is cached process-wide
+        # (agent.llm.registry) and reused across every investigation a warm process
+        # handles. agent/main.py's investigate() calls this once at the start of
+        # every investigation so get_session_usage() means "this investigation," not
+        # "everything since process start" -- and, as of this fix, not "whatever
+        # concurrent investigation happens to be running on the same warm instance"
+        # either: this sets a NEW dict in the CURRENT context only, never mutates a
+        # shared one, so a concurrent investigation's own reset_session() (a
+        # different context) cannot zero this one's in-flight counters.
+        self._session_var.set(dict(_EMPTY_SESSION))
+
+    def _session(self) -> dict:
+        try:
+            return self._session_var.get()
+        except LookupError:
+            # Defensive only -- every real call path goes through __init__ (which
+            # calls reset_session()) first. Never silently returns a shared mutable
+            # default; sets and returns a fresh one scoped to THIS context.
+            session = dict(_EMPTY_SESSION)
+            self._session_var.set(session)
+            return session
 
     def _get_client(self):
         if self._client is None:
@@ -243,14 +276,15 @@ class GeminiAdapter(LLMClient):
 
                 usage = self._extract_usage(response, duration_s)
 
-                self._session_input += usage["input_tokens"]
-                self._session_cached_input += usage["cached_input_tokens"]
-                self._session_output += usage["output_tokens"]
-                self._session_reasoning += usage["reasoning_tokens"]
-                self._session_tool += usage["tool_tokens"]
-                self._session_total += usage["total_tokens"]
-                self._session_calls += 1
-                self._session_duration_s += duration_s
+                session = self._session()
+                session["input"] += usage["input_tokens"]
+                session["cached_input"] += usage["cached_input_tokens"]
+                session["output"] += usage["output_tokens"]
+                session["reasoning"] += usage["reasoning_tokens"]
+                session["tool"] += usage["tool_tokens"]
+                session["total"] += usage["total_tokens"]
+                session["calls"] += 1
+                session["duration_s"] += duration_s
 
                 log.debug(
                     "gemini call input=%d cached_input=%d output=%d reasoning=%d "
@@ -283,9 +317,20 @@ class GeminiAdapter(LLMClient):
                 return response, usage
 
             except Exception as e:
-                if "429" in str(e) and attempt < 2:
+                # Section 9 (2026-09-08): 5xx used to get ZERO retries at all -- any
+                # transient server error (500/503/504) failed the whole investigation
+                # on the first occurrence, identical treatment to a genuinely fatal
+                # error. 429 already retried; extending the SAME bounded, capped
+                # backoff to 5xx closes that gap without introducing a second,
+                # different retry policy. Still never unbounded: same 3-attempt
+                # ceiling, same linear 30s/60s wait, same hard raise after.
+                retryable = any(code in str(e) for code in ("429", "500", "503", "504"))
+                if retryable and attempt < 2:
                     wait = 30 * (attempt + 1)
-                    log.warning("Rate limited — waiting %ds before retry %d/3", wait, attempt + 1)
+                    log.warning(
+                        "Transient LLM error (%s) — waiting %ds before retry %d/3",
+                        str(e)[:200], wait, attempt + 1,
+                    )
                     time.sleep(wait)
                 else:
                     raise
@@ -526,16 +571,17 @@ class GeminiAdapter(LLMClient):
         return self._max_context_tokens
 
     def get_session_usage(self) -> dict:
+        session = self._session()
         return {
-            "session_tokens_input": self._session_input,
-            "session_tokens_cached_input": self._session_cached_input,
-            "session_tokens_output": self._session_output,
-            "session_tokens_reasoning": self._session_reasoning,
-            "session_tokens_tool": self._session_tool,
-            "session_tokens_total": self._session_total,
-            "session_calls": self._session_calls,
+            "session_tokens_input": session["input"],
+            "session_tokens_cached_input": session["cached_input"],
+            "session_tokens_output": session["output"],
+            "session_tokens_reasoning": session["reasoning"],
+            "session_tokens_tool": session["tool"],
+            "session_tokens_total": session["total"],
+            "session_calls": session["calls"],
             "session_cost_usd": self._calculate_cost(
-                self._session_output + self._session_reasoning, self._session_input
+                session["output"] + session["reasoning"], session["input"]
             ),
-            "session_model_latency_s": round(self._session_duration_s, 3),
+            "session_model_latency_s": round(session["duration_s"], 3),
         }

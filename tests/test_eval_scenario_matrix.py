@@ -112,9 +112,10 @@ def test_crashloop_backoff_grounded_rca_confirms_cause(monkeypatch):
     assert "CrashLoopBackOff" in result["likely_root_cause"]
     assert result["outcome"] in ("confirmed", "probable")
     assert all(c["grounding_status"] == "grounded" for c in result["claims"])
-    # Remediation stays advisory — a plain list of suggestion strings, no execution flag.
+    # Remediation stays advisory — structured objects now (Section 7, 2026-09-08), each
+    # with an "action" string, but still just recommendations, no execution flag anywhere.
     assert isinstance(result["suggested_remediation"], list)
-    assert all(isinstance(r, str) for r in result["suggested_remediation"])
+    assert all(isinstance(r, dict) and "action" in r for r in result["suggested_remediation"])
     assert "auto_apply" not in result and "remediation_applied" not in result
 
 

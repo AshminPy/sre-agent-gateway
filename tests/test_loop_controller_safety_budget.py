@@ -109,14 +109,24 @@ def test_over_budget_triggers_exit_with_the_real_reason(monkeypatch):
     assert "safety_budget_exceeded" in result["errors"][0]
 
 
-def test_enough_evidence_wins_even_past_safety_budget(monkeypatch):
-    """enough_evidence=True must always exit as confidence_sufficient,
-    even when elapsed time is also past the safety budget."""
+def test_safety_budget_wins_over_enough_evidence(monkeypatch):
+    """CHANGED (this session's loop-safety fix): this test previously asserted
+    the opposite -- that enough_evidence=True always reports
+    confidence_sufficient, even past the safety budget. That was the bug: a
+    run whose safety budget was ALSO already exceeded still got reported as a
+    clean confidence_sufficient stop, hiding the real, truthful reason (an
+    over-budget run is not the same thing as "the evaluator was satisfied").
+    Time/token limits are now checked before any evidence-driven exit reason,
+    so a genuinely over-budget run always reports its true reason. The loop
+    still exits either way (done=True) -- only the reported exit_reason
+    changes, from a misleading confidence_sufficient to the truthful
+    safety_budget_exceeded."""
     mod = _reload_with_env(monkeypatch, "200")
     state = _state(elapsed_seconds=250, enough_evidence=True)
 
     result = mod.loop_controller(state)
-    assert result["investigation"]["loop_exit_reason"] == "confidence_sufficient"
+    assert result["investigation"]["loop_exit_reason"] == "safety_budget_exceeded"
+    assert result["investigation"]["status"] == "done"
 
 
 def test_safety_budget_fires_before_the_existing_540s_timeout(monkeypatch):

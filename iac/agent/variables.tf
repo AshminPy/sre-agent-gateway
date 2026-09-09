@@ -49,6 +49,27 @@ variable "additional_clusters" {
     allowed_namespaces = optional(list(string), [])
     owner              = optional(string, "")
     enabled            = optional(bool, true)
+    # Section 5 redesign: the shared custom MCP (mcp/server.py) now serves
+    # every "custom"-type cluster from ONE Cloud Run service, keyed by this
+    # field -- not a separate deployment per cluster. Only meaningful for
+    # type="custom" entries reached via GKE Fleet Connect Gateway; a "gke"
+    # entry goes through GKE Remote MCP instead and never reads this field.
+    # LEGACY path: requires the matching context to already exist in the
+    # static, image-baked mcp/connect-gateway-kubeconfig.yaml -- adding a
+    # cluster here needs an image rebuild too. Prefer fleet_project_number
+    # below for any NEW on-prem cluster; this field is kept only so the
+    # already-live-validated sre-lab entry is never forced to migrate.
+    kube_context = optional(string, "")
+    # Dynamic Connect Gateway (added 2026-09-07): when set (together with
+    # fleet_membership, which defaults to this map key if left empty), the
+    # custom MCP builds the Connect Gateway connection at request time from
+    # these two values -- no static kubeconfig file, no image rebuild. This
+    # is the genuinely plug-and-play path: register the cluster in the Fleet,
+    # grant RBAC, add this one registry entry, apply -- done. Find the
+    # project number with `gcloud projects describe <project-id>
+    # --format='value(projectNumber)'`.
+    fleet_project_number = optional(string, "")
+    fleet_membership     = optional(string, "")
   }))
   # Phase 1: sre-lab (local kind cluster standing in for on-prem, registered
   # into the GCP fleet — see iac/agent/onprem_fleet.tf and
@@ -68,6 +89,39 @@ variable "additional_clusters" {
       allowed_namespaces = ["test-incidents"]
       owner              = "sre-platform"
       enabled            = true
+      # Migrated 2026-09-07 to the dynamic Connect Gateway mechanism (no
+      # static, image-baked kubeconfig file involved) -- live-verified via
+      # the deployed sre-k8s-mcp-runtime identity (real RBAC binding
+      # gateway-impersonate-...-sre-k8s-mcp-runtime-sre-lab already existed
+      # for it, unlike a personal user identity). kube_context left set
+      # below, unused while fleet_project_number is populated, purely so
+      # reverting this migration is a one-line change, not a re-add.
+      kube_context         = "connectgateway_sreagent-t2-demo_global_sre-lab"
+      fleet_project_number = "327234009108"
+      fleet_membership     = "sre-lab"
+    }
+    # Section 6 (2026-09-08): a genuinely SECOND, from-zero on-prem cluster,
+    # onboarded to prove the plug-and-play claim for real -- not a special
+    # case, no kube_context (pure dynamic Connect Gateway path, no static
+    # kubeconfig, no image rebuild). Onboarding was exactly: kind cluster
+    # created locally, `gcloud container fleet memberships register`,
+    # `generate-gateway-rbac` + the same sre-agent-reader ClusterRole
+    # sre-lab already uses (bound to the SAME sre-k8s-mcp-runtime identity --
+    # its project-level roles/gkehub.gatewayReader grant, iac/agent/
+    # onprem_fleet.tf, already covers any membership in this project, no new
+    # IAM grant needed), this one registry entry, terraform apply. Same
+    # Cloud Run custom MCP service serves both -- no new deployment.
+    "sre-lab-2" = {
+      aliases               = ["kind-sre-lab-2"]
+      project               = "sreagent-t2-demo"
+      region                = "global"
+      type                  = "custom"
+      environment           = "test"
+      allowed_namespaces    = ["test-incidents"]
+      owner                 = "sre-platform"
+      enabled               = true
+      fleet_project_number  = "327234009108"
+      fleet_membership      = "sre-lab-2"
     }
   }
 

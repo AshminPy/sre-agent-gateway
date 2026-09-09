@@ -1,6 +1,6 @@
 # ADR-004: MCP as the tool-access protocol
 
-Status: Accepted (GKE Remote MCP path); custom MCP path built but not deployed — see Tradeoffs
+Status: Accepted (GKE Remote MCP path); custom MCP path also live and operational in production — see Tradeoffs
 
 ## Context
 
@@ -63,12 +63,12 @@ see [MCP Architecture](architecture/mcp-architecture.md).
   caveat outside our control.
 - The custom `k8s_mcp` server's code is real and complete (11 tool modules,
   27 tools, a live-passing `mcp/tests/test_no_mutation.py` regression test)
-  but is **not reachable in production today**: `enable_custom_mcp` defaults
-  `false`, and no Load Balancer/Serverless NEG exists anywhere in `iac/` to
-  route traffic to it even if enabled — confirmed by an exhaustive search of
-  `iac/` for `serverless_neg`/`forwarding_rule`/`backend_service`/`url_map`.
-  This is "built, not deployed," not "doesn't exist" — see
-  [MCP Architecture](architecture/mcp-architecture.md) for the exact gap list.
+  and is **operational in production**: the service is live (`sre-k8s-mcp`),
+  and a real end-to-end path (Agent → Agent Gateway → custom Cloud Run MCP →
+  Connect Gateway → the `sre-lab` on-prem/non-GKE cluster) has run dozens of
+  successful real investigations — see
+  [MCP Architecture](architecture/mcp-architecture.md) for the live evidence
+  and the small remaining known limitation (single-cluster-per-deployment).
 - Tool discovery is static, not dynamic: the agent uses compile-time
   allowlists (`GKE_REMOTE_TOOLS`, `CUSTOM_K8S_TOOLS`), not a runtime
   `tools/list` call — confirmed absent by direct code search. This is a
@@ -76,8 +76,8 @@ see [MCP Architecture](architecture/mcp-architecture.md).
   limitation.
 - On any non-200 response from `gke_remote_mcp`, the agent auto-falls back to
   the custom MCP (`_map_to_custom_tool()`, `agent/mcp_client.py:324-334,443-457`)
-  — but since the custom MCP isn't actually reachable today, this fallback
-  path currently degrades to a tool failure rather than a working handoff.
+  — since the custom MCP is now reachable in production, this fallback path
+  is a working handoff, not a degraded failure.
 
 ## Related ADRs
 

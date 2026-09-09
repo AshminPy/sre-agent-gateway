@@ -94,6 +94,52 @@ def _extract_root_cause(summary: dict) -> str:
     )
 
 
+def _primary_claim_cites_uninspected_evidence(result: dict) -> bool:
+    """Section 8 correction (2026-09-08): the original version of this function read
+    `primary_causal_claim_id`/`claims` from the TOP LEVEL of `result` -- but the real
+    return shape of investigate()/query() (see _finalize_investigation_result's
+    `return {...}` below) nests those fields one level down, inside `result["summary"]`
+    (rca_builder.py's own returned dict, threaded through as `final_summary` ->
+    `summary`), and never exposed `evidence_store` at the top level at all. That meant
+    this predicate ALWAYS returned False against a real production result -- it only
+    ever passed its own unit tests because those tests hand-built a dict shaped the way
+    this function assumed, not the way investigate() actually returns. Confirmed by
+    tracing the exact code path, not assumed. Fixed by reading from the real locations;
+    `evidence_store` is now also exposed at the top level of the final result (see the
+    `return {...}` in _finalize_investigation_result) specifically so this predicate has
+    something real to check.
+
+    Gates only on the SPECIFIC evidence the primary causal claim actually cites
+    (agent/nodes/evidence_extractor.py's inspection_status field), not on every
+    evidence item collected during the investigation -- an unrelated uninspected
+    side-evidence item that never contributed to the claim isn't a reason to distrust
+    the claim itself."""
+    summary = result.get("summary") or {}
+    primary_id = summary.get("primary_causal_claim_id")
+    if not primary_id:
+        return False
+    primary = next(
+        (c for c in (summary.get("claims") or []) if c.get("claim_id") == primary_id), None,
+    )
+    if not primary:
+        return False
+    evidence_store = result.get("evidence_store") or {}
+    return any(
+        evidence_store.get(eid, {}).get("inspection_status") == "fail_open"
+        for eid in primary.get("supporting_evidence_ids", [])
+    )
+
+
+def _remediation_action_text(item) -> str:
+    """Section 7 (2026-09-08): suggested_remediation items are now structured dicts
+    (action/type/prerequisites/... — see agent/confidence/models.py's RemediationItem);
+    this extracts just the human-readable action line. Still accepts a plain string for
+    the legacy recommendation/next_steps fallback fields, which were never restructured."""
+    if isinstance(item, dict):
+        return str(item.get("action", "")).strip()
+    return str(item).strip()
+
+
 def _build_executive_summary(summary: dict, inv: dict, ctx: dict) -> str:
     """Plain-English one-paragraph summary for non-technical stakeholders.
 
@@ -105,16 +151,29 @@ def _build_executive_summary(summary: dict, inv: dict, ctx: dict) -> str:
     root_cause_brief = root_cause[:120].rstrip(".")
     if len(root_cause) > 120:
         root_cause_brief += "…"
-    remediation = (
-        summary.get("suggested_remediation")
-        or summary.get("recommendation")
-        or summary.get("next_steps")
-        or "No specific remediation provided — review agent output."
-    )
+    remediation_raw = summary.get("suggested_remediation")
+    if isinstance(remediation_raw, list) and remediation_raw:
+        remediation = _remediation_action_text(remediation_raw[0])
+    else:
+        remediation = (
+            summary.get("recommendation")
+            or summary.get("next_steps")
+            or "No specific remediation provided — review agent output."
+        )
     confidence_band = (inv.get("confidence_band") or summary.get("confidence_band") or "unknown").upper()
     outcome = str(summary.get("outcome", "")).upper()
     requires_review = summary.get("requires_human_review", True)
-    review_note = "Human review recommended before actioning." if requires_review else "No immediate human review required."
+    # This agent is read-only and never executes remediation itself (see mcp/server.py's
+    # own design guarantee) -- a human always performs any action regardless of
+    # requires_human_review. That field means "does the DIAGNOSIS need re-verification
+    # before you trust it," never "no human is needed to act on it." Wording corrected
+    # 2026-09-08 (Section 7) -- the machine field itself is unchanged for any dashboard
+    # already filtering on it.
+    review_note = (
+        "Human review recommended before actioning."
+        if requires_review
+        else "Diagnosis is high-confidence; a human must still approve and perform any action."
+    )
     outcome_note = f" Outcome: {outcome}." if outcome else ""
     return (
         f"Incident type: {incident_type}. "
@@ -160,10 +219,13 @@ def _build_rca_report(
         or summary.get("next_steps")
         or []
     )
+    # Section 7 (2026-09-08): kept as the raw items (dicts or strings), not coerced to str
+    # here -- the render loop below (§5 REMEDIATION) needs the structured fields, str()
+    # would flatten a dict into an unreadable Python repr.
     remediation_items = (
-        [str(r) for r in remediation_raw]
+        list(remediation_raw)
         if isinstance(remediation_raw, list)
-        else [str(remediation_raw)]
+        else [remediation_raw]
     ) if remediation_raw else []
 
     contributing_factors = summary.get("contributing_factors") or []
@@ -202,14 +264,17 @@ def _build_rca_report(
             ev_descriptions.setdefault(ref, []).append(trace_str)
 
     memory_ctx = payload.get("memory_context", "") or ""
-    # Three distinct states, three distinct lines. "No prior similar incidents
-    # found" is a factual claim about the memory store and is only true when
-    # Memory Bank actually answered.
+    # Four distinct states, four distinct lines (Section 8, 2026-09-08, added the
+    # pending-review state). "No prior similar incidents found" is a factual claim
+    # about the memory store and is only true when Memory Bank actually answered
+    # AND had zero records -- not when records exist but are unreviewed.
     if memory_ctx == MEMORY_RECALL_UNAVAILABLE:
         memory_note = (
             "UNKNOWN — Memory Bank could not be reached, so prior incidents were "
             "NOT checked (this is not the same as 'none found')"
         )
+    elif "pending human review" in memory_ctx:
+        memory_note = memory_ctx  # already a complete, honest sentence -- see _mb_recall()
     elif memory_ctx:
         memory_note = (
             f"Prior context recalled ({len(memory_ctx)} chars) — agent used past investigations"
@@ -218,7 +283,12 @@ def _build_rca_report(
         memory_note = "No prior similar incidents found in Memory Bank"
 
     if confidence_band == "AUTO":
-        review_note  = "AUTO — no human review required"
+        # Corrected 2026-09-08 (Section 7): the old text ("no human review required")
+        # directly contradicted status_line two lines below ("AWAITING HUMAN ACTION") in
+        # the same report. AUTO means the diagnosis passed every verification gate and
+        # doesn't need a human to re-check the ROOT CAUSE -- it never means no human is
+        # needed to act. This agent is read-only and never executes remediation itself.
+        review_note  = "AUTO — diagnosis verified, no re-review of the root cause needed; a human must still approve and perform any remediation action"
         status_line  = "INVESTIGATION COMPLETE — AWAITING HUMAN ACTION"
     elif confidence_band == "REVIEW":
         review_note  = "REVIEW — human review recommended before actioning"
@@ -387,10 +457,35 @@ def _build_rca_report(
         L.append("  Immediate Actions:")
         kubectl_cmds = []
         for i, item in enumerate(remediation_items[:5], 1):
-            item_str = str(item).strip()
-            L.append(f"    {i}. {item_str[:150]}")
-            if "kubectl" in item_str.lower():
-                kubectl_cmds.append(item_str)
+            # Section 7 (2026-09-08): items are now structured dicts (action/type/
+            # prerequisites/affected_scope/expected_benefit/risk/recovery_verification/
+            # rollback/identifier_warning — see agent/confidence/models.py's
+            # RemediationItem) rather than a bare string. Still handles a legacy plain
+            # string (the recommendation/next_steps fallback fields were never
+            # restructured) without crashing.
+            if isinstance(item, dict):
+                action_str = str(item.get("action", "")).strip()
+                item_type = item.get("item_type", "diagnostic_next_step")
+                tied = "tied to confirmed root cause" if item.get("tied_to_primary_cause") else "not tied to a confirmed root cause"
+                L.append(f"    {i}. [{item_type}, {tied}] {action_str[:150]}")
+                if item.get("prerequisites"):
+                    L.append(f"       Prerequisites: {item['prerequisites'][:150]}")
+                if item.get("affected_scope"):
+                    L.append(f"       Affected scope: {item['affected_scope'][:150]}")
+                if item.get("expected_benefit"):
+                    L.append(f"       Expected benefit: {item['expected_benefit'][:150]}")
+                L.append(f"       Risk: {item.get('risk', 'not assessed')[:150]}  |  Rollback: {item.get('rollback', 'not applicable')[:150]}")
+                if item.get("recovery_verification"):
+                    L.append(f"       Recovery verification: {item['recovery_verification'][:150]}")
+                if item.get("identifier_warning"):
+                    L.append(f"       ⚠ {item['identifier_warning'][:150]}")
+                if "kubectl" in action_str.lower():
+                    kubectl_cmds.append(action_str)
+            else:
+                item_str = str(item).strip()
+                L.append(f"    {i}. {item_str[:150]}")
+                if "kubectl" in item_str.lower():
+                    kubectl_cmds.append(item_str)
         if kubectl_cmds:
             L.append("")
             L.append("  Commands:")
@@ -409,7 +504,12 @@ def _build_rca_report(
         SEP,
         "  6.  INVESTIGATION METADATA",
         SEP,
-        f"  AI Confidence   : {confidence * 100:.0f}%  (Band: {confidence_band})",
+        # Added 2026-09-08 (Section 7): the score itself is documented internally as
+        # "uncalibrated" (agent/confidence/policy.py's POLICY_VERSION) and never a
+        # probability -- but the report rendered it as a bare "%" with no such caveat,
+        # which reads exactly like a calibrated probability to anyone who hasn't read
+        # the source code. Same underlying number, honest label.
+        f"  AI Confidence   : {confidence * 100:.0f}%  (Band: {confidence_band}, uncalibrated diagnostic score — not a probability)",
         f"  Human Review    : {review_note}",
         f"  Memory Bank     : {memory_note}",
         f"  Model           : {_deployed_model} via Vertex AI Agent Engine",
@@ -452,6 +552,25 @@ def _prepare_investigation_envelope(payload: dict):
     cluster    = (payload.get("cluster") or "").strip()
     deployment = payload.get("deployment", "")
     severity   = payload.get("severity", "unknown")
+    # Section 7 (2026-09-08): optional caller-supplied incident timing, e.g. an
+    # alert's own fired-at time. ISO-8601 string or epoch seconds, either is passed
+    # through as-is to the verifier's incident_time_context -- see
+    # docs/management/confidence-genericity-review-2026-08-28.md #15.2, the
+    # collection-time-vs-incident-time gap this closes (incident_time_context was
+    # never populated anywhere, so temporal_relevance could never be anything but
+    # "unknown" -- a real, demonstrated gap, not a hypothetical one).
+    #
+    # When the caller doesn't supply one, default incident_reported_at to THIS
+    # request's own receipt time, labeled as approximate -- this gives the verifier
+    # a real, if imperfect, anchor instead of nothing at all. It is honest about being
+    # an approximation (see the "(approximate" suffix) rather than presenting a guess
+    # as a caller-confirmed fact.
+    incident_reported_at = payload.get("incident_reported_at") or payload.get("incident_time") or ""
+    incident_reported_at_is_approximate = not incident_reported_at
+    if incident_reported_at_is_approximate:
+        incident_reported_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) + " (approximate — request receipt time, not caller-confirmed)"
+    incident_start = payload.get("incident_start") or ""
+    incident_end   = payload.get("incident_end") or ""
 
     if not query:
         return {"error": "query is required", "status": "failed"}
@@ -467,9 +586,13 @@ def _prepare_investigation_envelope(payload: dict):
             "deployment": deployment,
         },
         "incident": {
-            "severity": severity,
-            "title":    payload.get("title", query[:80]),
-            "service":  payload.get("service", ""),
+            "severity":              severity,
+            "title":                 payload.get("title", query[:80]),
+            "service":               payload.get("service", ""),
+            "reported_at":           incident_reported_at,
+            "reported_at_approximate": incident_reported_at_is_approximate,
+            "start":                 incident_start,
+            "end":                   incident_end,
         },
         "memory_context": payload.get("memory_context", ""),
     }
@@ -666,6 +789,13 @@ def _finalize_investigation_result(result: dict, started_at: float, payload: dic
         "root_cause_confidence":      summary.get("root_cause_confidence", {}),
         "tool_calls":         len(tool_history),
         "evidence_ids":       evidence_ids,
+        # Section 8 correction (2026-09-08): exposed at the top level specifically so
+        # _primary_claim_cites_uninspected_evidence() (the memory-write safety gate)
+        # has real evidence to check -- it previously had no way to see this at all.
+        # Same lookup _build_rca_report already uses below; not new raw content, just
+        # not-previously-surfaced. Entries carry a GCS raw_ref pointer, not raw tool
+        # output inline, so this doesn't change what's exposed, only where.
+        "evidence_store":     result.get("evidence_store", {}) or {},
         "run_id":             result.get("run_id", ""),
         "summary":            summary,
         "executive_summary":  _build_executive_summary(summary, inv, ctx),
@@ -1232,12 +1362,22 @@ class SREAgent:
     # ── Memory helpers ────────────────────────────────────────────────
 
     @classmethod
-    def _mb_store(cls, cluster: str, namespace: str, pod: str, root_cause: str, confidence: float, incident_type: str = "") -> None:
+    def _mb_store(cls, cluster: str, namespace: str, pod: str, root_cause: str, confidence: float, incident_type: str = "", run_id: str = "") -> None:
         """Write investigation RCA to Vertex AI Memory Bank (persistent across sessions).
 
-        Each memory stores: cluster, namespace, pod, incident_type, root_cause, confidence, and
-        status=pending_review so SREs can validate and delete inaccurate memories
-        (prevents RCA poisoning). Scoped by cluster+namespace for precise retrieval.
+        Each memory stores: cluster, namespace, pod, incident_type, root_cause, confidence,
+        status, run_id, and policy_version. Scoped by cluster+namespace for precise retrieval.
+
+        Section 8 (2026-09-08): status=pending_review is now a REAL, persisted, parseable
+        field -- ADR-010 documented this as "DECIDED design intent — NOT YET IMPLEMENTED...
+        do not represent this as a built control" before this fix; _mb_recall() below now
+        actually filters on it, closing that gap. run_id/policy_version are the "source
+        run/evidence references, model/policy version" the assignment requires -- a reviewer
+        can trace a memory back to its exact originating investigation and GCS evidence
+        (gs://<evidence-bucket>/<run_id>/...). Encoded into the same fact-string key=value
+        format _parse_fact() already parses (not the SDK's separate `metadata` field) --
+        this is the codebase's own already-proven, already-tested pattern; a new,
+        unverified SDK code path is not justified for what a proven one already does.
 
         Dedup key: pod + incident_type. Stable identifiers from K8s — not LLM text — so
         the same scenario is never written twice regardless of how Gemini phrases the RCA.
@@ -1258,18 +1398,22 @@ class SREAgent:
                     log.info("Memory Bank: duplicate RCA skipped for %s/%s/%s (%s)", cluster, namespace, pod, incident_type)
                     return
 
+            from agent.confidence.policy import POLICY
             fact = (
                 f"cluster={cluster} namespace={namespace} pod={pod} "
                 f"incident_type={incident_type} "
                 f"root_cause={root_cause[:300]} "
-                f"confidence={confidence:.2f}"
+                f"confidence={confidence:.2f} "
+                f"status=pending_review "
+                f"run_id={run_id} "
+                f"policy_version={POLICY.version}"
             )
             cls._mb_client.agent_engines.memories.create(
                 name=MEMORY_BANK_RESOURCE,
                 fact=fact,
                 scope={"cluster": cluster, "namespace": namespace},
             )
-            log.info("Memory Bank: stored RCA for %s/%s (confidence=%.2f)", cluster, namespace, confidence)
+            log.info("Memory Bank: stored RCA for %s/%s (confidence=%.2f, status=pending_review, run_id=%s)", cluster, namespace, confidence, run_id)
         except Exception as exc:
             log.warning("Memory Bank store failed (%s) — skipped", exc)
 
@@ -1313,7 +1457,34 @@ class SREAgent:
                 # The one honest empty: Memory Bank answered, and had nothing.
                 return ""
 
-            recalled = memories[:3]
+            # Section 8 (2026-09-08): ADR-010 documented this exact gate as "decided but
+            # not built" -- every memory used to be recalled the instant it existed,
+            # regardless of review state. Only status=approved memories are now used as
+            # trusted context; pending_review/rejected/revoked are excluded. A memory
+            # written before this fix has no status= field at all (_parse_fact returns
+            # None for it) and is correctly excluded too -- nothing has ever been through
+            # a real approval step, so nothing pre-existing is grandfathered in as
+            # trusted. See scripts/review_memory.py for the review operation.
+            approved = [m for m in memories if cls._parse_fact(m.memory.fact).get("status") == "approved"]
+            if not approved:
+                # Same false-claim class the MEMORY_RECALL_UNAVAILABLE sentinel already
+                # exists to prevent: returning "" here would render downstream as "No
+                # prior similar incidents found" (main.py's memory_note), which is FALSE
+                # when N records exist and are simply unreviewed -- not the same as zero
+                # records ever having existed. A short, honest, non-empty note instead;
+                # still framed as a caveat, never as usable context (prompts already
+                # treat all memory as "hint only, do not cite as evidence").
+                log.info(
+                    "Memory Bank: %d memories exist for %s/%s but none are status=approved "
+                    "-- excluded from recall, not treated as 'no prior incidents'",
+                    len(memories), cluster, namespace,
+                )
+                return (
+                    f"({len(memories)} prior incident record(s) exist for this cluster/namespace "
+                    "but are pending human review — not yet available as validated context)"
+                )
+
+            recalled = approved[:3]
             lines = [f"  {m.memory.fact}" for m in recalled]
             log.info("Memory Bank: recalled %d memories for %s/%s", len(lines), cluster, namespace)
 
@@ -1497,14 +1668,34 @@ class SREAgent:
             confidence_band = result.get("confidence_band", "escalate")
             incident_type = obs.get("incident_type", "") if isinstance(obs, dict) else ""
             # Persist to Vertex AI Memory Bank (cross-session) and in-process list (same session)
-            if confidence_band == "auto":
-                cls._mb_store(cluster, namespace, pod, root_cause, confidence, incident_type)
-            else:
-                log.info(
-                    "Memory Bank write skipped — confidence_band=%s (only 'auto' writes persist)",
-                    confidence_band,
+            #
+            # Section 8 correction (2026-09-08): the uninspected-evidence check now
+            # gates BOTH memory paths, not just Memory Bank -- the in-process
+            # `_save_memory` list is cross-run context within this warm container
+            # (_recall_memory reads it back into later investigations' prompts) just
+            # as much as Memory Bank is cross-session; a conclusion built on evidence
+            # Model Armor never got to check must not become trusted context via
+            # EITHER path. This is independent of confidence_band -- an uninspected
+            # citation is an evidence-integrity problem, not a confidence problem, so
+            # it blocks in-process save even for non-"auto" bands (which _save_memory
+            # was never confidence-gated for in the first place -- unchanged there).
+            if _primary_claim_cites_uninspected_evidence(result):
+                log.error(
+                    "memory_write_blocked_uninspected_evidence cluster=%s namespace=%s "
+                    "pod=%s -- primary causal claim cites evidence that bypassed Model "
+                    "Armor inspection (fail-open); refusing to promote to trusted memory "
+                    "(both Memory Bank and in-process)",
+                    cluster, namespace, pod,
                 )
-            cls._save_memory(query_text, root_cause, cluster, namespace)
+            else:
+                if confidence_band == "auto":
+                    cls._mb_store(cluster, namespace, pod, root_cause, confidence, incident_type, result.get("run_id", ""))
+                else:
+                    log.info(
+                        "Memory Bank write skipped — confidence_band=%s (only 'auto' writes persist)",
+                        confidence_band,
+                    )
+                cls._save_memory(query_text, root_cause, cluster, namespace)
 
         # 5. Model Armor — sanitize output (redacts PII that leaked from k8s logs)
         #
