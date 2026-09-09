@@ -24,7 +24,17 @@ from agent.mcp_client import CUSTOM_K8S_TOOLS, GKE_REMOTE_TOOLS
 # not gke_remote_mcp. Every other case with a non-empty expected_trajectory in this
 # dataset targets the default GKE cluster (sre-test-cluster) and must use
 # GKE_REMOTE_TOOLS names only.
-CUSTOM_MCP_CASE_IDS = {"onprem-001"}
+#
+# Section 9 (2026-09-09): computed from the cases' own resource_hints.cluster rather
+# than a hand-maintained literal ID set -- the 50-case campaign added 24 new
+# custom-MCP cases (sre-lab/sre-lab-2) in one pass, and a literal set that size is
+# exactly the kind of thing that silently drifts. A cluster name showing up here
+# still has to be a KNOWN one (test_every_case_is_classified guards that).
+_CUSTOM_MCP_CLUSTERS = {"sre-lab", "sre-lab-2"}
+CUSTOM_MCP_CASE_IDS = {
+    c["id"] for c in GOLDEN_CASES
+    if c["payload"]["resource_hints"].get("cluster") in _CUSTOM_MCP_CLUSTERS
+}
 
 
 def test_every_case_is_classified():
@@ -33,8 +43,9 @@ def test_every_case_is_classified():
     default to "GKE" and mask a future version of the same bug."""
     # sre-lab replaces the old fictional "onprem-dc1-cluster" (corrected 2026-09-08,
     # Section 10 / Phase 1 50-case manifest prep) -- sre-lab is the real, live
-    # on-prem cluster this repo actually has registered.
-    known_clusters = {"sre-test-cluster", "sre-lab"}
+    # on-prem cluster this repo actually has registered. sre-lab-2 added 2026-09-09
+    # (Section 6/9) -- a second, genuinely independent on-prem cluster.
+    known_clusters = {"sre-test-cluster", "sre-lab", "sre-lab-2"}
     for case in GOLDEN_CASES:
         cluster = case["payload"]["resource_hints"].get("cluster")
         if cluster is not None:

@@ -510,4 +510,386 @@ GOLDEN_CASES = [
     # instruction ("mark unsupported evidence capabilities explicitly rather
     # than inventing passing tests") rather than fabricating a golden case that
     # wouldn't actually exercise what it claims to.
+
+    # Section 9 (2026-09-09): 34 cases added to reach the required 25 GKE + 25
+    # non-GKE (25 = 1 existing onprem-001 + 24 new, split 12 sre-lab / 12 sre-lab-2)
+    # for the Phase 1 50-case readiness campaign. Real fixtures applied to real
+    # clusters (see PHASE1_50CASE_MANIFEST.md) -- reuses well-understood, already-
+    # proven failure patterns (imagepull/crashloop/oomkilled/pending/configmap-
+    # missing/secret-missing/init-fail) against distinct pod instances, rather than
+    # inventing new untested scenario TYPES under deadline pressure.
+    {
+        "id": "imagepull-gke-002",
+        "payload": {
+            "user_query": "Pod imagepull-gke-002 in test-incidents cannot pull its image. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "imagepull-gke-002", "cluster": "sre-test-cluster"},
+        },
+        "expected_trajectory": ["list_k8s_events"],
+        "expected_keywords": ["ImagePullBackOff", "image"],
+        "expected_confidence_min": 0.6,
+    },
+    {
+        "id": "imagepull-gke-003",
+        "payload": {
+            "user_query": "Pod imagepull-gke-003 in test-incidents cannot pull its image. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "imagepull-gke-003", "cluster": "sre-test-cluster"},
+        },
+        "expected_trajectory": ["list_k8s_events"],
+        "expected_keywords": ["ImagePullBackOff", "image"],
+        "expected_confidence_min": 0.6,
+    },
+    {
+        "id": "crashloop-gke-002",
+        "payload": {
+            "user_query": "Pod crashloop-gke-002 in test-incidents keeps crashing. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "crashloop-gke-002", "cluster": "sre-test-cluster"},
+        },
+        "expected_trajectory": ["get_k8s_logs", "list_k8s_events"],
+        "expected_keywords": ["CrashLoopBackOff", "exit"],
+        "expected_confidence_min": 0.6,
+    },
+    {
+        "id": "crashloop-gke-003",
+        "payload": {
+            "user_query": "Pod crashloop-gke-003 in test-incidents keeps crashing. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "crashloop-gke-003", "cluster": "sre-test-cluster"},
+        },
+        "expected_trajectory": ["get_k8s_logs", "list_k8s_events"],
+        "expected_keywords": ["CrashLoopBackOff", "exit"],
+        "expected_confidence_min": 0.6,
+    },
+    {
+        "id": "oomkilled-gke-002",
+        "payload": {
+            "user_query": "Pod oomkilled-gke-002 in test-incidents is OOMKilled repeatedly. What is happening?",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "oomkilled-gke-002", "cluster": "sre-test-cluster"},
+        },
+        "expected_trajectory": ["get_k8s_logs", "list_k8s_events"],
+        "expected_keywords": ["OOMKilled", "memory"],
+        "expected_confidence_min": 0.6,
+    },
+    {
+        "id": "oomkilled-gke-003",
+        "payload": {
+            "user_query": "Pod oomkilled-gke-003 in test-incidents is OOMKilled repeatedly. What is happening?",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "oomkilled-gke-003", "cluster": "sre-test-cluster"},
+        },
+        "expected_trajectory": ["get_k8s_logs", "list_k8s_events"],
+        "expected_keywords": ["OOMKilled", "memory"],
+        "expected_confidence_min": 0.6,
+    },
+    {
+        "id": "configmap-missing-gke-002",
+        "payload": {
+            "user_query": "Pod configmap-missing-gke-002 in test-incidents is failing to start. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "configmap-missing-gke-002", "cluster": "sre-test-cluster"},
+        },
+        "expected_trajectory": ["describe_k8s_resource", "list_k8s_events"],
+        "expected_keywords": ["ConfigMap", "ContainerConfigError"],
+        "expected_confidence_min": 0.5,
+    },
+    {
+        "id": "configmap-missing-gke-003",
+        "payload": {
+            "user_query": "Pod configmap-missing-gke-003 in test-incidents is failing to start. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "configmap-missing-gke-003", "cluster": "sre-test-cluster"},
+        },
+        "expected_trajectory": ["describe_k8s_resource", "list_k8s_events"],
+        "expected_keywords": ["ConfigMap", "ContainerConfigError"],
+        "expected_confidence_min": 0.5,
+    },
+    {
+        "id": "secret-missing-gke-002",
+        "payload": {
+            "user_query": "Pod secret-missing-gke-002 in test-incidents is failing to start. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "secret-missing-gke-002", "cluster": "sre-test-cluster"},
+        },
+        "expected_trajectory": ["describe_k8s_resource", "list_k8s_events"],
+        "expected_keywords": ["Secret", "CreateContainerConfigError"],
+        "expected_confidence_min": 0.5,
+    },
+    {
+        "id": "secret-missing-gke-003",
+        "payload": {
+            "user_query": "Pod secret-missing-gke-003 in test-incidents is failing to start. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "secret-missing-gke-003", "cluster": "sre-test-cluster"},
+        },
+        "expected_trajectory": ["describe_k8s_resource", "list_k8s_events"],
+        "expected_keywords": ["Secret", "CreateContainerConfigError"],
+        "expected_confidence_min": 0.5,
+    },
+    {
+        "id": "imagepull-lab1-002",
+        "payload": {
+            "user_query": "Pod imagepull-lab1-002 in test-incidents cannot pull its image. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "imagepull-lab1-002", "cluster": "sre-lab"},
+        },
+        "expected_trajectory": ["list_events"],
+        "expected_keywords": ["ImagePullBackOff", "image"],
+        "expected_confidence_min": 0.6,
+    },
+    {
+        "id": "crashloop-lab1-002",
+        "payload": {
+            "user_query": "Pod crashloop-lab1-002 in test-incidents keeps crashing. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "crashloop-lab1-002", "cluster": "sre-lab"},
+        },
+        "expected_trajectory": ["get_current_logs", "list_events"],
+        "expected_keywords": ["CrashLoopBackOff", "exit"],
+        "expected_confidence_min": 0.6,
+    },
+    {
+        "id": "oomkilled-lab1-002",
+        "payload": {
+            "user_query": "Pod oomkilled-lab1-002 in test-incidents is OOMKilled repeatedly. What is happening?",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "oomkilled-lab1-002", "cluster": "sre-lab"},
+        },
+        "expected_trajectory": ["get_current_logs", "list_events"],
+        "expected_keywords": ["OOMKilled", "memory"],
+        "expected_confidence_min": 0.6,
+    },
+    {
+        "id": "pending-lab1-002",
+        "payload": {
+            "user_query": "Pod pending-lab1-002 in test-incidents has been stuck Pending. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "pending-lab1-002", "cluster": "sre-lab"},
+        },
+        "expected_trajectory": ["list_events"],
+        "expected_keywords": ["Pending", "schedul"],
+        "expected_confidence_min": 0.4,
+    },
+    {
+        "id": "configmap-missing-lab1-002",
+        "payload": {
+            "user_query": "Pod configmap-missing-lab1-002 in test-incidents is failing to start. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "configmap-missing-lab1-002", "cluster": "sre-lab"},
+        },
+        "expected_trajectory": ["describe_pod_detail", "list_events"],
+        "expected_keywords": ["ConfigMap", "ContainerConfigError"],
+        "expected_confidence_min": 0.5,
+    },
+    {
+        "id": "init-fail-lab1-002",
+        "payload": {
+            "user_query": "Pod init-fail-lab1-002 in test-incidents is stuck initializing. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "init-fail-lab1-002", "cluster": "sre-lab"},
+        },
+        "expected_trajectory": ["get_previous_logs", "list_events"],
+        "expected_keywords": ["Init", "container"],
+        "expected_confidence_min": 0.5,
+    },
+    {
+        "id": "imagepull-lab1-003",
+        "payload": {
+            "user_query": "Pod imagepull-lab1-003 in test-incidents cannot pull its image. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "imagepull-lab1-003", "cluster": "sre-lab"},
+        },
+        "expected_trajectory": ["list_events"],
+        "expected_keywords": ["ImagePullBackOff", "image"],
+        "expected_confidence_min": 0.6,
+    },
+    {
+        "id": "crashloop-lab1-003",
+        "payload": {
+            "user_query": "Pod crashloop-lab1-003 in test-incidents keeps crashing. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "crashloop-lab1-003", "cluster": "sre-lab"},
+        },
+        "expected_trajectory": ["get_current_logs", "list_events"],
+        "expected_keywords": ["CrashLoopBackOff", "exit"],
+        "expected_confidence_min": 0.6,
+    },
+    {
+        "id": "oomkilled-lab1-003",
+        "payload": {
+            "user_query": "Pod oomkilled-lab1-003 in test-incidents is OOMKilled repeatedly. What is happening?",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "oomkilled-lab1-003", "cluster": "sre-lab"},
+        },
+        "expected_trajectory": ["get_current_logs", "list_events"],
+        "expected_keywords": ["OOMKilled", "memory"],
+        "expected_confidence_min": 0.6,
+    },
+    {
+        "id": "pending-lab1-003",
+        "payload": {
+            "user_query": "Pod pending-lab1-003 in test-incidents has been stuck Pending. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "pending-lab1-003", "cluster": "sre-lab"},
+        },
+        "expected_trajectory": ["list_events"],
+        "expected_keywords": ["Pending", "schedul"],
+        "expected_confidence_min": 0.4,
+    },
+    {
+        "id": "configmap-missing-lab1-003",
+        "payload": {
+            "user_query": "Pod configmap-missing-lab1-003 in test-incidents is failing to start. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "configmap-missing-lab1-003", "cluster": "sre-lab"},
+        },
+        "expected_trajectory": ["describe_pod_detail", "list_events"],
+        "expected_keywords": ["ConfigMap", "ContainerConfigError"],
+        "expected_confidence_min": 0.5,
+    },
+    {
+        "id": "init-fail-lab1-003",
+        "payload": {
+            "user_query": "Pod init-fail-lab1-003 in test-incidents is stuck initializing. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "init-fail-lab1-003", "cluster": "sre-lab"},
+        },
+        "expected_trajectory": ["get_previous_logs", "list_events"],
+        "expected_keywords": ["Init", "container"],
+        "expected_confidence_min": 0.5,
+    },
+    {
+        "id": "imagepull-lab2-002",
+        "payload": {
+            "user_query": "Pod imagepull-lab2-002 in test-incidents cannot pull its image. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "imagepull-lab2-002", "cluster": "sre-lab-2"},
+        },
+        "expected_trajectory": ["list_events"],
+        "expected_keywords": ["ImagePullBackOff", "image"],
+        "expected_confidence_min": 0.6,
+    },
+    {
+        "id": "crashloop-lab2-002",
+        "payload": {
+            "user_query": "Pod crashloop-lab2-002 in test-incidents keeps crashing. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "crashloop-lab2-002", "cluster": "sre-lab-2"},
+        },
+        "expected_trajectory": ["get_current_logs", "list_events"],
+        "expected_keywords": ["CrashLoopBackOff", "exit"],
+        "expected_confidence_min": 0.6,
+    },
+    {
+        "id": "oomkilled-lab2-002",
+        "payload": {
+            "user_query": "Pod oomkilled-lab2-002 in test-incidents is OOMKilled repeatedly. What is happening?",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "oomkilled-lab2-002", "cluster": "sre-lab-2"},
+        },
+        "expected_trajectory": ["get_current_logs", "list_events"],
+        "expected_keywords": ["OOMKilled", "memory"],
+        "expected_confidence_min": 0.6,
+    },
+    {
+        "id": "pending-lab2-002",
+        "payload": {
+            "user_query": "Pod pending-lab2-002 in test-incidents has been stuck Pending. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "pending-lab2-002", "cluster": "sre-lab-2"},
+        },
+        "expected_trajectory": ["list_events"],
+        "expected_keywords": ["Pending", "schedul"],
+        "expected_confidence_min": 0.4,
+    },
+    {
+        "id": "configmap-missing-lab2-002",
+        "payload": {
+            "user_query": "Pod configmap-missing-lab2-002 in test-incidents is failing to start. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "configmap-missing-lab2-002", "cluster": "sre-lab-2"},
+        },
+        "expected_trajectory": ["describe_pod_detail", "list_events"],
+        "expected_keywords": ["ConfigMap", "ContainerConfigError"],
+        "expected_confidence_min": 0.5,
+    },
+    {
+        "id": "init-fail-lab2-002",
+        "payload": {
+            "user_query": "Pod init-fail-lab2-002 in test-incidents is stuck initializing. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "init-fail-lab2-002", "cluster": "sre-lab-2"},
+        },
+        "expected_trajectory": ["get_previous_logs", "list_events"],
+        "expected_keywords": ["Init", "container"],
+        "expected_confidence_min": 0.5,
+    },
+    {
+        "id": "imagepull-lab2-003",
+        "payload": {
+            "user_query": "Pod imagepull-lab2-003 in test-incidents cannot pull its image. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "imagepull-lab2-003", "cluster": "sre-lab-2"},
+        },
+        "expected_trajectory": ["list_events"],
+        "expected_keywords": ["ImagePullBackOff", "image"],
+        "expected_confidence_min": 0.6,
+    },
+    {
+        "id": "crashloop-lab2-003",
+        "payload": {
+            "user_query": "Pod crashloop-lab2-003 in test-incidents keeps crashing. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "crashloop-lab2-003", "cluster": "sre-lab-2"},
+        },
+        "expected_trajectory": ["get_current_logs", "list_events"],
+        "expected_keywords": ["CrashLoopBackOff", "exit"],
+        "expected_confidence_min": 0.6,
+    },
+    {
+        "id": "oomkilled-lab2-003",
+        "payload": {
+            "user_query": "Pod oomkilled-lab2-003 in test-incidents is OOMKilled repeatedly. What is happening?",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "oomkilled-lab2-003", "cluster": "sre-lab-2"},
+        },
+        "expected_trajectory": ["get_current_logs", "list_events"],
+        "expected_keywords": ["OOMKilled", "memory"],
+        "expected_confidence_min": 0.6,
+    },
+    {
+        "id": "pending-lab2-003",
+        "payload": {
+            "user_query": "Pod pending-lab2-003 in test-incidents has been stuck Pending. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "pending-lab2-003", "cluster": "sre-lab-2"},
+        },
+        "expected_trajectory": ["list_events"],
+        "expected_keywords": ["Pending", "schedul"],
+        "expected_confidence_min": 0.4,
+    },
+    {
+        "id": "configmap-missing-lab2-003",
+        "payload": {
+            "user_query": "Pod configmap-missing-lab2-003 in test-incidents is failing to start. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "configmap-missing-lab2-003", "cluster": "sre-lab-2"},
+        },
+        "expected_trajectory": ["describe_pod_detail", "list_events"],
+        "expected_keywords": ["ConfigMap", "ContainerConfigError"],
+        "expected_confidence_min": 0.5,
+    },
+    {
+        "id": "init-fail-lab2-003",
+        "payload": {
+            "user_query": "Pod init-fail-lab2-003 in test-incidents is stuck initializing. Investigate and give root cause.",
+            "incident": {"severity": "P2"},
+            "resource_hints": {"namespace": "test-incidents", "pod": "init-fail-lab2-003", "cluster": "sre-lab-2"},
+        },
+        "expected_trajectory": ["get_previous_logs", "list_events"],
+        "expected_keywords": ["Init", "container"],
+        "expected_confidence_min": 0.5,
+    },
 ]
