@@ -1,5 +1,9 @@
 # Phase 1 — 50-Case Readiness Validation Manifest
 
+> **SUPERSEDED (2026-09-09):** this working log predates the final executed campaign and
+> the merge of PR #251. It is kept as historical evidence, not current state. For the
+> authoritative final result, see `PHASE1_FINAL_REPORT.md`.
+
 Built 2026-09-08, per the original "PHASE 1 FINAL READINESS" plan's Step 8. **Execution
 (Step 9) is deferred to a later session — this manifest is a planning artifact only, no
 investigations have been run against it yet.**

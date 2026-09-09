@@ -1,5 +1,9 @@
 # PHASE 1 FINAL READINESS — execution state
 
+> **SUPERSEDED (2026-09-09):** this working log predates the final executed campaign and
+> the merge of PR #251. It is kept as historical evidence, not current state. For the
+> authoritative final result, see `PHASE1_FINAL_REPORT.md`.
+
 Review branch: `phase1-final-readiness-review`, base main `dd84660fdd177256be0c2af29514599199b55bca`.
 Do NOT merge to main. Do not close issues. Do not mark tracker rows Completed while work is
 branch-only. Full evidence: `PHASE1_EVIDENCE_LOG.md` (append-only, this task's entries are under

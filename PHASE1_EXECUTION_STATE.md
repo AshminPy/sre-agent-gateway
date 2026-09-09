@@ -1,5 +1,9 @@
 # Phase 1 MVP — Execution State
 
+> **SUPERSEDED (2026-09-09):** this working log predates the final executed campaign and
+> the merge of PR #251. It is kept as historical evidence, not current state. For the
+> authoritative final result, see `PHASE1_FINAL_REPORT.md`.
+
 Branch: `feat/phase-1-release`. Main is the clean checkpoint — never touched directly.
 Source of truth: `openspec/changes/phase-1-mvp-release/specs/phase-1-release-criteria/spec.md`
 

@@ -1,5 +1,9 @@
 # Phase 1 — Structured Evidence Log
 
+> **SUPERSEDED (2026-09-09):** this working log predates the final executed campaign and
+> the merge of PR #251. It is kept as historical evidence, not current state. For the
+> authoritative final result, see `PHASE1_FINAL_REPORT.md`.
+
 Append-only. Each entry: timestamp, what was tested, exact command/config, exact result, interpretation.
 See PHASE1_EXECUTION_STATE.md for the current-status summary this log backs.
 
