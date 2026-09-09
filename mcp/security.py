@@ -437,7 +437,22 @@ def guarded(
             except Exception as e:  # noqa: BLE001 — last line of defense, never crash the server
                 duration = time.time() - start
                 audit_log(fn.__name__, kwargs, ok=False, duration_s=duration, error=str(e))
-                log.error("guarded tool=%s failed: %s", fn.__name__, e)
+                # Section 10 correction, live-discovered 2026-09-09: a real
+                # ACCESS_TOKEN_EXPIRED 401 during today's own Section 8 testing
+                # proved iac/agent/monitoring.tf's mcp_connect_gateway_failure metric
+                # filter (requires "guarded tool=", "failed:", AND
+                # "connectgateway.googleapis.com" in the SAME textPayload) can never
+                # match in practice: str(e) for a real Kubernetes ApiException is
+                # multi-line, and Cloud Run's stdout-to-Cloud-Logging ingestion splits
+                # on embedded newlines into SEPARATE log entries -- confirmed directly
+                # via `gcloud logging read`, the stored textPayload for this exact
+                # real event was only "guarded tool=list_events failed: (401)", with
+                # "connectgateway.googleapis.com" landing in a later entry the filter
+                # never sees. Collapsing embedded newlines keeps the full error text
+                # (nothing discarded) in ONE entry, which is what the filter actually
+                # needs -- a metric-filter change alone could not have fixed this; the
+                # emitted log line itself has to stay on one line.
+                log.error("guarded tool=%s failed: %s", fn.__name__, " ".join(str(e).split()))
                 if _client_cache_invalidator is not None and _is_expired_credential_error(e):
                     cluster_id = kwargs.get("cluster_id")
                     if cluster_id:
