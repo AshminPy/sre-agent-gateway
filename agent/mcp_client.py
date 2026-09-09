@@ -1,14 +1,26 @@
 """
 MCP Client — multi-cluster, dual-source routing.
 
-Primary:  GKE Remote MCP (Google-managed, Preview/Pre-GA)
-          URL: https://container.googleapis.com/mcp/read-only
-          Auth: Bearer access token (NOT identity token)
-          ALL tools require: parent = projects/{project}/locations/{location}/clusters/{cluster}
+GKE clusters route to:    GKE Remote MCP (Google-managed, Preview/Pre-GA)
+                           URL: https://container.googleapis.com/mcp/read-only
+                           Auth: Bearer access token (NOT identity token)
+                           ALL tools require: parent = projects/{project}/locations/{location}/clusters/{cluster}
 
-Fallback: Custom FastMCP on Cloud Run
-          URL: from env K8S_MCP_URL
-          Auth: Bearer identity token
+Custom/on-prem clusters route to: Custom FastMCP on Cloud Run
+                           URL: from env K8S_MCP_URL
+                           Auth: Bearer identity token
+
+Section 3 correction (2026-09-08): there is no cross-type fallback between these
+two. There used to be a GKE-Remote-failure -> custom-MCP fallback, but
+mcp/server.py's resolve_cluster() now rejects any cluster_id whose registry
+type isn't 'custom' (Section 5 redesign) -- so that fallback could never
+succeed for a real GKE cluster and was dead code advertising behavior that no
+longer existed. There was also a custom-cluster-with-no-URL -> GKE-Remote
+fallback, which would have sent an on-prem cluster's name to Google's GKE API
+as if it were a GKE cluster -- a genuine wrong-MCP risk, latent whenever
+ENABLE_CUSTOM_MCP is off. Both removed: a resolved cluster whose own MCP is
+unavailable now returns an honest routing failure naming the real cause,
+never a silent switch to the other MCP type.
 
 Source: https://cloud.google.com/kubernetes-engine/docs/reference/mcp
 """
@@ -478,51 +490,6 @@ def _sanitize_custom_mcp_response(
     )
 
 
-def _try_custom_mcp_fallback(
-    is_gke_remote: bool,
-    cluster_info: dict,
-    tool_name: str,
-    namespace: str,
-    pod_name: str,
-    run_id: str,
-    cluster_name: str,
-) -> Optional[Dict[str, Any]]:
-    """issue #72: centralizes the GKE-Remote-failure fallback so it fires from EVERY
-    real failure mode (non-200 status, empty/unparseable response, network exception)
-    -- previously only the non-200 status branch attempted it, contradicting the
-    module's own documented "Auto-falls-back to custom K8s MCP if GKE Remote fails."
-    Also only includes pod_name in the fallback call's args when the target tool
-    actually accepts it (_CUSTOM_TOOLS_ACCEPTING_POD_NAME) -- it used to be
-    force-included for every target, even ones like list_pods that don't take it.
-
-    Returns the fallback call's result dict, or None if no fallback applies (not a
-    GKE Remote call, no valid mapped equivalent tool, or no fallback source
-    configured) -- callers fall through to their own error result in that case.
-    """
-    if not is_gke_remote:
-        return None
-    fallback      = cluster_info.get("mcp_fallback", "k8s_mcp")
-    fallback_tool = _map_to_custom_tool(tool_name)
-    if not (fallback and fallback_tool and fallback_tool in CUSTOM_K8S_TOOLS):
-        return None
-    log.info("call_tool: GKE Remote failed → fallback %s.%s", fallback, fallback_tool)
-    # issue #246: same guard as mcp_router.py's auto-fill -- no current mapping
-    # above targets a cluster-scoped tool (list_nodes/describe_node), but keep
-    # this consistent with the rest of the module so a future mapping addition
-    # can't silently reintroduce the same "unexpected_keyword_argument" failure.
-    # Section 5 redesign: the custom MCP server now requires cluster_id on every
-    # call (see mcp/server.py's resolve_cluster()) -- this fallback targets the
-    # SAME cluster the GKE Remote call was already resolved to, never a
-    # different one, matching mcp_router.py's own forced (not setdefault)
-    # cluster_id assignment for the primary k8s_mcp routing path.
-    fallback_args: Dict[str, Any] = {"cluster_id": cluster_name}
-    if fallback_tool not in _CUSTOM_TOOLS_WITHOUT_NAMESPACE:
-        fallback_args["namespace"] = namespace
-    if pod_name and fallback_tool in _CUSTOM_TOOLS_ACCEPTING_POD_NAME:
-        fallback_args["pod_name"] = pod_name
-    return call_tool(fallback, fallback_tool, fallback_args, run_id, cluster_name)
-
-
 def _call_catalog_source(
     mcp_source: str, tool_name: str, arguments: Dict[str, Any], cluster_name: str,
 ) -> Dict[str, Any]:
@@ -588,7 +555,9 @@ def call_tool(
     Call one tool on one MCP source.
     Validates allowlist before any network call.
     Builds correct args for GKE Remote MCP (parent field required).
-    Auto-falls-back to custom K8s MCP if GKE Remote fails.
+    Section 3 correction (2026-09-08): no cross-type fallback -- a resolved
+    cluster whose own MCP source fails returns an honest failure, never a
+    silent retry against the other MCP type (see module docstring).
     _broadened_retry (issue #70, internal use only): set on the recursive call made
     when a name-scoped list_k8s_events returns NotFound, to prevent retrying twice.
     """
@@ -613,9 +582,6 @@ def call_tool(
     cluster_info  = _get_cluster_registry().get(cluster_name, {})
     source_config = MCP_REGISTRY.get(mcp_source, {})
     is_gke_remote = (mcp_source == "gke_remote_mcp")
-    # Always defined (not just on the GKE-remote branch below) -- _try_custom_mcp_fallback
-    # is called from every failure path regardless of which branch ran, and short-circuits
-    # via is_gke_remote before ever reading these on the custom-MCP path.
     namespace = ""
     pod_name  = ""
 
@@ -645,12 +611,20 @@ def call_tool(
         # Custom K8s MCP
         url = cluster_info.get("mcp_url") or source_config.get("url", "")
         if not url:
-            fallback = cluster_info.get("mcp_fallback", "k8s_mcp")
-            if fallback and fallback != mcp_source:
-                log.warning("call_tool: no URL for %s, trying %s", mcp_source, fallback)
-                return call_tool(fallback, tool_name, arguments, run_id, cluster_name)
+            # Section 3 correction (2026-09-08): previously fell back to
+            # gke_remote_mcp here -- would have sent this on-prem/custom
+            # cluster's name to Google's GKE API as if it were a GKE cluster
+            # (a real wrong-MCP risk, latent whenever ENABLE_CUSTOM_MCP is
+            # off). An honest, unambiguous failure naming the real cause
+            # instead -- never a silent switch to the other MCP type.
+            log.error("call_tool: no URL configured for %s (cluster=%s)", mcp_source, cluster_name)
             return {
-                "ok": False, "error": f"No URL for {mcp_source}",
+                "ok": False,
+                "error": (
+                    f"No URL configured for {mcp_source} (cluster={cluster_name!r}) -- "
+                    "the custom MCP is not reachable for this cluster; refusing to route "
+                    "to a different MCP type."
+                ),
                 "tool": tool_name, "mcp_source": mcp_source, "duration_s": 0,
             }
         args  = dict(arguments)
@@ -698,13 +672,10 @@ def call_tool(
                 "call_tool FAILED source=%s tool=%s: %s",
                 mcp_source, tool_name, error_msg[:200],
             )
-
-            fallback_result = _try_custom_mcp_fallback(
-                is_gke_remote, cluster_info, tool_name, namespace, pod_name, run_id, cluster_name,
-            )
-            if fallback_result is not None:
-                return fallback_result
-
+            # Section 3 correction (2026-09-08): no cross-type fallback -- see
+            # module docstring. A resolved cluster's own MCP failing is an
+            # honest routing failure, never a silent retry against the other
+            # MCP type.
             return {
                 "ok": False, "error": error_msg,
                 "tool": tool_name, "mcp_source": mcp_source, "duration_s": duration,
@@ -715,29 +686,12 @@ def call_tool(
 
         # MCP protocol error (unknown tool, invalid arguments, server error).
         # Surface the server's own message instead of the old generic
-        # "Empty response" -- see _rpc_error_message. Fallback is still attempted
-        # first, since a different MCP source may accept the same call.
+        # "Empty response" -- see _rpc_error_message.
         if protocol_error is not None:
             log.warning(
                 "call_tool: %s tool=%s mcp_source=%s cluster=%s",
                 protocol_error, tool_name, mcp_source, cluster_name,
             )
-            fallback_result = _try_custom_mcp_fallback(
-                is_gke_remote, cluster_info, tool_name, namespace, pod_name, run_id, cluster_name,
-            )
-            # A fallback that SUCCEEDS is the answer. A fallback that FAILS must not
-            # overwrite the original diagnostic with its own: caught by this fix's own
-            # test, where a real "-32602 Invalid arguments" was replaced by the far less
-            # useful "No URL for k8s_mcp" -- losing the message all over again, which is
-            # the exact thing this change exists to prevent. Keep both, primary first.
-            if fallback_result is not None:
-                if fallback_result.get("ok"):
-                    return fallback_result
-                fallback_result["error"] = (
-                    f"{protocol_error} (fallback also failed: "
-                    f"{fallback_result.get('error', 'unknown')})"
-                )
-                return fallback_result
             return {
                 "ok": False, "error": protocol_error,
                 "tool": tool_name, "mcp_source": mcp_source, "duration_s": duration,
@@ -861,10 +815,8 @@ def call_tool(
             # A Model Armor block is a FAILED call, not a successful one. The real
             # payload is gone; only the block notice came back. Returning ok=True
             # here is what let a fabricated RCA be produced (see
-            # _is_model_armor_blocked_result). Deliberately NOT routed through
-            # _try_custom_mcp_fallback: the same floor setting is project-wide and
-            # would sanitize the fallback's response identically, so retrying only
-            # burns latency. Fail loudly and let the caller record the gap.
+            # _is_model_armor_blocked_result). Fail loudly and let the caller
+            # record the gap.
             if _is_model_armor_blocked_result(content):
                 log.error(
                     "call_tool: MODEL_ARMOR_BLOCKED tool=%s mcp_source=%s cluster=%s -- "
@@ -889,29 +841,12 @@ def call_tool(
                 "tool": tool_name, "mcp_source": mcp_source, "duration_s": duration,
             }
 
-        # issue #72: empty/unparseable responses used to return this error directly with
-        # no fallback attempt, contradicting the documented fallback behavior -- only a
-        # non-200 HTTP status ever triggered it before.
-        fallback_result = _try_custom_mcp_fallback(
-            is_gke_remote, cluster_info, tool_name, namespace, pod_name, run_id, cluster_name,
-        )
-        if fallback_result is not None:
-            return fallback_result
-
         return {
             "ok": False, "error": "Empty response",
             "tool": tool_name, "mcp_source": mcp_source, "duration_s": duration,
         }
 
     except Exception as e:
-        # issue #72: network-level exceptions (timeout, connection refused, DNS failure,
-        # etc.) used to return the error directly with no fallback attempt either.
-        fallback_result = _try_custom_mcp_fallback(
-            is_gke_remote, cluster_info, tool_name, namespace, pod_name, run_id, cluster_name,
-        )
-        if fallback_result is not None:
-            return fallback_result
-
         return {
             "ok": False, "error": str(e),
             "tool": tool_name, "mcp_source": mcp_source,

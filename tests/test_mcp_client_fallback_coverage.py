@@ -1,92 +1,25 @@
-"""Regression tests for issue #72:
-1. The custom-MCP fallback used to only fire on a non-200 HTTP status -- network
-   exceptions and empty/unparseable responses returned their error directly with no
-   fallback attempt, contradicting the module's own documented fallback behavior.
-2. get_k8s_cluster_info and list_k8s_api_resources both mapped to list_pods --
-   semantically invalid (list_pods lists pods in a namespace; neither GKE tool has
-   anything to do with that), and list_pods doesn't even accept the pod_name arg the
-   fallback path used to force-send.
-3. fallback_args force-included pod_name for every fallback target, even ones (like
-   list_pods) that don't accept it at all.
+"""Section 3 correction (2026-09-08): replaces the old fallback-coverage tests.
+
+Root cause: this repo used to auto-fall-back from GKE Remote MCP to the custom
+k8s_mcp (and vice versa) on failure. Two real problems made that dangerous:
+1. mcp/server.py's resolve_cluster() now rejects any cluster_id whose registry
+   type isn't 'custom' (Section 5 redesign) -- so a GKE-Remote-failure fallback to
+   k8s_mcp could never succeed for a real GKE cluster; it was dead code advertising
+   behavior that no longer existed.
+2. A custom cluster with no configured MCP URL fell back to gke_remote_mcp -- which
+   would send an on-prem cluster's name to Google's GKE API as if it were a GKE
+   cluster, a genuine wrong-MCP risk (latent whenever ENABLE_CUSTOM_MCP is off).
+
+Both fallback paths (and _try_custom_mcp_fallback, _map_to_custom_tool,
+_CUSTOM_TOOLS_ACCEPTING_POD_NAME, _CUSTOM_TOOLS_WITHOUT_NAMESPACE, which existed
+only to support them) are removed. These tests prove the replacement behavior:
+every real failure mode of a resolved cluster's OWN MCP source returns an honest
+failure naming the real cause, and never silently retries against the other MCP
+type or a different cluster.
 """
 import agent.mcp_client as mcp_client_mod
-from agent.mcp_client import (
-    CUSTOM_K8S_TOOLS,
-    _CUSTOM_TOOLS_ACCEPTING_POD_NAME,
-    _map_to_custom_tool,
-    _try_custom_mcp_fallback,
-    call_tool,
-)
+from agent.mcp_client import call_tool
 
-
-# ── _map_to_custom_tool: the two invalid mappings must be gone ─────────────────────
-
-def test_cluster_info_has_no_fallback_mapping_not_list_pods():
-    assert _map_to_custom_tool("get_k8s_cluster_info") is None
-
-
-def test_list_api_resources_has_no_fallback_mapping_not_list_pods():
-    assert _map_to_custom_tool("list_k8s_api_resources") is None
-
-
-def test_remaining_mappings_all_target_tools_that_accept_pod_name():
-    # Sanity check tying the two fixes together: every GKE tool that DOES still map
-    # to a custom tool maps to one that genuinely accepts pod_name (confirmed against
-    # mcp/server.py's real @guarded(name_fields=("pod_name",)) signatures).
-    for gke_tool in ("list_k8s_events", "describe_k8s_resource", "get_k8s_resource", "get_k8s_logs"):
-        target = _map_to_custom_tool(gke_tool)
-        assert target in CUSTOM_K8S_TOOLS
-        assert target in _CUSTOM_TOOLS_ACCEPTING_POD_NAME
-
-
-# ── _try_custom_mcp_fallback: pod_name only included when the target accepts it ────
-
-def test_fallback_excludes_pod_name_when_target_tool_does_not_accept_it(monkeypatch):
-    monkeypatch.setattr(mcp_client_mod, "_map_to_custom_tool", lambda t: "list_pods")
-    captured = {}
-    monkeypatch.setattr(
-        mcp_client_mod, "call_tool",
-        lambda fb, tool, args, run_id, cluster: captured.update(args) or {"ok": True},
-    )
-    _try_custom_mcp_fallback(
-        is_gke_remote=True, cluster_info={}, tool_name="get_k8s_cluster_info",
-        namespace="test-incidents", pod_name="my-pod", run_id="r", cluster_name="c",
-    )
-    assert "pod_name" not in captured
-    assert captured["namespace"] == "test-incidents"
-
-
-def test_fallback_includes_pod_name_when_target_tool_accepts_it(monkeypatch):
-    monkeypatch.setattr(mcp_client_mod, "_map_to_custom_tool", lambda t: "describe_pod_detail")
-    captured = {}
-    monkeypatch.setattr(
-        mcp_client_mod, "call_tool",
-        lambda fb, tool, args, run_id, cluster: captured.update(args) or {"ok": True},
-    )
-    _try_custom_mcp_fallback(
-        is_gke_remote=True, cluster_info={}, tool_name="describe_k8s_resource",
-        namespace="test-incidents", pod_name="my-pod", run_id="r", cluster_name="c",
-    )
-    assert captured["pod_name"] == "my-pod"
-
-
-def test_fallback_returns_none_when_no_mapped_tool_exists():
-    result = _try_custom_mcp_fallback(
-        is_gke_remote=True, cluster_info={}, tool_name="get_k8s_cluster_info",
-        namespace="test-incidents", pod_name="", run_id="r", cluster_name="c",
-    )
-    assert result is None
-
-
-def test_fallback_returns_none_for_non_gke_remote_calls():
-    result = _try_custom_mcp_fallback(
-        is_gke_remote=False, cluster_info={}, tool_name="list_k8s_events",
-        namespace="test-incidents", pod_name="x", run_id="r", cluster_name="c",
-    )
-    assert result is None
-
-
-# ── End-to-end: fallback now fires on empty response and network exceptions too ───
 
 class _FakeResponse:
     def __init__(self, status_code: int, text: str):
@@ -95,7 +28,7 @@ class _FakeResponse:
 
 
 class _RaisingHttpxClient:
-    """First call raises a network exception; second call (the fallback) succeeds."""
+    """Always raises a network exception -- there must be no second (fallback) call."""
     calls: list = []
 
     def __init__(self, *a, **k):
@@ -109,35 +42,34 @@ class _RaisingHttpxClient:
 
     def post(self, endpoint, json, headers):
         _RaisingHttpxClient.calls.append((endpoint, json["params"]["name"]))
-        if len(_RaisingHttpxClient.calls) == 1:
-            raise ConnectionError("connection reset by peer")
-        return _FakeResponse(200, 'data: {"jsonrpc": "2.0", "result": {"structuredContent": {"output": "3 events"}}}\n')
+        raise ConnectionError("connection reset by peer")
 
 
-def test_network_exception_now_triggers_fallback_not_a_bare_error(monkeypatch):
+def _registry_gke_cluster():
+    return {
+        "sre-test-cluster": {
+            "project": "p", "region": "us-central1", "namespace": "test-incidents",
+            "cluster_type": "gke",
+        },
+    }
+
+
+def test_gke_network_exception_is_honest_failure_no_fallback_attempted(monkeypatch):
     _RaisingHttpxClient.calls = []
     monkeypatch.setattr(mcp_client_mod.httpx, "Client", _RaisingHttpxClient)
     monkeypatch.setattr(mcp_client_mod, "_get_access_token", lambda: "fake-token")
-    monkeypatch.setattr(mcp_client_mod, "_get_identity_token", lambda url: "fake-token")
-    monkeypatch.setattr(
-        mcp_client_mod, "_get_cluster_registry",
-        lambda: {
-            "sre-test-cluster": {
-                "project": "p", "region": "us-central1", "namespace": "test-incidents",
-                "mcp_url": "https://custom-mcp.example", "mcp_fallback": "k8s_mcp",
-            },
-        },
-    )
+    monkeypatch.setattr(mcp_client_mod, "_get_cluster_registry", _registry_gke_cluster)
     result = call_tool(
         "gke_remote_mcp", "list_k8s_events", {"name": "my-pod", "namespace": "test-incidents"},
         cluster_name="sre-test-cluster",
     )
-    assert len(_RaisingHttpxClient.calls) == 2  # original (raised) + fallback (succeeded)
-    assert result["ok"] is True
-    assert result["mcp_source"] == "k8s_mcp"
+    assert len(_RaisingHttpxClient.calls) == 1  # exactly one attempt, no fallback retry
+    assert result["ok"] is False
+    assert result["mcp_source"] == "gke_remote_mcp"
+    assert "connection reset" in result["error"]
 
 
-class _EmptyThenRealHttpxClient:
+class _EmptyResponseHttpxClient:
     calls: list = []
 
     def __init__(self, *a, **k):
@@ -150,30 +82,65 @@ class _EmptyThenRealHttpxClient:
         return False
 
     def post(self, endpoint, json, headers):
-        _EmptyThenRealHttpxClient.calls.append(endpoint)
-        if len(_EmptyThenRealHttpxClient.calls) == 1:
-            return _FakeResponse(200, 'data: {"jsonrpc": "2.0", "result": {}}\n')  # empty
-        return _FakeResponse(200, 'data: {"jsonrpc": "2.0", "result": {"structuredContent": {"output": "3 events"}}}\n')
+        _EmptyResponseHttpxClient.calls.append(endpoint)
+        return _FakeResponse(200, 'data: {"jsonrpc": "2.0", "result": {}}\n')
 
 
-def test_empty_response_now_triggers_fallback_not_a_bare_error(monkeypatch):
-    _EmptyThenRealHttpxClient.calls = []
-    monkeypatch.setattr(mcp_client_mod.httpx, "Client", _EmptyThenRealHttpxClient)
+def test_gke_empty_response_is_honest_failure_no_fallback_attempted(monkeypatch):
+    _EmptyResponseHttpxClient.calls = []
+    monkeypatch.setattr(mcp_client_mod.httpx, "Client", _EmptyResponseHttpxClient)
     monkeypatch.setattr(mcp_client_mod, "_get_access_token", lambda: "fake-token")
-    monkeypatch.setattr(mcp_client_mod, "_get_identity_token", lambda url: "fake-token")
-    monkeypatch.setattr(
-        mcp_client_mod, "_get_cluster_registry",
-        lambda: {
-            "sre-test-cluster": {
-                "project": "p", "region": "us-central1", "namespace": "test-incidents",
-                "mcp_url": "https://custom-mcp.example", "mcp_fallback": "k8s_mcp",
-            },
-        },
-    )
+    monkeypatch.setattr(mcp_client_mod, "_get_cluster_registry", _registry_gke_cluster)
     result = call_tool(
         "gke_remote_mcp", "list_k8s_events", {"name": "my-pod", "namespace": "test-incidents"},
         cluster_name="sre-test-cluster",
     )
-    assert len(_EmptyThenRealHttpxClient.calls) == 2
-    assert result["ok"] is True
+    assert len(_EmptyResponseHttpxClient.calls) == 1
+    assert result["ok"] is False
+    assert result["mcp_source"] == "gke_remote_mcp"
+    assert result["error"] == "Empty response"
+
+
+class _NonOkHttpxClient:
+    calls: list = []
+
+    def __init__(self, *a, **k):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def post(self, endpoint, json, headers):
+        _NonOkHttpxClient.calls.append(endpoint)
+        return _FakeResponse(503, "Service Unavailable")
+
+
+def test_gke_non_200_is_honest_failure_no_fallback_attempted(monkeypatch):
+    _NonOkHttpxClient.calls = []
+    monkeypatch.setattr(mcp_client_mod.httpx, "Client", _NonOkHttpxClient)
+    monkeypatch.setattr(mcp_client_mod, "_get_access_token", lambda: "fake-token")
+    monkeypatch.setattr(mcp_client_mod, "_get_cluster_registry", _registry_gke_cluster)
+    result = call_tool(
+        "gke_remote_mcp", "list_k8s_events", {"name": "my-pod", "namespace": "test-incidents"},
+        cluster_name="sre-test-cluster",
+    )
+    assert len(_NonOkHttpxClient.calls) == 1
+    assert result["ok"] is False
+    assert result["mcp_source"] == "gke_remote_mcp"
+    assert "503" in result["error"]
+
+
+def test_custom_cluster_with_no_url_fails_honestly_never_tries_gke_remote():
+    """The other direction: a resolved custom/on-prem cluster with no configured MCP
+    URL must not silently route to gke_remote_mcp."""
+    result = call_tool(
+        "k8s_mcp", "list_pods", {"namespace": "test-incidents"},
+        cluster_name="sre-lab-with-no-url",
+    )
+    assert result["ok"] is False
     assert result["mcp_source"] == "k8s_mcp"
+    assert "No URL configured" in result["error"]
+    assert "refusing to route to a different MCP type" in result["error"]
