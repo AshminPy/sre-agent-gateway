@@ -38,7 +38,7 @@ from starlette.responses import JSONResponse, PlainTextResponse
 
 from fastmcp import FastMCP
 from response_guard import ModelArmorResponseGuard
-from security import guarded, set_cluster_resolver
+from security import guarded, set_client_cache_invalidator, set_cluster_resolver
 from tools.pods import get_pods as _get_pods, describe_pod as _describe_pod
 from tools.logs import get_pod_logs as _get_pod_logs, get_previous_pod_logs as _get_previous_pod_logs
 from tools.events import get_events as _get_events, get_namespace_events as _get_namespace_events
@@ -247,17 +247,25 @@ set_cluster_resolver(resolve_cluster)
 
 
 _K8S_CLIENT_CACHE: dict = {}
-# Section 2 correction (2026-09-08): 45 min -- safely under the ~60 min lifetime of a
-# real GCP access token. The Workload-Identity and dynamic-Connect-Gateway branches
-# below each bake ONE token string into `configuration.api_key` at construction time
-# and never refresh it; a bare @lru_cache (the previous implementation) would keep
-# returning that same client -- and therefore that same, eventually-expired token --
-# for the rest of the process lifetime, surfacing as intermittent 401s under
-# sustained traffic. The kube_context (kubeconfig exec-plugin) branch isn't affected
-# by this specific risk (the kubernetes client re-invokes the exec credential
-# provider itself), but goes through the same TTL cache for uniformity -- rebuilding
-# it is cheap (just re-runs config.load_kube_config()).
-_K8S_CLIENT_TOKEN_TTL = 2700.0
+# Section 2 correction, revised again 2026-09-09 after live reproduction: the
+# Workload-Identity and dynamic-Connect-Gateway branches below each bake ONE
+# token string into `configuration.api_key` at construction time and never
+# refresh it; a bare @lru_cache (the original implementation) would keep
+# returning that same client -- and therefore that same, eventually-expired
+# token -- for the rest of the process lifetime. A first fix used a fixed
+# 45-minute TTL, assumed safely under a real token's ~60-minute lifetime --
+# LIVE-REPRODUCED FALSE the next day: a real ACCESS_TOKEN_EXPIRED 401 from
+# connectgateway.googleapis.com at ~35 minutes elapsed, evidence in
+# gs://sreagent-t2-demo-evidence/run_20260909_043840_vwob/. A fixed TTL is a
+# guess about a real token's lifetime, which this codebase does not control
+# (Connect Gateway's own effective window, not a plain GCP OAuth token, may be
+# shorter). Lowered to 20 min as a more conservative bound, AND -- the actual
+# fix -- security.py's guarded() now reactively evicts a cluster's cached
+# client the moment a real auth failure is observed (see
+# set_client_cache_invalidator() below), so correctness no longer depends on
+# guessing the right number at all: worst case is one failed call, self-healed
+# for every call after it, regardless of the real token lifetime.
+_K8S_CLIENT_TOKEN_TTL = 1200.0
 
 
 def _build_k8s_clients(cluster_id: str):
@@ -504,6 +512,16 @@ def _get_k8s_clients_cache_clear() -> None:
 
 
 get_k8s_clients.cache_clear = _get_k8s_clients_cache_clear
+
+
+def _evict_k8s_client(cluster_id: str) -> None:
+    """Evicts ONLY this cluster's cached client -- registered with security.py's
+    guarded() so a real auth failure self-heals on the very next call for that
+    cluster, without disturbing any other cluster's still-healthy cached client."""
+    _K8S_CLIENT_CACHE.pop(cluster_id, None)
+
+
+set_client_cache_invalidator(_evict_k8s_client)
 
 
 # ── Tools — Pod ───────────────────────────────────────────────────

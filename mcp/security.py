@@ -158,6 +158,41 @@ def set_cluster_resolver(resolver: Callable[[str], dict]) -> None:
     _cluster_resolver = resolver
 
 
+# Section 2 correction, live-reproduced (2026-09-08/09): the TTL-cached client
+# (server.py's get_k8s_clients(), _K8S_CLIENT_TOKEN_TTL) closed the "cached
+# client never refreshes" bug, but a fixed TTL is still a GUESS at the real
+# token lifetime -- live-reproduced a real 401 ACCESS_TOKEN_EXPIRED from
+# connectgateway.googleapis.com at ~35 minutes, under the original 45-minute
+# TTL. Rather than re-guess a smaller "safe" number, this makes recovery
+# reactive: on an actual auth failure, evict that cluster's cached client so
+# the VERY NEXT call rebuilds it with a fresh token, instead of waiting out
+# whatever the TTL happens to be. Same dependency-injection pattern as
+# _cluster_resolver above (this module must not import server.py directly).
+_client_cache_invalidator = None
+
+
+def set_client_cache_invalidator(invalidator: Callable[[str], None]) -> None:
+    """invalidator(cluster_id) must evict ONLY that cluster's cached K8s client
+    (never the whole cache) so the next call for it rebuilds from scratch."""
+    global _client_cache_invalidator
+    _client_cache_invalidator = invalidator
+
+
+def _is_expired_credential_error(exc: Exception) -> bool:
+    """Detects the real observed shape (googleapiclient/kubernetes-client
+    ApiException carrying Google's own ACCESS_TOKEN_EXPIRED reason, or a bare
+    401/Unauthorized) without depending on any specific exception class --
+    different auth paths (Workload Identity, dynamic Connect Gateway,
+    kubeconfig exec-plugin) can each raise a different exception type for the
+    same real condition."""
+    text = str(exc)
+    return (
+        "ACCESS_TOKEN_EXPIRED" in text
+        or "invalid_token" in text
+        or ("401" in text and ("Unauthorized" in text or "UNAUTHENTICATED" in text))
+    )
+
+
 def enforce_cluster_namespace_scope(cluster_id: str, namespace: str) -> None:
     """Validates `namespace` against the SPECIFIC resolved cluster's own
     allowed_namespaces (registry-driven, per cluster) -- independent of, and
@@ -403,6 +438,16 @@ def guarded(
                 duration = time.time() - start
                 audit_log(fn.__name__, kwargs, ok=False, duration_s=duration, error=str(e))
                 log.error("guarded tool=%s failed: %s", fn.__name__, e)
+                if _client_cache_invalidator is not None and _is_expired_credential_error(e):
+                    cluster_id = kwargs.get("cluster_id")
+                    if cluster_id:
+                        log.error(
+                            "guarded tool=%s cluster_id=%s: expired-credential error "
+                            "detected, evicting cached client so the next call rebuilds "
+                            "it with a fresh token",
+                            fn.__name__, cluster_id,
+                        )
+                        _client_cache_invalidator(cluster_id)
                 return {"error": str(e), "ok": False}
 
         return wrapper

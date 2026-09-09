@@ -168,6 +168,48 @@ def test_single_cluster_local_dev_path_unchanged(monkeypatch):
     assert server._CLUSTER_REGISTRY_LOAD_FAILED is False
 
 
+def test_expired_credential_error_evicts_only_that_clusters_cached_client(monkeypatch):
+    """Section 2 correction, live-reproduced 2026-09-09: a fixed TTL alone left a real
+    gap -- a real ACCESS_TOKEN_EXPIRED 401 was observed at ~35 minutes, under the
+    original 45-minute TTL. This proves the reactive fix: on a real auth failure,
+    only the failing cluster's cached client is evicted; an unrelated cluster's
+    healthy cached entry survives untouched."""
+    import server as server_mod
+    import security as security_mod
+    server_mod._K8S_CLIENT_CACHE["sre-lab"] = (("stale-client-a",), time.time())
+    server_mod._K8S_CLIENT_CACHE["sre-lab-2"] = (("healthy-client-b",), time.time())
+
+    exc = RuntimeError(
+        '(401)\nHTTP response body: {"error": {"status": "UNAUTHENTICATED", '
+        '"details": [{"reason": "ACCESS_TOKEN_EXPIRED"}]}}'
+    )
+    assert security_mod._is_expired_credential_error(exc) is True
+    server_mod._evict_k8s_client("sre-lab")
+
+    assert "sre-lab" not in server_mod._K8S_CLIENT_CACHE
+    assert server_mod._K8S_CLIENT_CACHE["sre-lab-2"][0] == ("healthy-client-b",)
+
+
+def test_guarded_tool_failure_triggers_eviction_end_to_end(monkeypatch):
+    """End-to-end through the REAL guarded() decorator (mcp/security.py), not just the
+    invalidator function in isolation -- proves the wiring, not just the mechanism."""
+    import security as security_mod
+
+    monkeypatch.setattr(server, "_CLUSTER_REGISTRY_CACHE", {
+        "sre-lab": {"cluster_type": "custom", "enabled": True, "kube_context": "x", "allowed_namespaces": []},
+    })
+    monkeypatch.setattr(server, "_CLUSTER_REGISTRY_LOADED_AT", time.time() + 3600)
+    server._K8S_CLIENT_CACHE["sre-lab"] = (("stale-client",), time.time())
+
+    @security_mod.guarded()
+    def _fake_tool(cluster_id: str):
+        raise RuntimeError('(401) ... "reason": "ACCESS_TOKEN_EXPIRED" ...')
+
+    result = _fake_tool(cluster_id="sre-lab")
+    assert result["ok"] is False
+    assert "sre-lab" not in server._K8S_CLIENT_CACHE
+
+
 def test_a_to_b_to_a_isolation_with_real_registry_backed_resolution(monkeypatch):
     """End-to-end A->B->A using the real GCS-backed registry loader (not a
     monkeypatched cache dict) -- proves resolve_cluster() picks the right entry every
