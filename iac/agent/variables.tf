@@ -100,6 +100,29 @@ variable "additional_clusters" {
       fleet_project_number = "327234009108"
       fleet_membership     = "sre-lab"
     }
+    # Section 6 (2026-09-08): a genuinely SECOND, from-zero on-prem cluster,
+    # onboarded to prove the plug-and-play claim for real -- not a special
+    # case, no kube_context (pure dynamic Connect Gateway path, no static
+    # kubeconfig, no image rebuild). Onboarding was exactly: kind cluster
+    # created locally, `gcloud container fleet memberships register`,
+    # `generate-gateway-rbac` + the same sre-agent-reader ClusterRole
+    # sre-lab already uses (bound to the SAME sre-k8s-mcp-runtime identity --
+    # its project-level roles/gkehub.gatewayReader grant, iac/agent/
+    # onprem_fleet.tf, already covers any membership in this project, no new
+    # IAM grant needed), this one registry entry, terraform apply. Same
+    # Cloud Run custom MCP service serves both -- no new deployment.
+    "sre-lab-2" = {
+      aliases               = ["kind-sre-lab-2"]
+      project               = "sreagent-t2-demo"
+      region                = "global"
+      type                  = "custom"
+      environment           = "test"
+      allowed_namespaces    = ["test-incidents"]
+      owner                 = "sre-platform"
+      enabled               = true
+      fleet_project_number  = "327234009108"
+      fleet_membership      = "sre-lab-2"
+    }
   }
 
   # 2026-08-26: the collision guard MOVED out of this variable, into a
