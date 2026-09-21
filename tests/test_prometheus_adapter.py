@@ -48,6 +48,28 @@ def test_missing_endpoint_rejected(monkeypatch):
         query_range("sre-lab", "up", 0, 100)
 
 
+def test_missing_endpoint_error_names_the_default_env_var_when_catalog_omits_it(monkeypatch):
+    # Copilot review finding (2026-09-10): the error message used to call
+    # entry.get("endpoint_env") a SECOND time with no default -- so a catalog
+    # entry that relies on the implicit PROMETHEUS_URL fallback (key absent
+    # entirely, not just falsy) reported "(None is unset)" instead of naming
+    # the env var actually checked. The live catalog entry always sets
+    # endpoint_env explicitly, so this only reproduces with the key removed.
+    _enable_prometheus(monkeypatch)
+    import agent.sources.prometheus_adapter as adapter_mod
+    del adapter_mod.SOURCE_CATALOG["prometheus"]["endpoint_env"]
+    monkeypatch.delenv("PROMETHEUS_URL", raising=False)
+    with pytest.raises(PrometheusQueryError, match=r"\(PROMETHEUS_URL is unset\)"):
+        query_range("sre-lab", "up", 0, 100)
+
+
+def test_missing_endpoint_error_names_a_custom_endpoint_env(monkeypatch):
+    _enable_prometheus(monkeypatch, endpoint_env="SRE_LAB_PROMETHEUS_URL")
+    monkeypatch.delenv("SRE_LAB_PROMETHEUS_URL", raising=False)
+    with pytest.raises(PrometheusQueryError, match=r"\(SRE_LAB_PROMETHEUS_URL is unset\)"):
+        query_range("sre-lab", "up", 0, 100)
+
+
 def test_successful_query_returns_normalized_evidence(monkeypatch):
     _enable_prometheus(monkeypatch)
     monkeypatch.setenv("PROMETHEUS_URL", "http://prometheus.internal:9090")

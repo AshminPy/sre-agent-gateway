@@ -69,12 +69,32 @@ def tool_executor(state: AgentState) -> dict:
     executed_tool   = result.get("tool", tool_name)
     executed_source = result.get("mcp_source", mcp_source)
 
+    # Copilot review finding on the app-infra port (confirmed real, 2026-09-10):
+    # issue #70's broadened retry (mcp_client.py) drops the name/pod_name/pod
+    # filter and re-dispatches unscoped when a scoped call 404s --
+    # result["broadened_after_not_found"] is the (already-existing) signal that
+    # this happened. Before this fix, the ORIGINAL scoped args were still
+    # recorded here even when the unscoped call is what actually ran, which
+    # evidence_extractor.py later persists into evidence_store[...]["args"] and
+    # scorer.classify_tool() reads for domain classification -- a real
+    # divergence between recorded and actual args. Deliberately narrow: only
+    # strips the same 3 keys mcp_client.py's own broadening logic strips, for
+    # this one already-signaled case -- NOT a general "always use call_tool's
+    # internal args" change. call_tool() never surfaces its GKE-wire-format
+    # reshaped args (_build_gke_args) anywhere in its return value, and
+    # scorer.classify_tool() expects canonical field names (e.g. "previous",
+    # "resourceType"), so preferring that reshaped format instead would risk
+    # breaking classification that works today -- not fixing anything.
+    executed_args = args
+    if result.get("broadened_after_not_found"):
+        executed_args = {k: v for k, v in args.items() if k not in ("name", "pod_name", "pod")}
+
     # Tool history — COMPACT only, NO raw output stored in state
     # Raw result lives ONLY in latest_tool_result until evidence_extractor clears it
     record = {
         "tool":       executed_tool,
         "mcp_source": executed_source,
-        "args":       args,
+        "args":       executed_args,
         "ok":         result["ok"],
         "duration_s": result.get("duration_s", 0),
         "error":      result.get("error") if not result["ok"] else None,
