@@ -1,0 +1,46 @@
+---
+# Ownership-safe cleanup (correction #3). Removes ONLY Fleet memberships and
+# RBAC objects this workflow itself created/labeled -- never by inventory
+# membership alone, never by name match alone. Kind cluster deletion is
+# deliberately NOT here (Makefile's kind-onprem-down owns that, keeping this
+# playbook portable to a real, non-kind cluster where "delete the cluster"
+# would never be an Ansible-cleanup responsibility).
+
+- name: Ownership-safe cleanup of onboarded external clusters
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  # This playbook never calls include_role, so the role's own defaults/main.yml
+  # (onboarded_by_label_key, onboarded_by_label_value, gcloud_bin, ...) would
+  # otherwise never load -- confirmed live, 2026-09-21: 'onboarded_by_label_key'
+  # is undefined without this. Loading the same file directly keeps one source
+  # of truth shared with rbac.yml, rather than duplicating the constants here
+  # and risking drift.
+  vars_files:
+    - ../roles/onprem_cluster_onboarding/defaults/main.yml
+  vars:
+    cleanup_results: []
+
+  tasks:
+    - name: Fail fast if no clusters are defined
+      ansible.builtin.fail:
+        msg: "`external_clusters` is empty or undefined."
+      when: external_clusters | default([]) | length == 0
+
+    - name: Clean up each cluster independently
+      ansible.builtin.include_tasks: tasks/cleanup_one_cluster.yml
+      loop: "{{ external_clusters }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Print cleanup summary
+      ansible.builtin.debug:
+        var: cleanup_results
+
+    - name: Fail if any cluster's cleanup errored
+      ansible.builtin.fail:
+        msg: >-
+          Cleanup failed for: {{ cleanup_results
+            | selectattr('status', 'equalto', 'FAIL')
+            | map(attribute='cluster') | join(', ') }}
+      when: cleanup_results | selectattr('status', 'equalto', 'FAIL') | list | length > 0

@@ -1,0 +1,167 @@
+---
+# Real verification, not "gcloud/kubectl exited 0". Fetches real Connect Gateway
+# credentials and issues real allowed and real denied calls -- exactly the pattern
+# already proven manually in docs/connect-gateway-onprem.md, now scripted so it
+# runs every time instead of once, by hand, months ago.
+#
+# IDENTITY -- fixed 2026-09-21 after a real live failure: plain `get-credentials`
+# mints a context using the CALLER's own gcloud identity, not `runtime_identity`.
+# The RBAC this role grants is scoped to `runtime_identity` only (least privilege
+# -- we deliberately do NOT also grant the operator's own identity broad K8s
+# access just to make verification convenient). Live evidence, same date: with no
+# impersonation, every read call came back `Forbidden: unknown` even though the
+# RBAC objects were independently confirmed correct by direct kubectl inspection
+# -- the RBAC was right, the TEST was authenticating as the wrong identity.
+#
+# Fix: when `runtime_identity` is a service account, impersonate it for this
+# verification step via a PERSISTENT `gcloud config set auth/impersonate_service_account`
+# -- not a per-task env var -- because `gke-gcloud-auth-plugin` re-invokes `gcloud`
+# fresh on every single `kubectl` call (a separate subprocess each time), so a
+# one-task environment var would not carry through to later tasks. The config is
+# always unset afterward (`always:` block) so impersonation never leaks into any
+# other gcloud usage on this machine, success or failure.
+#
+# This requires `roles/iam.serviceAccountTokenCreator` on that SA for the identity
+# running this playbook -- an IAM grant outside this role's own scope to make for
+# itself (preflight does not check for or grant it). If missing, the sanity-check
+# task below fails with a specific, diagnosable message instead of a generic
+# `Forbidden: unknown` deep inside the real read/deny checks.
+
+- name: "{{ cluster.name }}: determine whether runtime_identity can be impersonated for verification"
+  ansible.builtin.set_fact:
+    _can_impersonate: "{{ runtime_identity is search('\\.iam\\.gserviceaccount\\.com$') }}"
+
+- name: "{{ cluster.name }}: compute the Connect Gateway kubeconfig context name"
+  ansible.builtin.set_fact:
+    _gw_context: "connectgateway_{{ cluster.fleet_project_id }}_global_{{ cluster.fleet_membership | default(cluster.name) }}"
+
+- name: "{{ cluster.name }}: run verification as runtime_identity where possible"
+  block:
+    - name: "{{ cluster.name }}: configure gcloud to impersonate runtime_identity"
+      ansible.builtin.command:
+        argv: ["{{ gcloud_bin }}", config, set, auth/impersonate_service_account, "{{ runtime_identity }}"]
+      when: _can_impersonate
+      changed_when: true
+
+    - name: "{{ cluster.name }}: fetch Connect Gateway credentials"
+      ansible.builtin.command:
+        argv:
+          - "{{ gcloud_bin }}"
+          - container
+          - fleet
+          - memberships
+          - get-credentials
+          - "{{ cluster.fleet_membership | default(cluster.name) }}"
+          - --project={{ cluster.fleet_project_id }}
+      changed_when: true
+
+    - name: "{{ cluster.name }}: sanity-check impersonated access, with a specific diagnosis if it fails"
+      ansible.builtin.command:
+        argv: [kubectl, "--context={{ _gw_context }}", auth, can-i, get, pods]
+      register: _impersonation_sanity
+      changed_when: false
+      failed_when: false
+      when: _can_impersonate
+
+    - name: "{{ cluster.name }}: fail with a specific diagnosis if impersonation itself is not authorized"
+      ansible.builtin.fail:
+        msg: >-
+          Verification cannot proceed for '{{ cluster.name }}': the identity
+          running this playbook is not authorized to impersonate
+          '{{ runtime_identity }}' (needs roles/iam.serviceAccountTokenCreator on
+          that service account -- an IAM grant outside this role's own scope,
+          make it explicitly if you want live verification as the real runtime
+          identity). stderr: {{ _impersonation_sanity.stderr }}
+      when: _can_impersonate and 'yes' not in (_impersonation_sanity.stdout | default(''))
+
+    - name: "{{ cluster.name }}: real allowed read calls through Connect Gateway"
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --context={{ _gw_context }}
+          - get
+          - "{{ item }}"
+          - -A
+      loop:
+        - pods
+        - deployments
+        - events
+      register: _allowed_reads
+      changed_when: false
+      failed_when: false
+
+    - name: "{{ cluster.name }}: fail if an allowed read call did not succeed"
+      ansible.builtin.fail:
+        msg: >-
+          Verification failed for '{{ cluster.name }}': expected read
+          `kubectl get {{ item.item }} -A` to succeed through Connect Gateway, got
+          rc={{ item.rc }}: {{ item.stderr }}
+      loop: "{{ _allowed_reads.results }}"
+      when: item.rc != 0
+
+    - name: "{{ cluster.name }}: real node-read call (the parity fix -- must now succeed)"
+      ansible.builtin.command:
+        argv: [kubectl, "--context={{ _gw_context }}", get, nodes]
+      register: _node_read
+      changed_when: false
+      failed_when: false
+      when: _effective_grant_node_read | bool
+
+    - name: "{{ cluster.name }}: fail if node-read (the parity fix) did not succeed"
+      ansible.builtin.fail:
+        msg: >-
+          Verification failed for '{{ cluster.name }}': `kubectl get nodes` was
+          expected to succeed after the supplemental node-read grant, got
+          rc={{ _node_read.rc }}: {{ _node_read.stderr }}
+      when: _effective_grant_node_read | bool and _node_read.rc != 0
+
+    - name: "{{ cluster.name }}: real denied write call (must fail)"
+      ansible.builtin.command:
+        argv: [kubectl, "--context={{ _gw_context }}", create, namespace, "sre-agent-onboarding-denial-check"]
+      register: _denied_write
+      changed_when: false
+      failed_when: false
+
+    - name: "{{ cluster.name }}: fail if the denied write call unexpectedly succeeded"
+      ansible.builtin.fail:
+        msg: >-
+          SECURITY: verification failed for '{{ cluster.name }}' -- `kubectl create
+          namespace` unexpectedly SUCCEEDED through Connect Gateway. The runtime RBAC
+          is not read-only as required. Investigate immediately; do not treat this
+          cluster as onboarded.
+      when: _denied_write.rc == 0
+
+    - name: "{{ cluster.name }}: clean up the denial-check namespace if it was somehow created"
+      ansible.builtin.command:
+        argv: [kubectl, "--context={{ _gw_context }}", delete, namespace, "sre-agent-onboarding-denial-check", "--ignore-not-found"]
+      when: _denied_write.rc == 0
+      changed_when: true
+
+    - name: "{{ cluster.name }}: real denied secret-read call (must fail)"
+      ansible.builtin.command:
+        argv: [kubectl, "--context={{ _gw_context }}", get, secrets, -A]
+      register: _denied_secrets
+      changed_when: false
+      failed_when: false
+
+    - name: "{{ cluster.name }}: fail if secret access unexpectedly succeeded"
+      ansible.builtin.fail:
+        msg: >-
+          SECURITY: verification failed for '{{ cluster.name }}' -- `kubectl get
+          secrets -A` unexpectedly SUCCEEDED through Connect Gateway. Investigate
+          immediately; do not treat this cluster as onboarded.
+      when: _denied_secrets.rc == 0
+
+    - name: "{{ cluster.name }}: verification passed"
+      ansible.builtin.debug:
+        msg: >-
+          Verification OK for '{{ cluster.name }}': pods/deployments/events/nodes
+          readable, namespace-create and secret-read correctly denied, tested as
+          {{ runtime_identity if _can_impersonate else 'the operator (no impersonation available)' }}.
+  always:
+    - name: "{{ cluster.name }}: always clear gcloud impersonation config, success or failure"
+      ansible.builtin.command:
+        argv: ["{{ gcloud_bin }}", config, unset, auth/impersonate_service_account]
+      when: _can_impersonate
+      changed_when: true
+      failed_when: false

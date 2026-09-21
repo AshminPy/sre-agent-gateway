@@ -1,0 +1,38 @@
+---
+# Portable defaults only -- no personal project IDs, cluster names, or paths here.
+# Per-cluster values (kube_context, fleet_project_id, fleet_membership, runtime_identity)
+# come from inventory (ansible/inventories/<env>/), never from this role.
+
+# Kubernetes RBAC granted at cluster scope, via `gcloud ... generate-gateway-rbac`.
+rbac_role: "clusterrole/view"
+
+# The `view` ClusterRole excludes cluster-scoped `nodes` -- confirmed live against
+# sre-lab (docs/connect-gateway-onprem.md): `kubectl get nodes` returns Forbidden under
+# `view` alone, but mcp/tools/nodes.py calls list_node/read_node as part of normal
+# investigation. This grants only the two verbs those calls actually use (list, get) --
+# no `watch`, confirmed absent from every mcp/tools/*.py call via repo-wide grep.
+grant_node_read: true
+node_read_verbs:
+  - get
+  - list
+
+# Fleet Membership `clusterTier` is an output-only field (no register-time flag sets it --
+# verified against the current Membership REST reference, 2026-09-21). This role can only
+# detect and roll back an unexpected tier, not prevent it via a flag. Historical incident:
+# commit cc9dbe0, both prior memberships landed on ENTERPRISE (~$216/month combined).
+acceptable_cluster_tiers:
+  - "STANDARD"
+  - "CLUSTER_TIER_UNSPECIFIED"
+
+# Ownership signal for objects this workflow creates. A LABEL, not an annotation --
+# `kubectl -l` selectors only match labels, and cleanup.yml selects by this.
+onboarded_by_label_key: "sre-agent-gateway.internal/onboarded-by"
+onboarded_by_label_value: "ansible-onprem-onboarding"
+
+# No service-account-key path exists in this role. This var intentionally has no
+# default and is never read by any task -- present only so `assert` checks in
+# preflight.yml can confirm a cluster definition never tries to set it.
+# service_account_key_file: (never define this)
+
+gcloud_bin: "gcloud"
+kubeconfig_path: "{{ ansible_env.HOME }}/.kube/config"

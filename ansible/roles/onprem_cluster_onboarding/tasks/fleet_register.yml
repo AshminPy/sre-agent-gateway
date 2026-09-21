@@ -1,0 +1,136 @@
+---
+# Idempotent Fleet Membership registration. Keyless only: --enable-workload-identity
+# plus --has-private-issuer (verified current, 2026-09-21, against
+# docs.cloud.google.com/sdk/gcloud/reference/container/fleet/memberships/register).
+# --service-account-key-file is never constructed anywhere in this file.
+
+- name: "{{ cluster.name }}: compute effective Fleet membership name"
+  ansible.builtin.set_fact:
+    _membership: "{{ cluster.fleet_membership | default(cluster.name) }}"
+
+- name: "{{ cluster.name }}: check for an existing Fleet membership (state check, not a mutation)"
+  ansible.builtin.command:
+    argv:
+      - "{{ gcloud_bin }}"
+      - container
+      - fleet
+      - memberships
+      - describe
+      - "{{ _membership }}"
+      - --project={{ cluster.fleet_project_id }}
+      - --format=json
+  register: _existing_membership
+  changed_when: false
+  failed_when: false
+
+- name: "{{ cluster.name }}: parse existing membership state, if any"
+  ansible.builtin.set_fact:
+    _membership_before: "{{ (_existing_membership.stdout | from_json) if _existing_membership.rc == 0 else {} }}"
+
+- name: "{{ cluster.name }}: register into the Fleet (only if absent or not READY)"
+  ansible.builtin.command:
+    argv:
+      - "{{ gcloud_bin }}"
+      - container
+      - fleet
+      - memberships
+      - register
+      - "{{ _membership }}"
+      - --project={{ cluster.fleet_project_id }}
+      - --context={{ cluster.kube_context }}
+      - --kubeconfig={{ kubeconfig_path }}
+      - --enable-workload-identity
+      - --has-private-issuer
+      - --quiet
+  register: _register_result
+  when: >-
+    (_membership_before == {}) or
+    (_membership_before.state.code | default('') != 'READY')
+  changed_when: true
+  # No failed_when override here: a real registration failure (name collision,
+  # Fleet API unavailable, etc.) MUST propagate to the caller's block/rescue --
+  # this is the mutating step, not a state check.
+
+- name: "{{ cluster.name }}: re-describe membership to read its assigned tier"
+  ansible.builtin.command:
+    argv:
+      - "{{ gcloud_bin }}"
+      - container
+      - fleet
+      - memberships
+      - describe
+      - "{{ _membership }}"
+      - --project={{ cluster.fleet_project_id }}
+      - --format=json
+  register: _membership_after_raw
+  changed_when: false
+
+- name: "{{ cluster.name }}: parse post-registration membership state"
+  ansible.builtin.set_fact:
+    _membership_after: "{{ _membership_after_raw.stdout | from_json }}"
+    _observed_tier: "{{ (_membership_after_raw.stdout | from_json).clusterTier | default('CLUSTER_TIER_UNSPECIFIED') }}"
+
+- name: "{{ cluster.name }}: fail loudly if membership state is not READY"
+  ansible.builtin.fail:
+    msg: >-
+      Fleet registration for '{{ cluster.name }}' (membership '{{ _membership }}')
+      did not reach READY. Observed state:
+      {{ _membership_after.state | default('unknown') }}.
+  when: _membership_after.state.code | default('') != 'READY'
+
+# Fleet tier safety (correction #4): clusterTier is output-only -- there is no
+# register-time flag to request STANDARD (verified 2026-09-21 against the current
+# Membership REST reference). Detection + immediate rollback is the only available
+# control. This directly re-checks the exact failure mode from commit cc9dbe0
+# (~$216/month from two ENTERPRISE-tier memberships, not caught until a dedicated
+# cost audit).
+- name: "{{ cluster.name }}: unregister immediately if the observed tier is unacceptable"
+  ansible.builtin.command:
+    argv:
+      - "{{ gcloud_bin }}"
+      - container
+      - fleet
+      - memberships
+      - unregister
+      - "{{ _membership }}"
+      - --project={{ cluster.fleet_project_id }}
+      - --context={{ cluster.kube_context }}
+      - --kubeconfig={{ kubeconfig_path }}
+      - --quiet
+  when: _observed_tier not in acceptable_cluster_tiers
+  register: _tier_rollback
+
+- name: "{{ cluster.name }}: fail loudly on unacceptable Fleet tier (after rollback)"
+  ansible.builtin.fail:
+    msg: >-
+      Cluster '{{ cluster.name }}' registered at Fleet tier '{{ _observed_tier }}',
+      which is not in the acceptable set {{ acceptable_cluster_tiers }}. This is the
+      exact failure mode from commit cc9dbe0 (~$216/month unintended cost). The
+      membership has been unregistered automatically as a safety rollback. This
+      cluster is NOT onboarded -- investigate before retrying.
+  when: _observed_tier not in acceptable_cluster_tiers
+
+# Label the membership as workflow-owned, iff this run actually performed the
+# register step (correction #3: cleanup must not later touch a membership we
+# didn't create just because its name matches inventory).
+- name: "{{ cluster.name }}: label the Fleet membership as created by this workflow"
+  ansible.builtin.command:
+    argv:
+      - "{{ gcloud_bin }}"
+      - container
+      - fleet
+      - memberships
+      - update
+      - "{{ _membership }}"
+      - --project={{ cluster.fleet_project_id }}
+      - --update-labels={{ onboarded_by_label_key | regex_replace('[^a-z0-9-]', '-') }}={{ onboarded_by_label_value }}
+      - --quiet
+  when: _register_result is not skipped
+  changed_when: true
+
+- name: "{{ cluster.name }}: fleet registration OK"
+  ansible.builtin.debug:
+    msg: >-
+      Membership '{{ _membership }}' is READY at tier '{{ _observed_tier }}'
+      ({{ 'newly registered by this run' if _register_result is not skipped
+      else 'already registered, skipped (idempotent)' }}).

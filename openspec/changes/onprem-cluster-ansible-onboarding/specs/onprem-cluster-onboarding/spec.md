@@ -33,6 +33,10 @@ The workflow SHALL onboard one or many clusters from a single playbook invocatio
 - **WHEN** `sre-lab`'s onboarding is forced to fail (e.g. unreachable kube-context) while `sre-lab-2` is healthy
 - **THEN** `sre-lab-2` onboards successfully and its Fleet membership/RBAC state is unaffected by `sre-lab`'s failure
 
+#### Scenario: Aggregated failure is never hidden as success
+- **WHEN** one cluster in a multi-cluster run fails while others succeed
+- **THEN** the run reports an explicit per-cluster PASS/FAIL result for every cluster, and the playbook process itself exits non-zero — achieved via an explicit per-cluster `block`/`rescue` and result aggregation, not `ignore_errors: true` or `max_fail_percentage`, neither of which appears anywhere in the implementation
+
 ### Requirement: Least-privilege runtime RBAC, including node-read parity
 The workflow SHALL grant the runtime investigation identity only `get`/`list`/`watch`-equivalent read access derived from the actual MCP tool call inventory, including cluster-scoped `nodes`, and SHALL NOT grant `create`, `update`, `patch`, `delete`, or `cluster-admin` to that identity.
 

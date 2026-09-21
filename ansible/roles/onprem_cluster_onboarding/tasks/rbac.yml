@@ -1,0 +1,168 @@
+---
+# Two RBAC layers, both idempotent and ownership-labeled (correction #3):
+#   1. Impersonation + `view` permission, via Google's own
+#      `generate-gateway-rbac` helper (not hand-written YAML for this part).
+#   2. A narrow supplemental grant for cluster-scoped `nodes: get,list` -- the
+#      documented parity gap `view` alone does not cover -- applied as plain
+#      declarative manifests we fully own, so ownership is unambiguous by
+#      construction.
+#
+# Ownership rule: this role only ever labels objects it JUST created or
+# reconciled in the current run's own generate-gateway-rbac / kubectl apply call
+# -- it never relabels a pre-existing object found by name/role/user match alone
+# (see design.md's cleanup-ownership DECISION record).
+
+- name: "{{ cluster.name }}: check for an existing, workflow-owned gateway RBAC binding"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context={{ cluster.kube_context }}
+      - get
+      - clusterrolebinding
+      - -l
+      - "{{ onboarded_by_label_key }}={{ onboarded_by_label_value }},connect.gke.io/owner-feature=connect-gateway"
+      - -o
+      - json
+  register: _existing_gateway_rbac
+  changed_when: false
+  failed_when: false
+
+- name: "{{ cluster.name }}: determine if the correct gateway RBAC already exists (idempotency check)"
+  # json_query (JMESPath) needs the `jmespath` Python package -- see
+  # ansible/requirements.txt. Deliberately not hand-rolled Jinja chaining here:
+  # "does any binding's subjects list contain this identity" is exactly what
+  # JMESPath is for, and a hand-rolled filter chain is harder to verify correct.
+  ansible.builtin.set_fact:
+    # Subscript ['items'], NOT dot .items -- confirmed live, 2026-09-21: dot
+    # access on a parsed JSON dict resolves to Python's real dict.items()
+    # BOUND METHOD (since "items" collides with a real dict method name),
+    # not the JSON key. json_query then silently returns None instead of
+    # erroring, which made every idempotency check think "nothing exists"
+    # and would have re-applied RBAC on every single run. Kubernetes `-o
+    # json` list responses always use "items" as the array key, so this
+    # exact collision applies everywhere a kubectl JSON response is parsed.
+    _matching_bindings: >-
+      {{
+        (_existing_gateway_rbac.stdout | from_json)['items']
+        | json_query(_gateway_rbac_query)
+      }}
+  vars:
+    _gateway_rbac_query: "[?contains(subjects[].name, `{{ runtime_identity }}`)]"
+  when: _existing_gateway_rbac.rc == 0
+
+- name: "{{ cluster.name }}: set gateway RBAC presence flag"
+  ansible.builtin.set_fact:
+    # default([], true) -- the second arg matters: json_query against an
+    # empty list returns Jinja `None` here (confirmed live, 2026-09-21:
+    # kubectl returned rc=0, items=[], yet _matching_bindings came back
+    # `null`), not Undefined. Plain default([]) only replaces Undefined,
+    # so it silently let `None | length` crash the whole cluster's run.
+    _gateway_rbac_present: "{{ (_matching_bindings | default([], true) | length) > 0 }}"
+
+- name: "{{ cluster.name }}: apply impersonation + {{ _effective_rbac_role }} permission via generate-gateway-rbac"
+  ansible.builtin.command:
+    argv:
+      - "{{ gcloud_bin }}"
+      - container
+      - fleet
+      - memberships
+      - generate-gateway-rbac
+      - --project={{ cluster.fleet_project_id }}
+      - --membership={{ cluster.fleet_membership | default(cluster.name) }}
+      - --users={{ runtime_identity }}
+      - --role={{ _effective_rbac_role }}
+      - --context={{ cluster.kube_context }}
+      - --kubeconfig={{ kubeconfig_path }}
+      - --apply
+      - --quiet
+  register: _rbac_apply
+  when: not (_gateway_rbac_present | bool)
+  changed_when: true
+  # No failed_when override: a real RBAC-apply failure must propagate.
+
+- name: "{{ cluster.name }}: find the objects generate-gateway-rbac just created, to label them"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context={{ cluster.kube_context }}
+      - get
+      - clusterrolebinding
+      - -l
+      - connect.gke.io/owner-feature=connect-gateway
+      - -o
+      - json
+  register: _fresh_gateway_objects
+  when: _rbac_apply is not skipped
+  changed_when: false
+
+- name: "{{ cluster.name }}: label this run's gateway RBAC bindings as workflow-owned"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context={{ cluster.kube_context }}
+      - label
+      - clusterrolebinding
+      - "{{ item.metadata.name }}"
+      - "{{ onboarded_by_label_key }}={{ onboarded_by_label_value }}"
+      - --overwrite
+  loop: "{{ (_fresh_gateway_objects.stdout | from_json)['items'] }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  when:
+    - _rbac_apply is not skipped
+    - item.subjects is defined
+    - runtime_identity in (item.subjects | map(attribute='name') | list)
+  changed_when: true
+
+# Supplemental node-read grant -- fully hand-authored, applied via kubectl apply,
+# so ownership is never ambiguous: this workflow authored the object and its
+# labels from scratch, no name/role/user matching guesswork needed.
+- name: "{{ cluster.name }}: render supplemental node-read RBAC manifest"
+  ansible.builtin.set_fact:
+    _node_reader_manifest: |
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: sre-agent-onprem-node-reader
+        labels:
+          {{ onboarded_by_label_key }}: "{{ onboarded_by_label_value }}"
+      rules:
+        - apiGroups: [""]
+          resources: ["nodes"]
+          verbs: {{ node_read_verbs | to_json }}
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: sre-agent-onprem-node-reader-binding
+        labels:
+          {{ onboarded_by_label_key }}: "{{ onboarded_by_label_value }}"
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: sre-agent-onprem-node-reader
+      subjects:
+        - kind: User
+          name: "{{ runtime_identity }}"
+          apiGroup: rbac.authorization.k8s.io
+  when: _effective_grant_node_read | bool
+
+- name: "{{ cluster.name }}: apply supplemental node-read RBAC (idempotent -- kubectl apply is declarative)"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context={{ cluster.kube_context }}
+      - apply
+      - -f
+      - "-"
+    stdin: "{{ _node_reader_manifest }}"
+  register: _node_rbac_apply
+  when: _effective_grant_node_read | bool
+  changed_when: "'unchanged' not in _node_rbac_apply.stdout"
+
+- name: "{{ cluster.name }}: RBAC OK"
+  ansible.builtin.debug:
+    msg: >-
+      Gateway RBAC ({{ _effective_rbac_role }}) for '{{ runtime_identity }}':
+      {{ 'reconciled by this run' if _rbac_apply is not skipped else 'already present, skipped (idempotent)' }}.
+      Node-read supplement: {{ 'applied' if _effective_grant_node_read | bool else 'not requested for this cluster' }}.

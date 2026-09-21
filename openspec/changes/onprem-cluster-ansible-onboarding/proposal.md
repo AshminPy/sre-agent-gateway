@@ -1,3 +1,24 @@
+## Corrections applied 2026-09-21 (approved before implementation)
+
+The initial merged design (PR #258) is approved for implementation with six required
+corrections, tracked here and reflected throughout this proposal, `design.md`, `tasks.md`,
+and `specs/onprem-cluster-onboarding/spec.md`:
+
+1. **No service-account-key fallback** — keyless Fleet Workload Identity only; preflight
+   fails clearly (never silently generates/stores a key) if a cluster can't satisfy it.
+2. **Multi-cluster failure handling** — explicit per-cluster `block`/`rescue` + result
+   aggregation, not a broad `ignore_errors` pattern; overall playbook exits non-zero if any
+   required cluster failed.
+3. **Cleanup ownership** — cleanup removes only objects this workflow created, identified by
+   a deterministic ownership signal it verifies exists (not assumed) on the actual objects
+   `generate-gateway-rbac` produces; a pre-existing-object fixture proves this.
+4. **Fleet tier safety** — kept, but re-verified against current registration flags,
+   `Membership` fields, and billing docs during implementation rather than assumed unchanged.
+5. **Node RBAC** — kept narrow, but the exact verbs (`get`/`list` vs. `watch`) are derived
+   from the actual MCP call inventory, not assumed.
+6. **Wording** — claims about what `view` does/doesn't cover are stated as the evidenced,
+   environment-specific fact observed, not a generic Kubernetes RBAC claim.
+
 ## Why
 
 Every non-GKE/on-prem cluster this agent has ever reached (`sre-lab`, `sre-lab-2`) was onboarded by hand: an operator ran a sequence of `gcloud`/`kubectl` commands from `docs/connect-gateway-onprem.md`'s runbook, one cluster at a time, with no repeatable automation and no state check before mutating anything. This already caused one real incident: both memberships were registered at Fleet tier `ENTERPRISE` instead of `STANDARD`, which billed a real per-vCPU-hour fee (~$216/month combined, confirmed via GCP Billing Console) that nobody intended — fixed in commit `cc9dbe0` by disabling both memberships (`iac/agent/variables.tf`'s `additional_clusters["sre-lab"/"sre-lab-2"].enabled = false`). A manual runbook has no place to enforce "always register at STANDARD tier" as a checked invariant; a human just has to remember it every time.
@@ -22,7 +43,7 @@ Source: `docs/connect-gateway-onprem.md` §§1-6 and its "Onboarding a new on-pr
 | # | Current manual step | Owner today | Automation target |
 |---|---|---|---|
 | 1 | Enable `gkehub`, `connectgateway`, `container` APIs on the target project | one-time `gcloud services enable`, by hand | **EXISTING GCP BOOTSTRAP** — one-time per project, checked (not re-run) by Ansible preflight; enabling remains a human/Terraform action outside this change's scope (no evidence any project used by this design lacks them today) |
-| 2 | Decide credential model (WIF + `--has-private-issuer` vs. SA-key fallback) per org policy (`constraints/iam.disableServiceAccountKeyCreation`) | manual judgment call, documented after the fact | **ANSIBLE** — preflight checks the org policy and the cluster's issuer reachability, selects the flag set, fails closed (refuses to fall back to a static key silently) |
+| 2 | Confirm the target cluster can use keyless Fleet Workload Identity registration (`--enable-workload-identity` [+ `--has-private-issuer` for a non-publicly-routable API server]) | manual judgment call, documented after the fact | **ANSIBLE** — preflight verifies the org policy (`constraints/iam.disableServiceAccountKeyCreation`, confirmed **enforced** on `sreagent-t2-demo`) and the cluster's issuer reachability; if keyless prerequisites are not met, preflight **fails clearly, naming the missing prerequisite** — this workflow contains no service-account-key code path at all, so there is nothing to "fall back" to |
 | 3 | `gcloud container fleet memberships register` | manual `gcloud`, by hand, per cluster | **ANSIBLE** — idempotent (checks existing membership state first; skips re-register if already `READY` at the correct tier) |
 | 4 | Verify membership `READY` **and** Fleet tier is `STANDARD` (not `ENTERPRISE`) | not verified at all before the cost incident | **ANSIBLE** — mandatory postflight check; the run fails loudly (not silently) if tier ≠ `STANDARD`, since this exact miss caused real billing |
 | 5 | `generate-gateway-rbac --role=clusterrole/view --apply` (impersonation + `view` binding) | manual `gcloud`, by hand | **ANSIBLE** — idempotent (checks existing `ClusterRoleBinding`s labeled `connect.gke.io/owner-feature: connect-gateway` before applying) |

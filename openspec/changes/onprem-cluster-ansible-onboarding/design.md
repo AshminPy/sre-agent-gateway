@@ -39,6 +39,10 @@ Plain Fleet Membership registration for Connect Gateway is free (verified agains
   - [Connect Gateway setup](https://docs.cloud.google.com/kubernetes-engine/enterprise/multicluster-management/gateway/setup) — `roles/gkehub.gatewayReader` (read-only) vs. `roles/gkehub.gatewayAdmin` (adds `gateway.stream`, i.e. exec/attach/port-forward — never grant this to the runtime identity). Matches `iac/agent/onprem_fleet.tf`'s existing grant exactly.
   - [Troubleshoot cluster connections](https://docs.cloud.google.com/kubernetes-engine/fleet-management/docs/troubleshooting) — `kubectl get pods -n gke-connect`, Connect Agent log markers, used as this design's live-health check, not exit-code-only.
   - [Fleet Workload Identity](https://docs.cloud.google.com/kubernetes-engine/fleet-management/docs/use-workload-identity) — WIF displaces long-lived credentials; matches the existing `--has-private-issuer` choice already validated in this repo.
+  - [`gcloud container fleet memberships register` reference](https://docs.cloud.google.com/sdk/gcloud/reference/container/fleet/memberships/register) — re-fetched 2026-09-21, direct quotes: `--enable-workload-identity`, `--has-private-issuer`, `--public-issuer-url` confirmed current; `--service-account-key-file` confirmed still present (never used by this design); no `--tier` flag exists.
+  - [Fleet `Membership` REST reference](https://docs.cloud.google.com/kubernetes-engine/fleet-management/docs/reference/rest/v1/projects.locations.memberships) — `clusterTier` confirmed output-only (`CLUSTER_TIER_UNSPECIFIED`/`STANDARD`/`ENTERPRISE`).
+  - [GKE editions](https://docs.cloud.google.com/kubernetes-engine/docs/concepts/gke-editions) — "GKE clusters no longer have a `tier`" (2025-09-23 release note referenced).
+  - [GKE 10th-birthday pricing announcement](https://cloud.google.com/blog/products/containers-kubernetes/gke-gets-new-pricing-and-capabilities-on-10th-birthday) — Fleets/Connect Gateway consolidated into GKE Standard "at no additional cost" as of September 2025. Note: the primary `cloud.google.com/kubernetes-engine/pricing` page itself could not be fetched in full this session (tool truncation) — treat the exact current fee wording as UNVERIFIED against the pricing page directly, this blog post is official-adjacent, not the pricing page.
 
 ## DECISION records
 
@@ -69,26 +73,158 @@ UNCERTAINTY         Whether the kind containers are still healthy after months i
 ```
 
 ```
-DECISION            Fleet tier is checked and enforced as STANDARD, both before
-                    (best-effort) and after (mandatory, fail-loud) registration.
+DECISION            Fleet tier is checked as STANDARD after every registration,
+                    detection-only (there is no register-time flag to request a
+                    tier), and the run fails loud + immediately unregisters if it is
+                    not — re-verified against current docs, not assumed unchanged.
 EVIDENCE            Commit cc9dbe0: both prior memberships were registered at
                     clusterTier=ENTERPRISE, causing a real ~$216/month charge,
-                    confirmed via live GCP Billing Console data, not caught until a
-                    dedicated cost audit.
-WHY                 A manual runbook has no way to enforce this as an invariant; the
-                    exact current gcloud registration flow's tier-selection behavior
-                    was not re-verified live in this session's GCP-docs research
-                    (flagged UNVERIFIED there) — so this design cannot assume a flag
-                    reliably forces STANDARD at registration time. The safety net is
-                    the mandatory postflight check, not a trusted input flag.
-TRADEOFFS           None — this is a pure safety addition with no functional cost.
-VALIDATION METHOD   tasks.md requires `gcloud container fleet memberships describe`
-                    immediately after registration; the playbook task fails (not
-                    warns) if `clusterTier != STANDARD`, before any RBAC step runs.
-UNCERTAINTY         The exact gcloud flag/condition that produced ENTERPRISE tier
-                    originally is not confirmed — RUNTIME VALIDATION REQUIRED at
-                    implementation time (re-run registration once, observe the
-                    resulting tier, adjust flags if a flag is found to control it).
+                    confirmed via live GCP Billing Console data. Re-verified 2026-09-21
+                    against current docs (correction #4): the REST reference for
+                    `Membership` (docs.cloud.google.com/kubernetes-engine/fleet-
+                    management/docs/reference/rest/v1/projects.locations.memberships)
+                    shows `clusterTier` as an **output-only** enum
+                    (`CLUSTER_TIER_UNSPECIFIED`/`STANDARD`/`ENTERPRISE`) — confirmed no
+                    `--tier`/`--enterprise`/`--standard` flag exists anywhere in the
+                    current `gcloud container fleet memberships register` flag list.
+                    Separately, docs.cloud.google.com/kubernetes-engine/docs/concepts/
+                    gke-editions states (dated to a 2025-09-23 release note) "GKE
+                    clusters no longer have a `tier`", and the official GKE 10th-
+                    birthday blog post (cloud.google.com/blog/products/containers-
+                    kubernetes/gke-gets-new-pricing-and-capabilities-on-10th-birthday)
+                    states Fleets/Connect Gateway moved into a single GKE Standard
+                    tier "at no additional cost" as of September 2025.
+WHY                 Because tier is backend-assigned with no client-side flag to
+                    request STANDARD, the only available control is detect-and-abort,
+                    not prevent-by-flag — this was already true, but is now confirmed
+                    rather than assumed. Separately, the docs above raise a real,
+                    unresolved question this design does NOT paper over: if Fleet-tier
+                    billing was genuinely retired project-wide in September 2025, the
+                    `clusterTier=ENTERPRISE` finding in commit cc9dbe0 may not fully
+                    explain the ~$216/month charge on its own, or the retirement may
+                    not (yet, or ever) have applied identically to this project/product
+                    surface. This design does not assume either explanation — it keeps
+                    the `clusterTier` check as a cheap, zero-downside guard AND adds a
+                    live Cloud Billing/cost check as a second, independent signal,
+                    rather than trusting one field to fully explain historical billing.
+TRADEOFFS           None on the `clusterTier` check — pure safety, no functional cost.
+                    The added billing-console check is extra implementation work with
+                    no guarantee of a clean real-time cost signal (billing data often
+                    lags by hours), accepted because the alternative is repeating the
+                    exact "not caught until a dedicated cost audit" failure mode.
+VALIDATION METHOD   `gcloud container fleet memberships describe` runs immediately
+                    after registration; the task fails (not warns) if
+                    `clusterTier == ENTERPRISE` (or any value other than `STANDARD`/
+                    `CLUSTER_TIER_UNSPECIFIED`), before any RBAC step runs, and
+                    triggers an automatic unregister of that membership. Additionally,
+                    `tasks.md` Phase 4 checks actual GCP Billing Console / SKU-level
+                    cost data some time after registering both clusters, rather than
+                    trusting `clusterTier` alone to mean "this is free."
+UNCERTAINTY         **RESOLVED BY LIVE EVIDENCE, 2026-09-21 — updates the hypothesis
+                    above.** Ran the real registration live against both `sre-lab` and
+                    `sre-lab-2`: BOTH landed on `clusterTier: ENTERPRISE`, confirmed via
+                    `gcloud container fleet memberships describe` immediately after
+                    registration. The fail-loud check fired correctly for both and
+                    auto-unregistered both within seconds (confirmed clean state
+                    afterward: `gcloud container fleet memberships list` → 0 items).
+                    This directly falsifies the "maybe `clusterTier` is vestigial
+                    post-Sept-2025" branch of the earlier hypothesis. Follow-up
+                    research (2026-09-21, same session) found a CURRENT official page
+                    (docs.cloud.google.com/kubernetes-engine/docs/how-to/creating-fleets,
+                    last updated 2026-09-18 — three days before this test) stating
+                    plainly: "Any third-party clusters you register will incur a
+                    per-vCPU charge as part of your GKE pricing." The Sept-2025
+                    "no additional cost" announcement names only four specific features
+                    (Fleets, Teams, Config Management, Policy Controller) — Connect
+                    Agent/third-party cluster registration is not among them, and this
+                    current page's billing statement is not superseded anywhere found.
+                    No flag, Fleet-level setting, or org policy was found (gcloud
+                    reference, Fleet feature list/describe on this exact project, or
+                    docs) that can select `STANDARD` tier for this registration path —
+                    the only documented reduced-membership mechanism ("lightweight
+                    membership") is scoped exclusively to GKE clusters already running
+                    on Google Cloud, via a completely different command
+                    (`gcloud container clusters create/update --membership-type=
+                    LIGHTWEIGHT`), not usable for an external cluster at all.
+                    CONCLUSION: registering a non-GKE cluster into this Fleet via
+                    `gcloud container fleet memberships register` for Connect Gateway
+                    access appears to be billed, unconditionally, at ENTERPRISE tier,
+                    with no currently-documented way to avoid it. This is not a defect
+                    in this workflow's design — the mandatory fail-loud check is
+                    exactly the correct behavior given this evidence, not a false
+                    positive to route around. Whether to accept a bounded, short-lived
+                    ENTERPRISE-tier registration (register → verify → immediately
+                    unregister, to complete Phase 4's live RBAC/investigation proof)
+                    is a real cost decision requiring the repo owner's explicit
+                    authorization, not an engineering judgment call — flagged back to
+                    the user rather than decided unilaterally. Real GCP Billing Console
+                    data for the ~1-2 minute exposure window from this test has not yet
+                    been checked (billing data typically lags hours) and remains the
+                    strongest still-available evidence if this needs to be settled
+                    further. The primary GKE pricing page itself still could not be
+                    fetched in full (tool-side truncation) — exact current per-vCPU
+                    rate remains UNVERIFIED against the pricing page directly; the
+                    `creates-fleets` page's plain-language billing statement is treated
+                    as the strongest currently-available evidence in its place.
+```
+
+```
+DECISION            No service-account-key code path exists anywhere in this workflow.
+                    Registration uses keyless Fleet Workload Identity only
+                    (`--enable-workload-identity`, plus `--has-private-issuer` for a
+                    cluster whose API server is not publicly routable). If a target
+                    cluster cannot satisfy keyless prerequisites, preflight fails with
+                    an explicit, named-prerequisite error. There is no fallback branch
+                    to a static SA key to remove later — it is simply never written.
+EVIDENCE            `constraints/iam.disableServiceAccountKeyCreation` is confirmed
+                    LIVE ENFORCED on `sreagent-t2-demo` (`gcloud resource-manager
+                    org-policies describe ... --effective` → `booleanPolicy: {enforced:
+                    true}`, checked 2026-09-21) — a key-based path would not even work
+                    here, so building one would be dead code that only creates risk if
+                    the policy ever changes. `docs/connect-gateway-onprem.md` already
+                    hit `FAILED_PRECONDITION: Key creation is not allowed` when it
+                    tried key creation as a fallback test.
+WHY                 A code path that is never supposed to execute is still an attack
+                    surface and a maintenance burden, and "temporarily fall back to a
+                    key" is exactly the kind of exception that survives past its
+                    justification. The architecture requirement is unconditional: no
+                    long-lived/static keys, full stop.
+TRADEOFFS           A cluster whose API server cannot be reached directly by whoever
+                    runs `gcloud` (so `--has-private-issuer` cannot read its issuer/
+                    JWKS) and that also has no public OIDC discovery endpoint (so plain
+                    `--enable-workload-identity` cannot verify it either) cannot be
+                    onboarded by this workflow at all. This is treated as a correct,
+                    intentional limitation, not a gap to route around with a key.
+VALIDATION METHOD   Re-verified 2026-09-21 against the current `gcloud container fleet
+                    memberships register` reference
+                    (docs.cloud.google.com/sdk/gcloud/reference/container/fleet/
+                    memberships/register — fetched directly, flag text quoted):
+                    `--enable-workload-identity`, `--has-private-issuer`, and a third
+                    current option `--public-issuer-url` (mutually exclusive with
+                    `--has-private-issuer`) are confirmed current and unchanged in
+                    meaning. `--service-account-key-file` is CONFIRMED to still exist
+                    as a live flag ("stored as a secret named `creds-gcp` in
+                    gke-connect namespace") — `preflight.yml`/`fleet_register.yml`
+                    never construct a command containing this flag, and a static
+                    assertion (grep / Ansible `assert`) confirms it appears nowhere in
+                    the role's rendered command. No Kubernetes-version or platform-
+                    version prerequisite specific to `--has-private-issuer` was found
+                    on the plain `fleet memberships register` prerequisites page (that
+                    kind of version gate exists only for the separate `attached
+                    clusters register` product/command, confirmed as a different
+                    command family) — so preflight uses a FUNCTIONAL check instead of a
+                    version gate: confirm the target cluster's API server serves
+                    `/.well-known/openid-configuration` and `/openid/v1/jwks`
+                    (`kubectl get --raw ...` against the target context), which is what
+                    `--has-private-issuer` needs to read directly from the cluster.
+UNCERTAINTY         The precise internal mechanism of `--has-private-issuer` (does
+                    `gcloud` read the issuer/JWKS from the API server and upload it to
+                    the Membership once, vs. some other flow) was not confirmed via a
+                    direct quote from an official page this session — only inferred
+                    from the flag's own description and secondary sources. This does
+                    not block implementation (the functional preflight check above
+                    tests the actual prerequisite, not the mechanism), but is flagged
+                    as UNVERIFIED rather than stated as settled fact.
 ```
 
 ```
@@ -110,10 +246,24 @@ TRADEOFFS           The sre-k8s-rbac repo (if it still exists) would need to
                     separately adopt or ignore these Ansible-applied objects to avoid
                     drift — flagged as a MANUAL OWNER PREREQUISITE for whoever owns
                     that repo, not solved by this change.
-VALIDATION METHOD   RBAC objects carry the same `connect.gke.io/owner-feature`-style
-                    label convention already used by `generate-gateway-rbac`, plus an
-                    Ansible-specific label, so ownership is identifiable and
-                    idempotency checks can target exactly these objects.
+VALIDATION METHOD   The `connect.gke.io/owner-feature: connect-gateway` label that
+                    `generate-gateway-rbac` applies is shared across every gateway RBAC
+                    object it has ever created for any user/membership — it identifies
+                    the *mechanism*, not *this workflow's specific run*, and is
+                    therefore NOT sufficient on its own to distinguish "created by this
+                    Ansible workflow" from "pre-existing/adopted" (correction #3). This
+                    workflow additionally applies its own label
+                    (`sre-agent-gateway.internal/onboarded-by: ansible-onprem-onboarding`
+                    — a label, not an annotation, deliberately: `kubectl -l` selectors
+                    only match labels, and cleanup needs to select by this signal) to
+                    every object it creates, and cleanup only ever acts on objects
+                    carrying that label — never on name-match or cluster-membership
+                    alone. Before relying on this, Phase 1 inspects the actual live
+                    output of `generate-gateway-rbac --apply` (`kubectl get
+                    clusterrolebinding -l connect.gke.io/owner-feature=connect-gateway
+                    -o yaml`) to confirm what it does and does not set, rather than
+                    assuming. A dedicated fixture test (a pre-existing, unrelated RBAC
+                    object without this annotation) proves cleanup leaves it untouched.
 UNCERTAINTY         Whether sre-k8s-rbac repo still exists or is still the intended
                     system of record — ASSUMED not blocking, since it's absent from
                     this filesystem and no longer referenced as active elsewhere in
@@ -126,10 +276,14 @@ DECISION            Add a narrowly-scoped supplemental ClusterRole/ClusterRoleBi
                     of the built-in `view` ClusterRole, instead of switching to a
                     broader built-in role or a fully custom role duplicating `view`.
 EVIDENCE            docs/connect-gateway-onprem.md's own live-tested RBAC table shows
-                    `kubectl get nodes` → Forbidden under `view` (expected, since
-                    `view` excludes cluster-scoped resources). mcp/tools/nodes.py
-                    confirms `list_node`/`read_node` are real, in-use MCP tool calls
-                    — a live, uncaught gap today for any non-GKE cluster.
+                    `kubectl get nodes` → Forbidden under the `view` binding applied to
+                    `sre-lab` — the evidenced fact is that this specific binding, in
+                    this environment, does not permit the `nodes` API operation the
+                    MCP tools need, not a generic claim about what `view` covers.
+                    mcp/tools/nodes.py confirms `list_node`/`read_node` (i.e. `list`
+                    and `get`, not `watch` — no `watch` call exists anywhere in
+                    `mcp/tools/`, confirmed by repo-wide grep) are real, in-use MCP
+                    tool calls — a live, uncaught gap today for any non-GKE cluster.
 WHY                 Reuse Google's own `view` ClusterRole (matches this repo's
                     existing least-privilege pairing, per docs/least-privilege-iam.md)
                     and add only the one missing resource type, rather than
@@ -145,6 +299,41 @@ VALIDATION METHOD   tasks.md's "allowed operations succeed / forbidden mutation 
                     secrets` still failing.
 UNCERTAINTY         None outstanding — directly reproduces and fixes an already-
                     documented, already-tested gap.
+```
+
+```
+DECISION            Per-cluster isolation uses an explicit `block`/`rescue` around each
+                    cluster's onboarding tasks plus a hand-built result-aggregation
+                    list, not Ansible's broad `ignore_errors: true` (which marks a
+                    failed task "ignored" and lets the overall play report success even
+                    though something real failed) or `max_fail_percentage` (a
+                    percentage threshold, not a per-cluster PASS/FAIL record).
+EVIDENCE            `ignore_errors: true` on a task suppresses that task's failure for
+                    play-recap purposes; a play can end "successful" (exit 0) with a
+                    cluster silently broken. That is the literal failure mode
+                    correction #2 rules out: "failures are collected... reports must
+                    never show SUCCESS when a required stage failed."
+WHY                 A `block`/`rescue` per cluster lets every stage run to whatever
+                    point it reaches, captures the exact failing task/stage into a
+                    per-cluster result record (not just a generic "failed" flag), and
+                    still allows the outer loop to continue to the next cluster — then
+                    a final task inspects the aggregated results and explicitly calls
+                    `fail()`/sets a non-zero return code if any REQUIRED cluster's
+                    result is FAIL, using Ansible's own `failed_when`/`meta: end_play`
+                    plus a final `assert`-style gate, not a suppressed error.
+TRADEOFFS           Slightly more verbose task structure per cluster (a `block` wrapper
+                    plus an explicit `rescue` that records the failure) than a flat
+                    task list with `ignore_errors`. Accepted — the whole point of
+                    correction #2 is that the flat version is exactly the failure mode
+                    to avoid.
+VALIDATION METHOD   Phase 5's failure-path tests explicitly assert: (a) cluster B still
+                    completes when cluster A is forced to fail, (b) the playbook's own
+                    process exit code is non-zero when any required cluster failed, (c)
+                    the printed/artifact report shows FAIL for the broken cluster, not
+                    a rolled-up "ok".
+UNCERTAINTY         None outstanding — this is a well-established Ansible pattern
+                    (`block`/`rescue`/`always` plus manual result aggregation), not a
+                    new mechanism requiring live discovery.
 ```
 
 ## Ansible layout (portable vs. personal, per PORTABILITY)
