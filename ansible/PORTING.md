@@ -1,8 +1,15 @@
 # Porting this workflow to a work non-prod environment
 
+> **For the full step-by-step of what to actually run** (inventory, `onboard.yml`,
+> `verify.yml`, the Terraform wiring step, a real agent test, cleanup), see
+> [`docs/runbooks/add-onprem-cluster.md`](../docs/runbooks/add-onprem-cluster.md).
+> This document covers what changes between environments, not the commands themselves.
+
 This workflow was built and validated in the personal `sre-agent-gateway` repo against
-local `kind` clusters (`sre-lab`, `sre-lab-2`) standing in for on-prem. This document says
-exactly what carries over to a real work environment, and what must never be copied.
+local `kind` clusters (`sre-lab`, `sre-lab-2`) standing in for on-prem, including a full
+real Agent Engine investigation (2026-09-21, run `run_20260921_211936_nbzv`, CONFIRMED
+root cause) — not just Fleet/RBAC plumbing. This document says exactly what carries over
+to a real work environment, and what must never be copied.
 
 ## What is portable
 
@@ -56,6 +63,14 @@ runtime_identity: <the work SRE Agent runtime's own service-account email, IAM-g
   `roles/gkehub.viewer` (kubeconfig retrieval via `get-credentials`). Never
   `roles/gkehub.gatewayAdmin` -- that role adds `gateway.stream` (exec/attach/port-forward),
   which this workflow's whole design exists to avoid granting to a runtime identity.
+  **Confirmed live, 2026-09-21**: the actual production MCP code
+  (`mcp/server.py`) only needs `gatewayReader` -- it calls the Connect Gateway REST
+  API directly with an ADC bearer token, never `gcloud ... get-credentials`. `viewer`
+  is required only by Ansible's own verification method (`get-credentials` + `kubectl`)
+  and by operator debugging via the CLI. If your work environment's IAM review is
+  stricter about granting `viewer`, it's safe to omit for production correctness --
+  only Ansible's `verify.yml` step (not the agent) would lose the ability to
+  self-check via that specific mechanism.
 
 ## Required local/runner tools
 
@@ -85,6 +100,20 @@ runtime_identity: <the work SRE Agent runtime's own service-account email, IAM-g
   laptop, or later a private runner) to the target cluster's Kubernetes API server AND to
   Google's APIs. Over a work VPN, this means the VPN must route to both the internal
   cluster network and the public internet (for Google's APIs) at the same time.
+
+## A real gotcha to check for in the target Terraform stack
+
+This repo's own `iac/agent` had (and still has, unrelated to this workflow) a
+pre-existing gap: its CI (`terraform-apply.yml`) passes several vars at apply time
+that are not in the committed `terraform.tfvars` (a documented issue, see that
+workflow's own issue #116 comment). A plain local `terraform plan` without them shows
+unrelated resources being destroyed. **Before wiring this workflow's Terraform step
+into a work repo, check whether the same pattern exists there** -- compare the
+target stack's CI apply command against its committed `.tfvars` file for any var
+that's only ever set by CI. If so, get the real live values first (e.g.
+`gcloud run services describe ... --format=...` for an image tag) and pass them
+explicitly on every local plan, or the plan will look far scarier than the actual
+on-prem change warrants.
 
 ## Running from a laptop over VPN today
 

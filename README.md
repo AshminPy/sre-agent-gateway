@@ -17,9 +17,13 @@ see [`archive/RESOLVED_2026-07-17_RCA_REPORT.md`](archive/RESOLVED_2026-07-17_RC
 you hit a gateway-binding failure (`error.code: 3` on the attach step). The
 short version is in [Troubleshooting](#troubleshooting) below.
 
-**Multi-cluster support**: register any number of clusters (GKE or non-GKE) via
+**Multi-cluster support**: register any number of clusters via
 `var.additional_clusters` in `iac/agent/variables.tf` — no manual GCS edits, no
-app code changes. See the [runbook](docs/runbooks/add-gke-cluster.md).
+app code changes. For a **GKE** cluster, that Terraform entry is the whole job — see
+the [GKE runbook](docs/runbooks/add-gke-cluster.md). For a **non-GKE/on-prem**
+cluster, the Fleet registration + RBAC step comes first, now as an idempotent Ansible
+workflow (`ansible/`) instead of manual `gcloud` — see the
+[on-prem runbook](docs/runbooks/add-onprem-cluster.md).
 
 **"Where is X implemented?"** — start at
 [`docs/onboarding/code-reference-map.md`](docs/onboarding/code-reference-map.md),

@@ -56,4 +56,4 @@ Live-testing this exact process against a genuinely new, second GKE cluster (dis
 
 ---
 
-**Related pages:** [Cluster Routing](../architecture/cluster-routing.md) · [Connect Gateway (on-prem cluster setup, including "Adding a second on-prem cluster")](../connect-gateway-onprem.md)
+**Related pages:** [Cluster Routing](../architecture/cluster-routing.md) · [Adding a Non-GKE / On-Prem Cluster (Ansible, if the new cluster is not GKE)](add-onprem-cluster.md) · [Connect Gateway (on-prem design rationale)](../connect-gateway-onprem.md)
