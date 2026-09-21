@@ -315,3 +315,42 @@ repo will need exactly this framing.
   large). The rate came from WebSearch synthesis citing that page, not a direct read. Given
   this is the number that drives ~90% of the whole estimate, it is the single highest-value
   fact to re-verify directly against the official page before acting on this report.
+
+---
+
+## FOURTH ENTRY (2026-09-21, same day) — Agent Engine scaled to 0 warm instances
+
+Real total Vertex AI spend ($33.67 over ~88 days, ~$11.50/month average, combining Agent Engine
+hosting AND all LLM token usage — cannot be split further without billing export) was assessed
+as genuinely minimal, not a real cost problem, unlike Fleet. Recommended leaving it running.
+**User explicitly overrode that recommendation**: this is a test/demo environment, latency on
+the next investigation doesn't matter, and the standing goal (see
+`feedback-personal-gcp-idle-cost-teardown-rule.md`) is minimizing idle spend even where the
+amount is small — a values decision that's the user's to make, not a factual correction.
+
+**Change:** `iac/agent/agent_engine.tf` — `min_instances = 2 → 0`. Verified via a real
+`terraform plan` **before** committing that this is a plain in-place update (not force-new): no
+new reasoning-engine ID, no impact on `k8s/rbac.yaml`'s RBAC binding or anything else keyed to
+the engine ID. `max_instances = 10` left unchanged, so the agent still autoscales on demand.
+
+**Applied via CI, not locally** — deliberately, to avoid the known `agent.tar.gz` cross-platform
+packaging non-determinism (macOS vs. the Linux CI runner) bundling an unrelated source redeploy
+into this change. PR #256, merged, CI run `35570853247` succeeded end to end, including its own
+real smoke test — which is itself live proof the scale-from-zero autoscale path actually works:
+the agent answered a real investigation immediately after being deployed at `min_instances=0`.
+
+**Live-verified after merge:** a fresh `terraform plan` against the real deployed state shows
+zero diff for `min_instances` (the attribute doesn't appear in the plan at all — Terraform
+considers live state already matching the `0` config). The reasoning engine API's own JSON
+response omits `minInstances` entirely at value 0 (standard proto3 zero-value omission), which
+is why a raw API read alone wasn't conclusive — the `terraform plan` re-check was what actually
+confirmed it, not the API response by itself.
+
+**Recreate / scale back up:** flip `min_instances` back to 2 (or higher) in
+`iac/agent/agent_engine.tf` + `terraform apply` (or the same branch → PR → CI-merge path used
+here) — same simple in-place update, already confirmed safe.
+
+**Net result of this whole session's idle-cost sweep:** Fleet (~$216/month, the real driver) +
+Cloud NAT/router (~$3.65/month) + this (small, exact amount unmeasurable without billing
+export) all stopped. Everything durable — both projects, billing, the tfstate bucket, the WIF/CI
+identity, the local `kind` clusters — left untouched, exactly as scoped.
