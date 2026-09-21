@@ -1,0 +1,21 @@
+---
+# `safety`, not `production`: this workflow is internal automation for one repo,
+# not a shared/published role. `production` additionally enforces two purely
+# cosmetic style rules we deliberately don't follow, for stated reasons:
+#   - name[template]: would force every task name's Jinja to the end
+#     ("Check X for {{ cluster.name }}"). This role instead leads every task
+#     name with "{{ cluster.name }}: ..." on purpose, so ansible-playbook's
+#     per-task output is scannable by cluster when multiple clusters run in
+#     one invocation (the actual multi-cluster design goal, correction #2).
+#   - var-naming[no-role-prefix]: would require every internal fact to be
+#     prefixed `onprem_cluster_onboarding_...`. This role instead uses a
+#     leading underscore (`_gcloud_auth`, `_rbac_apply`, ...) for role-private
+#     facts, which is Ansible's own documented convention for "these are
+#     internal, don't rely on them from outside this role."
+# All `safety`-tier rules (idempotency, no-changed-when gaps, real correctness
+# checks) still apply and must pass clean.
+profile: safety
+skip_list:
+  - yaml[line-length]
+  - name[template]
+  - var-naming[no-role-prefix]

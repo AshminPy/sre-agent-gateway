@@ -3,12 +3,16 @@
 
 .PHONY: help package-agent build-mcp tf-agent-init tf-agent-plan tf-agent-apply \
         tf-gke-init tf-gke-plan tf-gke-apply post-apply attach-gateway \
-        register-endpoints smoke env fmt validate clean
+        register-endpoints smoke env fmt validate clean \
+        kind-onprem-up onprem-onboard-kind onprem-check-kind onprem-cleanup-kind \
+        kind-onprem-down ansible-lint
 
-AGENT_DIR := iac/agent
-GKE_DIR   := iac/gke-access
-REGION    ?= us-central1
-MREGION   ?= us
+AGENT_DIR   := iac/agent
+GKE_DIR     := iac/gke-access
+ANSIBLE_DIR := ansible
+REGION      ?= us-central1
+MREGION     ?= us
+KIND_CLUSTERS := sre-lab sre-lab-2
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -71,3 +75,31 @@ validate: package-agent  ## terraform validate both stacks
 
 clean:  ## Remove build artifacts
 	rm -f agent.tar.gz
+
+# ── On-prem cluster onboarding (Ansible) — disposable kind validation lab ───
+# Kind lifecycle is deliberately separate from the reusable onboarding role/
+# playbooks (openspec/changes/onprem-cluster-ansible-onboarding/): the role
+# knows nothing about kind and runs unmodified against a real cluster.
+kind-onprem-up:  ## Create sre-lab + sre-lab-2 kind clusters if they don't already exist
+	@for c in $(KIND_CLUSTERS); do \
+		if kind get clusters 2>/dev/null | grep -qx "$$c"; then \
+			echo "kind cluster $$c already exists"; \
+		else \
+			kind create cluster --name $$c; \
+		fi; \
+	done
+
+onprem-onboard-kind:  ## Run the reusable Ansible onboarding workflow against the kind test lab
+	cd $(ANSIBLE_DIR) && ansible-playbook playbooks/onboard.yml
+
+onprem-check-kind:  ## Re-verify already-onboarded kind clusters (read-only, no mutation)
+	cd $(ANSIBLE_DIR) && ansible-playbook playbooks/verify.yml
+
+onprem-cleanup-kind:  ## Ownership-safe cleanup of Fleet/RBAC objects this workflow created (does NOT delete kind clusters)
+	cd $(ANSIBLE_DIR) && ansible-playbook playbooks/cleanup.yml
+
+kind-onprem-down: onprem-cleanup-kind  ## Clean up Fleet/RBAC, then delete the sre-lab + sre-lab-2 kind clusters
+	@for c in $(KIND_CLUSTERS); do kind delete cluster --name $$c; done
+
+ansible-lint:  ## Lint the Ansible onboarding workflow
+	cd $(ANSIBLE_DIR) && ansible-lint

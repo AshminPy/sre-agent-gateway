@@ -1,0 +1,194 @@
+---
+# Real verification, not "gcloud/kubectl exited 0". Fetches real Connect Gateway
+# credentials and issues real allowed and real denied calls -- exactly the pattern
+# already proven manually in docs/connect-gateway-onprem.md, now scripted so it
+# runs every time instead of once, by hand, months ago.
+#
+# Self-contained on purpose: this file is called both via the full role
+# (onboard_one_cluster.yml, after main.yml has already computed
+# _effective_grant_node_read/_effective_rbac_role) AND standalone via
+# `include_role: tasks_from: verify` (playbooks/verify.yml, which skips
+# main.yml entirely). Independent review (automation-reviewer, 2026-09-21)
+# found the standalone path was 100% broken -- _effective_grant_node_read was
+# referenced but never defined outside main.yml, so playbooks/verify.yml
+# failed on every cluster, every run, with an "undefined variable" error. Fixed
+# by computing the same effective values here directly, so this file never
+# depends on which caller ran before it.
+#
+# IDENTITY -- fixed 2026-09-21 after a real live failure: plain `get-credentials`
+# mints a context using the CALLER's own gcloud identity, not `runtime_identity`.
+# The RBAC this role grants is scoped to `runtime_identity` only (least privilege
+# -- we deliberately do NOT also grant the operator's own identity broad K8s
+# access just to make verification convenient). Live evidence, same date: with no
+# impersonation, every read call came back `Forbidden: unknown` even though the
+# RBAC objects were independently confirmed correct by direct kubectl inspection
+# -- the RBAC was right, the TEST was authenticating as the wrong identity.
+#
+# Fix (revised again after independent review, 2026-09-21 -- both
+# automation-reviewer and iam-reviewer independently flagged the first fix):
+# the first version used a PERSISTENT `gcloud config set auth/impersonate_service_account`,
+# unset in an `always:` block. Real problems with that: (1) `always:` only runs
+# on a handled Ansible failure, not on ansible-playbook itself being killed
+# (SIGKILL/OOM/crash) -- a crash mid-block would leave the OPERATOR's own gcloud
+# silently impersonating the runtime SA for every later command on that
+# machine, indefinitely; (2) gcloud config is a shared file on disk, not
+# process-scoped -- a concurrent invocation (two runs, or a human running
+# gcloud in another terminal) could race and cause THIS run's kubectl calls to
+# authenticate as the wrong identity mid-verification.
+# Now uses `environment:` on this block instead: CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT
+# is gcloud's documented env-var form of the same property, set only for the
+# subprocess tree of tasks inside this block (kubectl, and the gke-gcloud-auth-plugin
+# it spawns as a child process, which inherits environment variables by default
+# -- standard OS process behavior, not something this playbook has to arrange).
+# Nothing is written to disk, nothing outlives this block's own processes, and
+# there is no global state for a concurrent run to race with.
+# RUNTIME VALIDATION REQUIRED: whether gke-gcloud-auth-plugin's own internals
+# actually honor this env var end-to-end has not been proven live in this
+# session -- the identity running this session has no
+# roles/iam.serviceAccountTokenCreator on the runtime SA (confirmed empty IAM
+# policy), and granting that is a separate decision outside this fix's scope.
+# If it does not work, the failure mode is the same clear, diagnosable
+# "Forbidden"/sanity-check failure already handled below -- not a silent one.
+
+- name: "{{ cluster.name }}: compute effective per-cluster RBAC settings (self-contained, does not depend on main.yml having run)"
+  ansible.builtin.set_fact:
+    _effective_grant_node_read: "{{ cluster.grant_node_read | default(grant_node_read) }}"
+    _effective_rbac_role: "{{ cluster.rbac_role | default(rbac_role) }}"
+
+- name: "{{ cluster.name }}: determine whether runtime_identity can be impersonated for verification"
+  ansible.builtin.set_fact:
+    _can_impersonate: "{{ runtime_identity is search('\\.iam\\.gserviceaccount\\.com$') }}"
+
+- name: "{{ cluster.name }}: compute the Connect Gateway kubeconfig context name"
+  ansible.builtin.set_fact:
+    _gw_context: "connectgateway_{{ cluster.fleet_project_id }}_global_{{ cluster.fleet_membership | default(cluster.name) }}"
+
+- name: "{{ cluster.name }}: run verification as runtime_identity where possible"
+  environment:
+    CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT: "{{ runtime_identity if _can_impersonate else omit }}"
+  block:
+    - name: "{{ cluster.name }}: fetch Connect Gateway credentials"
+      ansible.builtin.command:
+        argv:
+          - "{{ gcloud_bin }}"
+          - container
+          - fleet
+          - memberships
+          - get-credentials
+          - "{{ cluster.fleet_membership | default(cluster.name) }}"
+          - --project={{ cluster.fleet_project_id }}
+      changed_when: true
+
+    - name: "{{ cluster.name }}: sanity-check impersonated access, with a specific diagnosis if it fails"
+      ansible.builtin.command:
+        argv: [kubectl, "--context={{ _gw_context }}", auth, can-i, get, pods]
+      register: _impersonation_sanity
+      changed_when: false
+      failed_when: false
+      when: _can_impersonate
+
+    - name: "{{ cluster.name }}: fail with a specific diagnosis if impersonation itself is not authorized"
+      ansible.builtin.fail:
+        msg: >-
+          Verification cannot proceed for '{{ cluster.name }}': the identity
+          running this playbook is not authorized to impersonate
+          '{{ runtime_identity }}' (needs roles/iam.serviceAccountTokenCreator on
+          that service account -- an IAM grant outside this role's own scope,
+          make it explicitly if you want live verification as the real runtime
+          identity). stderr: {{ _impersonation_sanity.stderr }}
+      when: _can_impersonate and 'yes' not in (_impersonation_sanity.stdout | default(''))
+
+    - name: "{{ cluster.name }}: real allowed read calls through Connect Gateway"
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --context={{ _gw_context }}
+          - get
+          - "{{ item }}"
+          - -A
+      loop:
+        - pods
+        - deployments
+        - events
+      register: _allowed_reads
+      changed_when: false
+      failed_when: false
+
+    - name: "{{ cluster.name }}: fail if an allowed read call did not succeed"
+      ansible.builtin.fail:
+        msg: >-
+          Verification failed for '{{ cluster.name }}': expected read
+          `kubectl get {{ item.item }} -A` to succeed through Connect Gateway, got
+          rc={{ item.rc }}: {{ item.stderr }}
+      loop: "{{ _allowed_reads.results }}"
+      when: item.rc != 0
+
+    - name: "{{ cluster.name }}: real node-read call (the parity fix -- must now succeed)"
+      ansible.builtin.command:
+        argv: [kubectl, "--context={{ _gw_context }}", get, nodes]
+      register: _node_read
+      changed_when: false
+      failed_when: false
+      when: _effective_grant_node_read | bool
+
+    - name: "{{ cluster.name }}: fail if node-read (the parity fix) did not succeed"
+      ansible.builtin.fail:
+        msg: >-
+          Verification failed for '{{ cluster.name }}': `kubectl get nodes` was
+          expected to succeed after the supplemental node-read grant, got
+          rc={{ _node_read.rc }}: {{ _node_read.stderr }}
+      when: _effective_grant_node_read | bool and _node_read.rc != 0
+
+    - name: "{{ cluster.name }}: real denied write call (must fail)"
+      ansible.builtin.command:
+        argv: [kubectl, "--context={{ _gw_context }}", create, namespace, "sre-agent-onboarding-denial-check"]
+      register: _denied_write
+      changed_when: false
+      failed_when: false
+
+    # Cleanup runs BEFORE the fail task below -- reordered after independent
+    # review (automation-reviewer, 2026-09-21) found the original order made
+    # this task unreachable: `ansible.builtin.fail` aborts the block the
+    # instant it fires, so if the denied write ever unexpectedly succeeded
+    # once, the stray namespace was left on the cluster forever (cleanup.yml
+    # doesn't manage it either), AND every later run's "denied write" check
+    # would then get `AlreadyExists` instead of `Forbidden` -- still non-zero,
+    # so a real RBAC regression would keep silently reporting as "correctly
+    # blocked" on every subsequent run. Mirrors fleet_register.yml's own
+    # correct pattern: rollback happens before the loud failure, not after.
+    - name: "{{ cluster.name }}: clean up the denial-check namespace if it was somehow created"
+      ansible.builtin.command:
+        argv: [kubectl, "--context={{ _gw_context }}", delete, namespace, "sre-agent-onboarding-denial-check", "--ignore-not-found"]
+      when: _denied_write.rc == 0
+      changed_when: true
+
+    - name: "{{ cluster.name }}: fail if the denied write call unexpectedly succeeded"
+      ansible.builtin.fail:
+        msg: >-
+          SECURITY: verification failed for '{{ cluster.name }}' -- `kubectl create
+          namespace` unexpectedly SUCCEEDED through Connect Gateway. The runtime RBAC
+          is not read-only as required. Investigate immediately; do not treat this
+          cluster as onboarded.
+      when: _denied_write.rc == 0
+
+    - name: "{{ cluster.name }}: real denied secret-read call (must fail)"
+      ansible.builtin.command:
+        argv: [kubectl, "--context={{ _gw_context }}", get, secrets, -A]
+      register: _denied_secrets
+      changed_when: false
+      failed_when: false
+
+    - name: "{{ cluster.name }}: fail if secret access unexpectedly succeeded"
+      ansible.builtin.fail:
+        msg: >-
+          SECURITY: verification failed for '{{ cluster.name }}' -- `kubectl get
+          secrets -A` unexpectedly SUCCEEDED through Connect Gateway. Investigate
+          immediately; do not treat this cluster as onboarded.
+      when: _denied_secrets.rc == 0
+
+    - name: "{{ cluster.name }}: verification passed"
+      ansible.builtin.debug:
+        msg: >-
+          Verification OK for '{{ cluster.name }}': pods/deployments/events/nodes
+          readable, namespace-create and secret-read correctly denied, tested as
+          {{ runtime_identity if _can_impersonate else 'the operator (no impersonation available)' }}.

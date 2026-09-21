@@ -1,0 +1,3 @@
+# Python dependencies for running this Ansible workflow.
+# jmespath backs the json_query filter used in roles/onprem_cluster_onboarding/tasks/rbac.yml.
+jmespath>=1.0

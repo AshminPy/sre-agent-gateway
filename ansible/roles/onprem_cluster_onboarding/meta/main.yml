@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  role_name: onprem_cluster_onboarding
+  description: >
+    Idempotent onboarding of an external/non-GKE Kubernetes cluster into a GCP Fleet
+    for Connect Gateway access, with least-privilege RBAC for the SRE Agent runtime
+    identity. Keyless (Workload Identity) registration only -- no service-account-key
+    path exists in this role.
+  author: sre-agent-gateway (personal project)
+  license: proprietary
+  min_ansible_version: "2.15"
+  platforms:
+    - name: EL
+    - name: Debian
+    - name: MacOSX
+dependencies: []

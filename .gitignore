@@ -45,3 +45,4 @@ results/
 .vscode/
 .idea/
 .DS_Store
+ansible/artifacts/

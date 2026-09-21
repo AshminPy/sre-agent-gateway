@@ -1,0 +1,20 @@
+---
+- name: "Verify {{ item.name }}, isolated from other clusters' failures"
+  block:
+    - name: "Verify {{ item.name }}"
+      vars:
+        cluster: "{{ item }}"
+      ansible.builtin.include_role:
+        name: onprem_cluster_onboarding
+        tasks_from: verify
+
+    - name: "Record PASS for {{ item.name }}"
+      ansible.builtin.set_fact:
+        onboarding_results: "{{ onboarding_results + [{'cluster': item.name, 'status': 'PASS'}] }}"
+
+  rescue:
+    - name: "Record FAIL for {{ item.name }}"
+      ansible.builtin.set_fact:
+        onboarding_results: >-
+          {{ onboarding_results + [{'cluster': item.name, 'status': 'FAIL',
+             'error': (ansible_failed_result.msg | default('unknown'))}] }}

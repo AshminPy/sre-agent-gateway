@@ -1,0 +1,36 @@
+---
+# Re-runs only the verification subset (real read/deny calls through Connect
+# Gateway) for a post-hoc health check -- does not re-register or re-apply
+# RBAC. Useful after the fact ("is this cluster still correctly configured?")
+# without treating a healthy, already-onboarded cluster as needing changes.
+
+- name: Verify already-onboarded external clusters
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  vars:
+    onboarding_results: []
+
+  tasks:
+    - name: Fail fast if no clusters are defined
+      ansible.builtin.fail:
+        msg: "`external_clusters` is empty or undefined."
+      when: external_clusters | default([]) | length == 0
+
+    - name: Verify each cluster independently
+      ansible.builtin.include_tasks: tasks/verify_one_cluster.yml
+      loop: "{{ external_clusters }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Print verification summary
+      ansible.builtin.debug:
+        var: onboarding_results
+
+    - name: Fail if any cluster failed verification
+      ansible.builtin.fail:
+        msg: >-
+          Verification failed for: {{ onboarding_results
+            | selectattr('status', 'equalto', 'FAIL')
+            | map(attribute='cluster') | join(', ') }}
+      when: onboarding_results | selectattr('status', 'equalto', 'FAIL') | list | length > 0

@@ -1,0 +1,32 @@
+---
+# Personal validation data. Everything cluster/project/identity-specific lives
+# here, never in ansible/roles/. See PORTING.md for what changes when this
+# workflow is later run against a work non-prod inventory.
+
+# The SRE Agent's real runtime identity (iac/agent/cloudrun_mcp.tf's
+# google_service_account.mcp_runtime), already IAM-granted roles/gkehub.gatewayReader
+# in iac/agent/onprem_fleet.tf. Confirmed live 2026-09-21:
+# sre-k8s-mcp-runtime@sreagent-t2-demo.iam.gserviceaccount.com
+runtime_identity: "sre-k8s-mcp-runtime@sreagent-t2-demo.iam.gserviceaccount.com"
+
+# This machine's gcloud SDK isn't on the default (non-login) PATH used when
+# ansible-playbook runs from some shells/tools -- pin the full path here
+# (personal-machine detail, correctly scoped to this inventory, not the role).
+gcloud_bin: "/Users/ashmin/Downloads/google-cloud-sdk/bin/gcloud"
+
+external_clusters:
+  - name: sre-lab
+    kube_context: kind-sre-lab
+    fleet_project_id: sreagent-t2-demo
+    fleet_membership: sre-lab
+    environment: test
+    rbac_role: clusterrole/view
+    grant_node_read: true
+
+  - name: sre-lab-2
+    kube_context: kind-sre-lab-2
+    fleet_project_id: sreagent-t2-demo
+    fleet_membership: sre-lab-2
+    environment: test
+    rbac_role: clusterrole/view
+    grant_node_read: true
