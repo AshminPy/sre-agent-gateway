@@ -1,5 +1,15 @@
 # On-prem / non-GKE connectivity via GKE Fleet Connect Gateway
 
+> **2026-09-21 — to actually onboard a cluster, use the runbook, not the manual steps
+> below.** [Adding a Non-GKE / On-Prem Cluster (via Ansible)](runbooks/add-onprem-cluster.md)
+> automates every step in this document (registration, the mandatory tier-safety
+> check that didn't exist when commit `cc9dbe0`'s cost incident happened, RBAC
+> including the `nodes` parity fix, and real verification as the actual runtime
+> identity) and is live-validated end to end, including a real Agent Engine
+> investigation. This document remains valuable for *why* each step exists — the
+> credential model decision, the RBAC model, the audit-logging gap — which the
+> Ansible role encodes but doesn't re-explain. Read it once; run the runbook.
+
 Status: **prototype validated** against a real non-GKE cluster (kind, standing in
 for on-prem), and now also wired into and proven through the live production
 agent path — see the Open Items section below for current status. This
