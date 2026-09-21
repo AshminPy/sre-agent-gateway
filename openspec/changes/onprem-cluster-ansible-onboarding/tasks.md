@@ -190,6 +190,25 @@ design as a real risk (strong convergent signal) plus 3 more distinct MUST FIX f
 
 All 5 fixes re-passed `ansible-lint` (0 failures) and `--syntax-check` on all 3 playbooks.
 
+**Non-blocking follow-ups from the same review (tracked, not fixed here, per the
+reviewer's own WARNING/non-blocking categorization):**
+- No timeout on any external `gcloud`/`kubectl` call, and no async/poll strategy — a hang
+  (not a clean failure) on one cluster would block the sequential loop indefinitely,
+  defeating per-cluster isolation for that one failure mode. Matters most once this runs
+  genuinely unattended (a private runner, per `PORTING.md`) rather than operator-watched.
+- UNVERIFIED against official docs: whether `generate-gateway-rbac --apply`/`--revoke`
+  operate on a single shared `ClusterRoleBinding` per role when multiple different
+  `--users` are granted the same role on the same cluster over time. If so, this
+  workflow's ownership-labeling could tag an object that also grants access to a user it
+  didn't create. The kind test lab is single-user and could not exercise this. Must be
+  confirmed before trusting this at a work site where other engineers may already hold
+  `view` bindings on the target cluster.
+- `describe`/`get` state-check reads treat "not found" and "any other real error"
+  (permission denied, API outage, transient network) identically, both falling through to
+  "treat as absent" — low risk in practice (the mutating step that follows is itself
+  either idempotent or fails loudly), but makes a transient check failure indistinguishable
+  from "genuinely never onboarded" in the logs during a real incident.
+
 ## Phase 4 — Validation (idempotency, multi-cluster, RBAC correctness)
 
 - [x] **First live run, 2026-09-21** (`ansible-playbook playbooks/onboard.yml`): failed on
