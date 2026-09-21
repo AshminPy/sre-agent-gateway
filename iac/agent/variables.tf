@@ -88,14 +88,19 @@ variable "additional_clusters" {
       environment        = "test"
       allowed_namespaces = ["test-incidents"]
       owner              = "sre-platform"
-      enabled            = true
-      # Migrated 2026-09-07 to the dynamic Connect Gateway mechanism (no
-      # static, image-baked kubeconfig file involved) -- live-verified via
-      # the deployed sre-k8s-mcp-runtime identity (real RBAC binding
-      # gateway-impersonate-...-sre-k8s-mcp-runtime-sre-lab already existed
-      # for it, unlike a personal user identity). kube_context left set
-      # below, unused while fleet_project_number is populated, purely so
-      # reverting this migration is a one-line change, not a re-add.
+      # Disabled 2026-09-21 to stop real GCP cost: this fleet membership was
+      # registered at clusterTier=ENTERPRISE, billing a real per-vCPU-hour fee
+      # (~$216/month combined with sre-lab-2, confirmed via live GCP Billing
+      # Console data -- the actual dominant cost in this whole environment,
+      # not the Agent Engine). Gateway RBAC revoked and the fleet membership
+      # unregistered live (`gcloud container fleet memberships unregister`) --
+      # the local kind cluster itself was left running untouched, so
+      # recreating this is just re-running the registration runbook
+      # (docs/connect-gateway-onprem.md "Onboarding a new on-prem cluster")
+      # against the same still-running cluster, not a from-zero rebuild.
+      # Every other field below is left intact on purpose so recreating is a
+      # one-line `enabled = true` flip, not a re-type.
+      enabled              = false
       kube_context         = "connectgateway_sreagent-t2-demo_global_sre-lab"
       fleet_project_number = "327234009108"
       fleet_membership     = "sre-lab"
@@ -112,16 +117,19 @@ variable "additional_clusters" {
     # IAM grant needed), this one registry entry, terraform apply. Same
     # Cloud Run custom MCP service serves both -- no new deployment.
     "sre-lab-2" = {
-      aliases               = ["kind-sre-lab-2"]
-      project               = "sreagent-t2-demo"
-      region                = "global"
-      type                  = "custom"
-      environment           = "test"
-      allowed_namespaces    = ["test-incidents"]
-      owner                 = "sre-platform"
-      enabled               = true
-      fleet_project_number  = "327234009108"
-      fleet_membership      = "sre-lab-2"
+      aliases            = ["kind-sre-lab-2"]
+      project            = "sreagent-t2-demo"
+      region             = "global"
+      type               = "custom"
+      environment        = "test"
+      allowed_namespaces = ["test-incidents"]
+      owner              = "sre-platform"
+      # Disabled 2026-09-21, same reason and same live removal as sre-lab
+      # above (clusterTier=ENTERPRISE real cost, gateway RBAC revoked +
+      # fleet membership unregistered, local kind cluster left running).
+      enabled              = false
+      fleet_project_number = "327234009108"
+      fleet_membership     = "sre-lab-2"
     }
   }
 
