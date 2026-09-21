@@ -168,9 +168,21 @@ resource "google_vertex_ai_reasoning_engine" "sre_agent" {
     }
 
     deployment_spec {
-      # Match the codelab agent's deploy_config: min 2 warm instances + 4 vCPU /
-      # 8Gi so the runtime is provisioned the same way (deploy_agent.py).
-      min_instances = 2
+      # Scaled to 0 warm instances 2026-09-21 as part of the personal-environment
+      # idle-cost cleanup (see docs/management/cost-analysis-2026-09-21.md) --
+      # this is a test/demo environment, latency on the next investigation isn't
+      # a concern, and the goal is minimizing idle spend. Verified via a real
+      # `terraform plan` before this change: min_instances is a plain in-place
+      # update on this resource, NOT force-new -- no new reasoning-engine ID, no
+      # impact on the RBAC binding (k8s/rbac.yaml) or anything else keyed to the
+      # engine ID. max_instances=10 below is unchanged, so Agent Engine still
+      # autoscales up on demand -- per Google's own published numbers, the first
+      # request after being idle costs ~4.7s extra latency, then it's warm again.
+      # Scale back to 2 (or higher) here + terraform apply before a real testing
+      # session if guaranteed warm capacity is wanted instead of on-demand cold
+      # start. Originally matched the codelab agent's deploy_config (2 warm
+      # instances, 4 vCPU/8Gi) -- resource_limits below are unchanged.
+      min_instances = 0
       # Section 9 (2026-09-08): previously unset anywhere in this repo's Terraform --
       # docs/architecture/agent-engine.md's own audit called this out explicitly:
       # "max_instances is not set anywhere... status: UNKNOWN, the platform default
