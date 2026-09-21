@@ -31,7 +31,8 @@
       ansible.builtin.include_tasks: tasks/cleanup_one_cluster.yml
       loop: "{{ external_clusters }}"
       loop_control:
-        label: "{{ item.name }}"
+        loop_var: cluster
+        label: "{{ cluster.name }}"
 
     - name: Print cleanup summary
       ansible.builtin.debug:

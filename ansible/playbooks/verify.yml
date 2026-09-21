@@ -21,7 +21,8 @@
       ansible.builtin.include_tasks: tasks/verify_one_cluster.yml
       loop: "{{ external_clusters }}"
       loop_control:
-        label: "{{ item.name }}"
+        loop_var: cluster
+        label: "{{ cluster.name }}"
 
     - name: Print verification summary
       ansible.builtin.debug:
