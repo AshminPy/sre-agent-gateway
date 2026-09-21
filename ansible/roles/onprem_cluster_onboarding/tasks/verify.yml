@@ -4,6 +4,17 @@
 # already proven manually in docs/connect-gateway-onprem.md, now scripted so it
 # runs every time instead of once, by hand, months ago.
 #
+# Self-contained on purpose: this file is called both via the full role
+# (onboard_one_cluster.yml, after main.yml has already computed
+# _effective_grant_node_read/_effective_rbac_role) AND standalone via
+# `include_role: tasks_from: verify` (playbooks/verify.yml, which skips
+# main.yml entirely). Independent review (automation-reviewer, 2026-09-21)
+# found the standalone path was 100% broken -- _effective_grant_node_read was
+# referenced but never defined outside main.yml, so playbooks/verify.yml
+# failed on every cluster, every run, with an "undefined variable" error. Fixed
+# by computing the same effective values here directly, so this file never
+# depends on which caller ran before it.
+#
 # IDENTITY -- fixed 2026-09-21 after a real live failure: plain `get-credentials`
 # mints a context using the CALLER's own gcloud identity, not `runtime_identity`.
 # The RBAC this role grants is scoped to `runtime_identity` only (least privilege
@@ -13,19 +24,36 @@
 # RBAC objects were independently confirmed correct by direct kubectl inspection
 # -- the RBAC was right, the TEST was authenticating as the wrong identity.
 #
-# Fix: when `runtime_identity` is a service account, impersonate it for this
-# verification step via a PERSISTENT `gcloud config set auth/impersonate_service_account`
-# -- not a per-task env var -- because `gke-gcloud-auth-plugin` re-invokes `gcloud`
-# fresh on every single `kubectl` call (a separate subprocess each time), so a
-# one-task environment var would not carry through to later tasks. The config is
-# always unset afterward (`always:` block) so impersonation never leaks into any
-# other gcloud usage on this machine, success or failure.
-#
-# This requires `roles/iam.serviceAccountTokenCreator` on that SA for the identity
-# running this playbook -- an IAM grant outside this role's own scope to make for
-# itself (preflight does not check for or grant it). If missing, the sanity-check
-# task below fails with a specific, diagnosable message instead of a generic
-# `Forbidden: unknown` deep inside the real read/deny checks.
+# Fix (revised again after independent review, 2026-09-21 -- both
+# automation-reviewer and iam-reviewer independently flagged the first fix):
+# the first version used a PERSISTENT `gcloud config set auth/impersonate_service_account`,
+# unset in an `always:` block. Real problems with that: (1) `always:` only runs
+# on a handled Ansible failure, not on ansible-playbook itself being killed
+# (SIGKILL/OOM/crash) -- a crash mid-block would leave the OPERATOR's own gcloud
+# silently impersonating the runtime SA for every later command on that
+# machine, indefinitely; (2) gcloud config is a shared file on disk, not
+# process-scoped -- a concurrent invocation (two runs, or a human running
+# gcloud in another terminal) could race and cause THIS run's kubectl calls to
+# authenticate as the wrong identity mid-verification.
+# Now uses `environment:` on this block instead: CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT
+# is gcloud's documented env-var form of the same property, set only for the
+# subprocess tree of tasks inside this block (kubectl, and the gke-gcloud-auth-plugin
+# it spawns as a child process, which inherits environment variables by default
+# -- standard OS process behavior, not something this playbook has to arrange).
+# Nothing is written to disk, nothing outlives this block's own processes, and
+# there is no global state for a concurrent run to race with.
+# RUNTIME VALIDATION REQUIRED: whether gke-gcloud-auth-plugin's own internals
+# actually honor this env var end-to-end has not been proven live in this
+# session -- the identity running this session has no
+# roles/iam.serviceAccountTokenCreator on the runtime SA (confirmed empty IAM
+# policy), and granting that is a separate decision outside this fix's scope.
+# If it does not work, the failure mode is the same clear, diagnosable
+# "Forbidden"/sanity-check failure already handled below -- not a silent one.
+
+- name: "{{ cluster.name }}: compute effective per-cluster RBAC settings (self-contained, does not depend on main.yml having run)"
+  ansible.builtin.set_fact:
+    _effective_grant_node_read: "{{ cluster.grant_node_read | default(grant_node_read) }}"
+    _effective_rbac_role: "{{ cluster.rbac_role | default(rbac_role) }}"
 
 - name: "{{ cluster.name }}: determine whether runtime_identity can be impersonated for verification"
   ansible.builtin.set_fact:
@@ -36,13 +64,9 @@
     _gw_context: "connectgateway_{{ cluster.fleet_project_id }}_global_{{ cluster.fleet_membership | default(cluster.name) }}"
 
 - name: "{{ cluster.name }}: run verification as runtime_identity where possible"
+  environment:
+    CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT: "{{ runtime_identity if _can_impersonate else omit }}"
   block:
-    - name: "{{ cluster.name }}: configure gcloud to impersonate runtime_identity"
-      ansible.builtin.command:
-        argv: ["{{ gcloud_bin }}", config, set, auth/impersonate_service_account, "{{ runtime_identity }}"]
-      when: _can_impersonate
-      changed_when: true
-
     - name: "{{ cluster.name }}: fetch Connect Gateway credentials"
       ansible.builtin.command:
         argv:
@@ -122,6 +146,22 @@
       changed_when: false
       failed_when: false
 
+    # Cleanup runs BEFORE the fail task below -- reordered after independent
+    # review (automation-reviewer, 2026-09-21) found the original order made
+    # this task unreachable: `ansible.builtin.fail` aborts the block the
+    # instant it fires, so if the denied write ever unexpectedly succeeded
+    # once, the stray namespace was left on the cluster forever (cleanup.yml
+    # doesn't manage it either), AND every later run's "denied write" check
+    # would then get `AlreadyExists` instead of `Forbidden` -- still non-zero,
+    # so a real RBAC regression would keep silently reporting as "correctly
+    # blocked" on every subsequent run. Mirrors fleet_register.yml's own
+    # correct pattern: rollback happens before the loud failure, not after.
+    - name: "{{ cluster.name }}: clean up the denial-check namespace if it was somehow created"
+      ansible.builtin.command:
+        argv: [kubectl, "--context={{ _gw_context }}", delete, namespace, "sre-agent-onboarding-denial-check", "--ignore-not-found"]
+      when: _denied_write.rc == 0
+      changed_when: true
+
     - name: "{{ cluster.name }}: fail if the denied write call unexpectedly succeeded"
       ansible.builtin.fail:
         msg: >-
@@ -130,12 +170,6 @@
           is not read-only as required. Investigate immediately; do not treat this
           cluster as onboarded.
       when: _denied_write.rc == 0
-
-    - name: "{{ cluster.name }}: clean up the denial-check namespace if it was somehow created"
-      ansible.builtin.command:
-        argv: [kubectl, "--context={{ _gw_context }}", delete, namespace, "sre-agent-onboarding-denial-check", "--ignore-not-found"]
-      when: _denied_write.rc == 0
-      changed_when: true
 
     - name: "{{ cluster.name }}: real denied secret-read call (must fail)"
       ansible.builtin.command:
@@ -158,10 +192,3 @@
           Verification OK for '{{ cluster.name }}': pods/deployments/events/nodes
           readable, namespace-create and secret-read correctly denied, tested as
           {{ runtime_identity if _can_impersonate else 'the operator (no impersonation available)' }}.
-  always:
-    - name: "{{ cluster.name }}: always clear gcloud impersonation config, success or failure"
-      ansible.builtin.command:
-        argv: ["{{ gcloud_bin }}", config, unset, auth/impersonate_service_account]
-      when: _can_impersonate
-      changed_when: true
-      failed_when: false

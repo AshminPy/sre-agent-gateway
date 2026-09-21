@@ -16,7 +16,31 @@
 
 - name: "Clean up {{ item.name }}, isolated from other clusters' failures"
   block:
-    - name: "{{ item.name }}: revoke gateway RBAC (tolerant of already-revoked/never-applied)"
+    # Ownership check BEFORE revoking (independent review finding, iam-reviewer,
+    # 2026-09-21): generate-gateway-rbac --revoke matches by --users/--role, not
+    # by our label, so calling it unconditionally could revoke a binding this
+    # workflow never created (e.g. one applied by hand via
+    # docs/connect-gateway-onprem.md's manual runbook, for the same
+    # runtime_identity/role, before this Ansible tool existed) -- exactly the
+    # "name/role/user match" anti-pattern this file's own header disclaims.
+    # Reuses the identical label query rbac.yml's idempotency check already
+    # uses, so "do we own this" is answered the same way in both directions.
+    - name: "{{ item.name }}: check for a workflow-owned gateway RBAC binding before revoking"
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --context={{ item.kube_context }}
+          - get
+          - clusterrolebinding
+          - -l
+          - "{{ onboarded_by_label_key }}={{ onboarded_by_label_value }},connect.gke.io/owner-feature=connect-gateway"
+          - -o
+          - json
+      register: _owned_gateway_rbac
+      changed_when: false
+
+    - name: "{{ item.name }}: revoke gateway RBAC only if this workflow owns it"
+      when: (_owned_gateway_rbac.stdout | from_json)['items'] | length > 0
       ansible.builtin.command:
         argv:
           - "{{ gcloud_bin | default('gcloud') }}"
@@ -29,12 +53,17 @@
           - --users={{ runtime_identity }}
           - --role={{ item.rbac_role | default('clusterrole/view') }}
           - --context={{ item.kube_context }}
-          - --kubeconfig={{ ansible_env.HOME }}/.kube/config
+          - --kubeconfig={{ kubeconfig_path }}
           - --revoke
           - --quiet
       register: _rbac_revoke
-      changed_when: "'deleted' in _rbac_revoke.stdout or 'deleted' in _rbac_revoke.stderr"
-      failed_when: false
+      changed_when: true
+      # No failed_when override (independent review finding, automation-reviewer,
+      # 2026-09-21): the "nothing to revoke" case already returns rc=0 with a
+      # "... not exist." message (confirmed live) -- failed_when: false served no
+      # purpose there and only swallowed genuine failures (permission/API/network
+      # errors), which then got silently recorded as CLEANED below. A real
+      # failure here must propagate to the rescue block like everywhere else.
 
     - name: "{{ item.name }}: delete workflow-labeled supplemental node-read RBAC (tolerant of already-absent)"
       ansible.builtin.command:
@@ -48,6 +77,10 @@
           - --ignore-not-found
       register: _node_rbac_delete
       changed_when: "'deleted' in _node_rbac_delete.stdout"
+
+    - name: "{{ item.name }}: record whether RBAC actually needed/received cleanup"
+      ansible.builtin.set_fact:
+        _rbac_was_present: "{{ ((_owned_gateway_rbac.stdout | from_json)['items'] | length > 0) or ('deleted' in _node_rbac_delete.stdout) }}"
 
     - name: "{{ item.name }}: check Fleet membership ownership label before touching the membership itself"
       ansible.builtin.command:
@@ -91,13 +124,15 @@
               - "{{ item.fleet_membership | default(item.name) }}"
               - --project={{ item.fleet_project_id }}
               - --context={{ item.kube_context }}
-              - --kubeconfig={{ ansible_env.HOME }}/.kube/config
+              - --kubeconfig={{ kubeconfig_path }}
               - --quiet
           changed_when: true
 
         - name: "{{ item.name }}: record cleaned"
           ansible.builtin.set_fact:
-            cleanup_results: "{{ cleanup_results + [{'cluster': item.name, 'status': 'CLEANED'}] }}"
+            cleanup_results: >-
+              {{ cleanup_results + [{'cluster': item.name, 'status': 'CLEANED',
+                 'rbac_was_present': _rbac_was_present}] }}
 
     - name: "{{ item.name }}: record membership state when not unregistered by this run"
       when: not (_membership_labels.get(_sanitized_label_key, '') == onboarded_by_label_value)
@@ -107,7 +142,7 @@
             cleanup_results: >-
               {{ cleanup_results + [{'cluster': item.name, 'status':
                  ('ALREADY_ABSENT' if _membership_check.rc != 0 else 'SKIPPED_NOT_OWNED'),
-                 'rbac_cleaned': true}] }}
+                 'rbac_was_present': _rbac_was_present}] }}
 
         - name: "{{ item.name }}: explain the skip"
           ansible.builtin.debug:

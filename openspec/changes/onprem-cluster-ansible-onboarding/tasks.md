@@ -132,6 +132,64 @@ change's core design):**
   registry entry to `enabled: true` — deliberately kept out of this bounded
   test's scope).
 
+## Independent review round 1, 2026-09-21 (automation-reviewer + iam-reviewer)
+
+Dispatched against PR #259 before merging. iam-reviewer returned NO-GO; automation-reviewer
+returned GO WITH CONDITIONS. Both independently flagged the same `verify.yml` impersonation
+design as a real risk (strong convergent signal) plus 3 more distinct MUST FIX findings. All
+5 fixed, and re-verified live (not just re-reasoned) at zero further cost:
+
+1. **`cleanup_one_cluster.yml`'s RBAC revoke ran unconditionally, with no ownership check**
+   (iam-reviewer) — `generate-gateway-rbac --revoke` matches by `--users`/`--role`, not by our
+   label, so it could have revoked a binding this workflow never created (e.g. one applied by
+   hand via `docs/connect-gateway-onprem.md`'s original manual runbook, for the same
+   `runtime_identity`/role, before this tool existed) — the design's own written guarantee
+   ("cleanup only ever acts on objects carrying that label") did not hold in code. Fixed: gate
+   revoke behind the same label query `rbac.yml`'s idempotency check already uses. **Re-verified
+   live, both branches, zero cost** (no live Fleet membership needed — confirmed
+   `generate-gateway-rbac --apply/--revoke` operate purely against the cluster's own API server):
+   (a) with nothing owned, revoke correctly SKIPPED; (b) after manually applying and labeling a
+   binding (simulating what `rbac.yml` does), revoke correctly FIRED and removed it.
+2. **The same revoke task had `failed_when: false` with no downstream rc check**
+   (automation-reviewer) — the "nothing to revoke" case already returns `rc=0` (confirmed live,
+   `"... not exist."`), so the override served only to swallow genuine failures, which then got
+   recorded as `CLEANED` regardless. Fixed: removed the override; results now carry an honest
+   `rbac_was_present` computed from what was actually found/deleted, not a hardcoded `true`.
+3. **`verify.yml` had unreachable cleanup code** (automation-reviewer) — the "fail if denied
+   write succeeded" task ran BEFORE the "clean up the denial-check namespace" task; `fail`
+   aborts the block instantly, so if a real RBAC regression ever let the write through once,
+   the stray namespace would be left forever, AND every later run's write attempt would then
+   get `AlreadyExists` (still non-zero) instead of `Forbidden` — silently reporting "correctly
+   blocked" even with a real, still-open RBAC hole. Fixed: reordered to match
+   `fleet_register.yml`'s own correct pattern (rollback before the loud failure).
+4. **Standalone `playbooks/verify.yml` was 100% broken, every run** (automation-reviewer) —
+   `verify_one_cluster.yml` calls `include_role: tasks_from: verify`, which skips `main.yml`
+   entirely; `_effective_grant_node_read`/`_effective_rbac_role` were only ever computed in
+   `main.yml`, so `verify.yml` referenced undefined variables and failed on every cluster. Not
+   caught during live testing because that testing only ever ran `onboard.yml`. Fixed: `verify.yml`
+   now computes both facts itself (same expression as `main.yml`), making it fully
+   self-contained regardless of caller. **Re-verified live**: running `playbooks/verify.yml`
+   standalone now fails with a real, expected `gcloud` error (`No memberships`/`PERMISSION_DENIED`
+   depending on state), never an "undefined variable" error.
+5. **The persistent `gcloud config set/unset auth/impersonate_service_account` design was not
+   crash-safe or concurrency-safe** (both reviewers, independently) — `always:` doesn't run on
+   `ansible-playbook` itself being killed, and gcloud config is a shared on-disk file, not
+   process-scoped, so a crash or a concurrent invocation could leave the *operator's own*
+   gcloud silently impersonating the runtime SA, misattributing later real actions in Cloud
+   Audit Logs, or corrupt a concurrent run's identity mid-verification. Fixed: replaced with
+   `environment: CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT` on the block (gcloud's documented
+   env-var form of the same property) — scoped to the block's own subprocess tree, nothing
+   written to disk, nothing to leak. **Re-verified live, and this closes a real open
+   uncertainty from the first fix**: gcloud's own output on this run confirmed the env var
+   works mechanically ("This command is using service account impersonation. All API calls
+   will be executed as [sre-k8s-mcp-runtime@...]"), failing only on the expected, already-known
+   missing IAM grant (`PERMISSION_DENIED: ... roles/iam.serviceAccountTokenCreator`) — a clean,
+   diagnosable error, not a silent leak. Confirmed afterward: `gcloud config get-value account`
+   still correctly shows the operator's own identity; `auth/impersonate_service_account` is
+   `(unset)`.
+
+All 5 fixes re-passed `ansible-lint` (0 failures) and `--syntax-check` on all 3 playbooks.
+
 ## Phase 4 — Validation (idempotency, multi-cluster, RBAC correctness)
 
 - [x] **First live run, 2026-09-21** (`ansible-playbook playbooks/onboard.yml`): failed on
