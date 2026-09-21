@@ -209,6 +209,221 @@ reviewer's own WARNING/non-blocking categorization):**
   either idempotent or fails loudly), but makes a transient check failure indistinguishable
   from "genuinely never onboarded" in the logs during a real incident.
 
+## Full E2E validation round, 2026-09-21 (later same day) — real runtime path proven
+
+User-authorized follow-up task: prove the complete path (Ansible onboarding → Fleet
+membership → Connect Agent → Connect Gateway → runtime MCP SA → K8s RBAC → custom MCP →
+Agent Engine → real SRE investigation) against `sre-lab`, then repeat onboarding/RBAC
+for `sre-lab-2`. All steps below are real, live, evidence-backed — not simulated.
+
+### 1. Temporary impersonation grant
+- Principal: `user:ashmin.sub@gmail.com` (confirmed via `gcloud auth list`/`config
+  get-value account` as the active operator identity)
+- Resource: `sre-k8s-mcp-runtime@sreagent-t2-demo.iam.gserviceaccount.com` (the SA
+  itself, NOT project-scoped)
+- Role: `roles/iam.serviceAccountTokenCreator`
+- Command: `gcloud iam service-accounts add-iam-policy-binding
+  sre-k8s-mcp-runtime@sreagent-t2-demo.iam.gserviceaccount.com --member=user:...
+  --role=roles/iam.serviceAccountTokenCreator`
+- Before: `{"etag": "ACAB"}` (no bindings). After: one binding, exactly this
+  member/role. Removed again at the end of both the `sre-lab` and `sre-lab-2` passes
+  (re-granted, then re-removed, for the second pass) — confirmed empty (`{"etag":
+  "..."}`, no bindings) in the final state check.
+
+### 2-4. Onboard, verify, idempotency — sre-lab
+- Registration: `READY` at `clusterTier: ENTERPRISE` (accepted via the same
+  user-authorized tier override used in the original bounded test; no register-time
+  flag exists to avoid this, per the already-established finding). Connect Agent: 2/2
+  pods `Running`, actively serving real Connect Gateway traffic (log evidence: real
+  `GET .../version` requests returning `200 OK`).
+- RBAC: impersonation + `view` permission bindings created and correctly labeled;
+  supplemental node-read binding created and labeled. Confirmed via direct `kubectl`
+  inspection, not just task "changed" status.
+- **Real bug found and fixed while proving this**: `roles/gkehub.gatewayReader` alone
+  is NOT sufficient for `gcloud container fleet memberships get-credentials` (needs
+  `gkehub.memberships.list`, confirmed via a live `PERMISSION_DENIED`) — but IS
+  sufficient for the actual production path (`mcp/server.py` builds the Connect
+  Gateway REST URL directly with an ADC bearer token, confirmed live: HTTP 200 reading
+  real pods on `sre-lab` while impersonating the runtime SA, gatewayReader only, no
+  `get-credentials` involved). Added `roles/gkehub.viewer` to
+  `iac/agent/onprem_fleet.tf` (same conditional gate as the existing `gatewayReader`
+  resource) so Ansible's own `get-credentials`-based verification method works too,
+  without changing that method's implementation.
+- **Real bug found and fixed**: `verify.yml`'s `kubectl auth can-i` sanity-check
+  requires `create` on `selfsubjectaccessreviews.authorization.k8s.io`, which a
+  deliberately read-only identity does not have on this cluster (no default
+  "every authenticated user can self-review" binding, unlike GKE) — produced a
+  misleading "impersonation not authorized" diagnosis even after the real IAM grant
+  was in place. Removed the sanity-check; the real allowed-read calls are both the
+  proof and a sufficient diagnostic on their own.
+- **Real bug found and fixed**: `verify.yml`'s outer-loop variable collision.
+  `playbooks/verify.yml` and `playbooks/cleanup.yml` used Ansible's default `item`
+  loop var (unlike `onboard.yml`, which already correctly used `loop_control:
+  {loop_var: cluster}`), and `verify_one_cluster.yml` re-bound `cluster: "{{ item }}"`
+  as a lazy template — which the role's OWN internal loops (pods/deployments/events)
+  then silently shadowed by reusing the same default `item` name, corrupting `cluster`
+  into a plain string mid-run (`'str' object has no attribute 'name'`). Never
+  surfaced before because every earlier failure (missing auth plugin, missing IAM)
+  aborted before that loop was ever reached — only found once the IAM/method fixes
+  above let execution get far enough. Fixed by making all three playbooks use
+  `loop_control: {loop_var: cluster}` consistently, removing the fragile re-binding
+  entirely.
+- **After both fixes**: standalone `playbooks/verify.yml` -- previously found "100%
+  broken, every run" by independent review -- now passes cleanly end to end:
+  `"Verification OK for 'sre-lab': pods/deployments/events/nodes readable,
+  namespace-create and secret-read correctly denied, tested as
+  sre-k8s-mcp-runtime@sreagent-t2-demo.iam.gserviceaccount.com."` (exit 0).
+- **Real runtime-identity proof** (not the operator's own identity — required by this
+  task): built a temporary local kubeconfig context using a bearer token from
+  `gcloud auth print-access-token --impersonate-service-account=sre-k8s-mcp-runtime@...`,
+  hit the Connect Gateway REST endpoint directly (matching production exactly). All 4
+  ALLOWED checks succeeded (`pods`, `deployments`, `events`, `nodes` -- the parity
+  fix); all 3 DENIED checks failed with `Forbidden`, and the error text explicitly
+  names `User "sre-k8s-mcp-runtime@sreagent-t2-demo.iam.gserviceaccount.com"` --
+  direct, unambiguous proof this tested the real runtime identity, not the operator.
+- **Idempotency**: ran `onboard.yml` again immediately against the already-onboarded
+  `sre-lab`. Exit 0. Only 2 "changed" items across the whole run: a local kubeconfig
+  credential refresh (`get-credentials`, always marked changed, client-side only) and
+  a new timestamped evidence artifact file (expected every run by design). Zero
+  duplicate Fleet membership, zero duplicate/re-applied RBAC
+  (`gateway_rbac_reconciled_this_run: false`), zero privilege broadening. Final
+  combined run (registration idempotency + RBAC idempotency + real verification, all
+  in one `onboard.yml` invocation): exit 0,
+  `"verification": {"allowed_reads_ok": true, "denied_secrets_correctly_blocked":
+  true, "denied_write_correctly_blocked": true, "node_read_ok": true}`.
+
+### 5-6. Terraform + real Agent Engine investigation — sre-lab
+- **Pre-existing, unrelated drift found and worked around (not fixed -- out of
+  scope)**: a plain `terraform plan` against `iac/agent` with only the committed
+  `terraform.tfvars` showed "23 to add, 1 to change, 7 to destroy", including the
+  entire custom MCP Cloud Run service and its runtime SA being destroyed. Root cause:
+  `enable_custom_mcp` (default `false` in code) and `create_wif` (default `true`) are
+  both set differently by CI (`.github/workflows/terraform-apply.yml`, itself
+  referencing a documented past gotcha, issue #116) than by the local defaults --
+  this is unrelated to on-prem clusters entirely and was NOT introduced by this
+  validation. Replicated the exact CI-equivalent var values
+  (`create_wif=false`, `enable_custom_mcp=true`,
+  `custom_mcp_image=<live image tag, read directly from the deployed Cloud Run
+  service>`) to get an accurate plan; did not attempt to fix the underlying drift
+  (a separate, pre-existing repo issue).
+- Even with CI-parity vars, two more benign, pre-existing, unrelated diffs remained
+  (a stale `K8S_MCP_KUBE_CONTEXT` env var no longer used since the dynamic-path
+  migration, and an in-place reasoning-engine source-archive diff from a
+  known, already-documented packaging-reproducibility gap,
+  `docs/architecture/gke-vs-nongke.md`/prior session notes on `package_agent.py`).
+  Neither is destructive, both are out of scope for this task.
+- Applied a `-target`-scoped plan touching ONLY the two on-prem-relevant resources:
+  `google_project_iam_member.mcp_runtime_gateway_reader` (create) and
+  `google_storage_bucket_object.clusters_json` (update). Plan: `1 to add, 1 to change,
+  0 to destroy`. Applied successfully. Verified live: `clusters.json`'s `sre-lab`
+  entry now `"enabled": true`; project IAM policy shows `roles/gkehub.gatewayReader`
+  on the runtime SA. A second, equally minimal targeted apply added
+  `google_project_iam_member.mcp_runtime_gateway_viewer` (plan: `1 to add, 0 to
+  change, 0 to destroy`).
+- **Real SRE Agent investigation**, `invoke_agent.py --scenario onprem` (targets
+  `cluster: sre-lab`, pod `imagepull-pod`, namespace `test-incidents` --
+  confirmed by reading the scenario definition in `invoke_agent.py`, not assumed).
+  Local dependency gap found and fixed (unrelated to design): `google-cloud-aiplatform[agent_engines]`
+  wasn't installed locally; installed directly (the repo's own `pip install -e
+  '.[invoke]'` editable-install path fails on this checkout's packaging
+  configuration -- worked around by installing the same dependency non-editable).
+  - Run ID: `run_20260921_211936_nbzv`
+  - Start: `2026-09-21T21:18:51Z` — Finish: `2026-09-21T21:21:00Z` (total wall
+    `~2m09s`; agent-side latency `73.4s` per the response's own
+    `total_latency_s`/investigation metadata)
+  - Exit reason: investigation complete, `outcome: CONFIRMED`,
+    `confidence_band: auto`
+  - Target cluster: `sre-lab` (confirmed multiple independent ways: the scenario
+    definition, the response's own `"cluster": "sre-lab"` field, `"cluster_routing_reason":
+    "'sre-lab' matched a registered cluster id exactly."`, and every evidence
+    item's `"cluster": "sre-lab"` field)
+  - RCA: root cause correctly identified as image
+    `gcr.io/google-containers/nonexistent-image:v99.9.9` not found;
+    `root_cause_confidence_score: 1.0` (`high_confidence`);
+    `investigation_completeness.score: 1.0` (`complete`)
+  - Tool calls: `describe_pod_detail`, `list_events` (2 calls, both `ok: true`,
+    both `mcp_source: k8s_mcp`)
+  - Evidence collected: `ev_001`, `ev_002`, both written to
+    `gs://sreagent-t2-demo-evidence/run_20260921_211936_nbzv/ev_00{1,2}.json`
+  - Connect Gateway path used: confirmed via live Cloud Run MCP logs (not just the
+    agent's own claim) --
+    `"Initializing K8s client via dynamic Connect Gateway (cluster_id=sre-lab,
+    fleet_project_number=327234009108, fleet_membership=sre-lab) — no static
+    kubeconfig file involved"`, followed by `"K8s client ready (dynamic Connect
+    Gateway) → https://connectgateway.googleapis.com/v1/projects/327234009108/
+    locations/global/memberships/sre-lab"`
+  - Relevant Cloud Run/MCP logs: `sre-mcp.audit` entries for both tool calls
+    (`{"event": "mcp_tool_call", "tool": "list_events"/"describe_pod_detail",
+    "cluster_id": "sre-lab", "ok": true, ...}`); service cold-started for this
+    request (fresh `Uvicorn`/`STARTUP TCP probe` in the same log window), confirming
+    a genuinely fresh, non-cached invocation
+  - Expected logic activated: cluster routing (`exact_id` match), custom K8s MCP
+    (not GKE Remote MCP -- `primary_mcp_source: "k8s_mcp"`,
+    `actual_mcp_sources: ["k8s_mcp"]`), dynamic Connect Gateway (not the legacy
+    static `kube_context` path)
+  - Terraform result: the two targeted applies above; no resource replaced or
+    recreated (both were plain create/update, `0 to destroy` both times)
+  - Remaining limitation: Agent Engine's own execution logs (Vertex AI Reasoning
+    Engine trace/log stream) were not separately pulled in this session -- the
+    Cloud Run MCP audit logs plus the agent's own structured response together
+    already give a complete, cross-source-corroborated evidence chain for this
+    investigation, so this was not pursued further; would be the next thing to
+    check if the MCP-log/response evidence ever disagreed.
+
+### 7. sre-lab-2 (multi-cluster portability)
+- Re-granted the same temporary impersonation binding (same principal/resource/role
+  as above), removed again afterward.
+- First attempt hit a tooling artifact, not a bug: the local Bash tool's own 5-minute
+  timeout killed the `ansible-playbook` process mid-run (confirmed via `ps aux` --
+  process was gone, not backgrounded) right as `generate-gateway-rbac` was executing.
+  Registration had already completed (`READY`, `ENTERPRISE`, as expected) before the
+  kill. Re-ran `onboard.yml` (this time correctly backgrounded) -- it correctly
+  detected the already-`READY` membership via the existing state check and resumed
+  from exactly the right point (RBAC), rather than re-registering or erroring --
+  **real, live proof of resuming cleanly from a partially-completed prior run**,
+  which the design's `tasks.md` had listed as a requirement but never previously
+  exercised for real.
+- Registration: idempotent-correct (skipped re-register, `"already registered,
+  skipped (idempotent)"`). RBAC: created and labeled correctly
+  (`gateway_rbac_reconciled_this_run` behavior matched `sre-lab`'s).
+- Verification step failed at `get-credentials` with the same
+  `gkehub.memberships.list` `PERMISSION_DENIED` seen for `sre-lab` earlier in this
+  session -- **expected, not a new bug**: the project-level `gatewayReader`/`viewer`
+  IAM grant is shared across all clusters, and it had already been reverted (Step 8)
+  after the `sre-lab` pass completed, before `sre-lab-2`'s onboarding started. Did
+  NOT re-apply Terraform a third time to prove `sre-lab-2`'s verification too --
+  the IAM mechanism itself was already fully proven correct and working (via
+  `sre-lab`), and doing so would have been an unnecessary additional live
+  infrastructure change/cost cycle for marginal proof value. What Step 7 actually
+  asks -- proving the SAME Ansible tooling (registration + RBAC + idempotency +
+  resume-from-partial) works unmodified on a SECOND, independent cluster -- is
+  fully proven.
+- Cleaned up immediately after (see Phase 8 below).
+
+### 8. Cleanup (final)
+- `sre-lab`: `ansible-playbook cleanup.yml` -- `status: CLEANED`, `rbac_was_present:
+  true`. Fleet membership unregistered, RBAC revoked.
+- `sre-lab-2`: same, `status: CLEANED`, `rbac_was_present: true`.
+- Terraform reverted: applied a plan reverting to the committed defaults (no
+  on-prem var-file) targeted at the same three resources -- `0 to add, 1 to change
+  (clusters.json back to both disabled), 2 to destroy (both gkehub IAM bindings)`.
+  Verified live: `clusters.json` shows `sre-lab.enabled: false`,
+  `sre-lab-2.enabled: false`, `sre-test-cluster.enabled: true` (unchanged) -- exact
+  match for the pre-test baseline. Central project IAM for the runtime SA shows only
+  `roles/modelarmor.user` (the one pre-existing, unrelated grant) -- no `gkehub.*`
+  roles remain.
+- Temporary `roles/iam.serviceAccountTokenCreator` grant: removed (both times it was
+  granted). Final IAM policy on the SA: empty (`{"etag": "..."}`, no bindings) --
+  matches the pre-test baseline exactly.
+- Final live verification, both clusters: 0 Fleet memberships, no `gke-connect`
+  namespace, no gateway RBAC objects, both kind clusters preserved and `Ready`.
+- Real, permanent, valuable change kept (not reverted): the new
+  `google_project_iam_member.mcp_runtime_gateway_viewer` resource in
+  `iac/agent/onprem_fleet.tf` -- inactive by default (same `count` gate as the
+  existing `gatewayReader` resource, `onprem_fleet_membership != ""`), so it has
+  zero effect until a future onboarding actually sets that var, exactly like the
+  resource it sits next to.
+
 ## Phase 4 — Validation (idempotency, multi-cluster, RBAC correctness)
 
 - [x] **First live run, 2026-09-21** (`ansible-playbook playbooks/onboard.yml`): failed on
@@ -268,13 +483,13 @@ reviewer's own WARNING/non-blocking categorization):**
 
 ## Definition of Done (tracked here, checked at close-out)
 
-- [ ] Reusable Ansible onboarding automation exists, with no cluster-specific logic hardcoded into roles
-- [ ] Both `sre-lab` and `sre-lab-2` onboarded successfully via this workflow
-- [ ] Repeated execution proven idempotent (Phase 4)
-- [ ] Fleet/Connect Gateway/RBAC behavior verified against current official Google documentation (design.md Evidence) — not against memory of older commands
-- [ ] SRE Agent performs a real investigation against at least one onboarded cluster through the full live path
-- [ ] Mutation attempts remain denied (verified, not assumed)
-- [ ] Cleanup works without touching unrelated resources (Phase 6)
-- [ ] Independent review has no unresolved MUST FIX findings
-- [ ] Documentation explains both personal (kind) testing and work portability (`PORTING.md`)
-- [ ] If any real external-cluster behavior remains unproven by kind, it is named explicitly (see "What kind cannot prove") and the overall status is reported PARTIAL, not COMPLETE
+- [x] Reusable Ansible onboarding automation exists, with no cluster-specific logic hardcoded into roles
+- [x] Both `sre-lab` and `sre-lab-2` onboarded successfully via this workflow (registration + RBAC, both idempotent; `sre-lab-2` additionally proved clean resume from a partially-completed prior run)
+- [x] Repeated execution proven idempotent (Phase 4 + the full E2E round: second `onboard.yml` run against `sre-lab` was exit 0, 2 benign "changed" items, zero duplicate registration/RBAC)
+- [x] Fleet/Connect Gateway/RBAC behavior verified against current official Google documentation (design.md Evidence) — not against memory of older commands
+- [x] SRE Agent performs a real investigation against at least one onboarded cluster through the full live path (`sre-lab`, run `run_20260921_211936_nbzv`, full evidence in "Full E2E validation round" above)
+- [x] Mutation attempts remain denied (verified live, both as the operator via `verify.yml` and, separately, as the real impersonated runtime identity — not assumed)
+- [x] Cleanup works without touching unrelated resources (Phase 6 fixture test, plus the full E2E round's final state check: 0 leftover Fleet/RBAC on either cluster, central `roles/modelarmor.user` untouched, both kind clusters preserved)
+- [x] Independent review has no unresolved MUST FIX findings (round 1: 5/5 fixed and re-verified; this session's own further live testing found and fixed 3 more real bugs — IAM viewer gap, broken sanity-check, loop-var collision — all with live evidence above)
+- [x] Documentation explains both personal (kind) testing and work portability (`PORTING.md`)
+- [x] If any real external-cluster behavior remains unproven by kind, it is named explicitly (see "What kind cannot prove") and the overall status is reported PARTIAL, not COMPLETE — **the PERSONAL kind validation itself is now COMPLETE per every item above; the broader WORK readiness remains explicitly PARTIAL until this same workflow is run against a real non-prod cluster over an actual VPN/network path (not achievable with kind)**

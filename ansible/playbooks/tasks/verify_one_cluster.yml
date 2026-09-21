@@ -1,20 +1,29 @@
 ---
-- name: "Verify {{ item.name }}, isolated from other clusters' failures"
+# Uses `cluster` (the outer loop's loop_var, set in playbooks/verify.yml) --
+# NOT a `vars: cluster: "{{ item }}"` re-binding. Fixed 2026-09-21 after a
+# real live failure: that re-binding is a lazy template, and the role's own
+# internal loops (e.g. the pods/deployments/events loop in verify.yml) reuse
+# Ansible's default `item` loop var, which then SHADOWS the outer `item` this
+# re-binding depended on -- `cluster` silently became the string "pods"
+# partway through, and `cluster.name` failed with "'str' object has no
+# attribute 'name'". Never surfaced before because earlier failures (missing
+# gke-gcloud-auth-plugin, missing IAM) always aborted before this loop was
+# ever reached. Matches onboard.yml's already-correct `loop_var: cluster`
+# pattern, which never had this problem.
+- name: "Verify {{ cluster.name }}, isolated from other clusters' failures"
   block:
-    - name: "Verify {{ item.name }}"
-      vars:
-        cluster: "{{ item }}"
+    - name: "Verify {{ cluster.name }}"
       ansible.builtin.include_role:
         name: onprem_cluster_onboarding
         tasks_from: verify
 
-    - name: "Record PASS for {{ item.name }}"
+    - name: "Record PASS for {{ cluster.name }}"
       ansible.builtin.set_fact:
-        onboarding_results: "{{ onboarding_results + [{'cluster': item.name, 'status': 'PASS'}] }}"
+        onboarding_results: "{{ onboarding_results + [{'cluster': cluster.name, 'status': 'PASS'}] }}"
 
   rescue:
-    - name: "Record FAIL for {{ item.name }}"
+    - name: "Record FAIL for {{ cluster.name }}"
       ansible.builtin.set_fact:
         onboarding_results: >-
-          {{ onboarding_results + [{'cluster': item.name, 'status': 'FAIL',
+          {{ onboarding_results + [{'cluster': cluster.name, 'status': 'FAIL',
              'error': (ansible_failed_result.msg | default('unknown'))}] }}

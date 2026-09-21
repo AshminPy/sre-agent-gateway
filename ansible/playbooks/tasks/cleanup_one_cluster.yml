@@ -14,7 +14,7 @@
 # ownership-safety stakes -- our own leftover K8s RBAC objects, by contrast, we
 # always want cleaned regardless of the membership's current state.
 
-- name: "Clean up {{ item.name }}, isolated from other clusters' failures"
+- name: "Clean up {{ cluster.name }}, isolated from other clusters' failures"
   block:
     # Ownership check BEFORE revoking (independent review finding, iam-reviewer,
     # 2026-09-21): generate-gateway-rbac --revoke matches by --users/--role, not
@@ -25,11 +25,11 @@
     # "name/role/user match" anti-pattern this file's own header disclaims.
     # Reuses the identical label query rbac.yml's idempotency check already
     # uses, so "do we own this" is answered the same way in both directions.
-    - name: "{{ item.name }}: check for a workflow-owned gateway RBAC binding before revoking"
+    - name: "{{ cluster.name }}: check for a workflow-owned gateway RBAC binding before revoking"
       ansible.builtin.command:
         argv:
           - kubectl
-          - --context={{ item.kube_context }}
+          - --context={{ cluster.kube_context }}
           - get
           - clusterrolebinding
           - -l
@@ -39,7 +39,7 @@
       register: _owned_gateway_rbac
       changed_when: false
 
-    - name: "{{ item.name }}: revoke gateway RBAC only if this workflow owns it"
+    - name: "{{ cluster.name }}: revoke gateway RBAC only if this workflow owns it"
       when: (_owned_gateway_rbac.stdout | from_json)['items'] | length > 0
       ansible.builtin.command:
         argv:
@@ -48,11 +48,11 @@
           - fleet
           - memberships
           - generate-gateway-rbac
-          - --project={{ item.fleet_project_id }}
-          - --membership={{ item.fleet_membership | default(item.name) }}
+          - --project={{ cluster.fleet_project_id }}
+          - --membership={{ cluster.fleet_membership | default(cluster.name) }}
           - --users={{ runtime_identity }}
-          - --role={{ item.rbac_role | default('clusterrole/view') }}
-          - --context={{ item.kube_context }}
+          - --role={{ cluster.rbac_role | default('clusterrole/view') }}
+          - --context={{ cluster.kube_context }}
           - --kubeconfig={{ kubeconfig_path }}
           - --revoke
           - --quiet
@@ -65,11 +65,11 @@
       # errors), which then got silently recorded as CLEANED below. A real
       # failure here must propagate to the rescue block like everywhere else.
 
-    - name: "{{ item.name }}: delete workflow-labeled supplemental node-read RBAC (tolerant of already-absent)"
+    - name: "{{ cluster.name }}: delete workflow-labeled supplemental node-read RBAC (tolerant of already-absent)"
       ansible.builtin.command:
         argv:
           - kubectl
-          - --context={{ item.kube_context }}
+          - --context={{ cluster.kube_context }}
           - delete
           - clusterrole,clusterrolebinding
           - -l
@@ -78,11 +78,11 @@
       register: _node_rbac_delete
       changed_when: "'deleted' in _node_rbac_delete.stdout"
 
-    - name: "{{ item.name }}: record whether RBAC actually needed/received cleanup"
+    - name: "{{ cluster.name }}: record whether RBAC actually needed/received cleanup"
       ansible.builtin.set_fact:
         _rbac_was_present: "{{ ((_owned_gateway_rbac.stdout | from_json)['items'] | length > 0) or ('deleted' in _node_rbac_delete.stdout) }}"
 
-    - name: "{{ item.name }}: check Fleet membership ownership label before touching the membership itself"
+    - name: "{{ cluster.name }}: check Fleet membership ownership label before touching the membership itself"
       ansible.builtin.command:
         argv:
           - "{{ gcloud_bin | default('gcloud') }}"
@@ -90,14 +90,14 @@
           - fleet
           - memberships
           - describe
-          - "{{ item.fleet_membership | default(item.name) }}"
-          - --project={{ item.fleet_project_id }}
+          - "{{ cluster.fleet_membership | default(cluster.name) }}"
+          - --project={{ cluster.fleet_project_id }}
           - --format=json
       register: _membership_check
       changed_when: false
       failed_when: false
 
-    - name: "{{ item.name }}: parse membership labels (empty dict if membership absent)"
+    - name: "{{ cluster.name }}: parse membership labels (empty dict if membership absent)"
       ansible.builtin.set_fact:
         # default({}, true) -- the second arg matters: a real API response
         # can return an explicit `"labels": null` for a membership with no
@@ -110,10 +110,10 @@
              if _membership_check.rc == 0 else {} }}
         _sanitized_label_key: "{{ onboarded_by_label_key | regex_replace('[^a-z0-9-]', '-') }}"
 
-    - name: "{{ item.name }}: unregister the Fleet membership only if this workflow owns it"
+    - name: "{{ cluster.name }}: unregister the Fleet membership only if this workflow owns it"
       when: _membership_labels.get(_sanitized_label_key, '') == onboarded_by_label_value
       block:
-        - name: "{{ item.name }}: unregister the Fleet membership"
+        - name: "{{ cluster.name }}: unregister the Fleet membership"
           ansible.builtin.command:
             argv:
               - "{{ gcloud_bin | default('gcloud') }}"
@@ -121,45 +121,45 @@
               - fleet
               - memberships
               - unregister
-              - "{{ item.fleet_membership | default(item.name) }}"
-              - --project={{ item.fleet_project_id }}
-              - --context={{ item.kube_context }}
+              - "{{ cluster.fleet_membership | default(cluster.name) }}"
+              - --project={{ cluster.fleet_project_id }}
+              - --context={{ cluster.kube_context }}
               - --kubeconfig={{ kubeconfig_path }}
               - --quiet
           changed_when: true
 
-        - name: "{{ item.name }}: record cleaned"
+        - name: "{{ cluster.name }}: record cleaned"
           ansible.builtin.set_fact:
             cleanup_results: >-
-              {{ cleanup_results + [{'cluster': item.name, 'status': 'CLEANED',
+              {{ cleanup_results + [{'cluster': cluster.name, 'status': 'CLEANED',
                  'rbac_was_present': _rbac_was_present}] }}
 
-    - name: "{{ item.name }}: record membership state when not unregistered by this run"
+    - name: "{{ cluster.name }}: record membership state when not unregistered by this run"
       when: not (_membership_labels.get(_sanitized_label_key, '') == onboarded_by_label_value)
       block:
-        - name: "{{ item.name }}: record skipped"
+        - name: "{{ cluster.name }}: record skipped"
           ansible.builtin.set_fact:
             cleanup_results: >-
-              {{ cleanup_results + [{'cluster': item.name, 'status':
+              {{ cleanup_results + [{'cluster': cluster.name, 'status':
                  ('ALREADY_ABSENT' if _membership_check.rc != 0 else 'SKIPPED_NOT_OWNED'),
                  'rbac_was_present': _rbac_was_present}] }}
 
-        - name: "{{ item.name }}: explain the skip"
+        - name: "{{ cluster.name }}: explain the skip"
           ansible.builtin.debug:
             msg: >-
-              {{ 'No Fleet membership found for ' + item.name + ' -- RBAC cleanup
+              {{ 'No Fleet membership found for ' + cluster.name + ' -- RBAC cleanup
                  above still ran (and was tolerant if there was nothing to clean);
                  nothing further to do.'
                  if _membership_check.rc != 0 else
-                 'Fleet membership for ' + item.name + ' exists but is NOT labeled as
+                 'Fleet membership for ' + cluster.name + ' exists but is NOT labeled as
                  created by this workflow (correction #3) -- the MEMBERSHIP is left
                  untouched. RBAC cleanup above still ran, since RBAC and Fleet
                  membership lifecycles are independent. If this membership should be
                  managed by this workflow going forward, that is a deliberate
                  adoption decision, not something cleanup does implicitly.' }}
   rescue:
-    - name: "{{ item.name }}: record cleanup failure"
+    - name: "{{ cluster.name }}: record cleanup failure"
       ansible.builtin.set_fact:
         cleanup_results: >-
-          {{ cleanup_results + [{'cluster': item.name, 'status': 'FAIL',
+          {{ cleanup_results + [{'cluster': cluster.name, 'status': 'FAIL',
              'error': (ansible_failed_result.msg | default('unknown'))}] }}

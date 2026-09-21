@@ -79,24 +79,17 @@
           - --project={{ cluster.fleet_project_id }}
       changed_when: true
 
-    - name: "{{ cluster.name }}: sanity-check impersonated access, with a specific diagnosis if it fails"
-      ansible.builtin.command:
-        argv: [kubectl, "--context={{ _gw_context }}", auth, can-i, get, pods]
-      register: _impersonation_sanity
-      changed_when: false
-      failed_when: false
-      when: _can_impersonate
-
-    - name: "{{ cluster.name }}: fail with a specific diagnosis if impersonation itself is not authorized"
-      ansible.builtin.fail:
-        msg: >-
-          Verification cannot proceed for '{{ cluster.name }}': the identity
-          running this playbook is not authorized to impersonate
-          '{{ runtime_identity }}' (needs roles/iam.serviceAccountTokenCreator on
-          that service account -- an IAM grant outside this role's own scope,
-          make it explicitly if you want live verification as the real runtime
-          identity). stderr: {{ _impersonation_sanity.stderr }}
-      when: _can_impersonate and 'yes' not in (_impersonation_sanity.stdout | default(''))
+    # No separate `kubectl auth can-i` sanity check here -- removed after a
+    # real live failure (2026-09-21): `auth can-i` itself requires `create` on
+    # `selfsubjectaccessreviews.authorization.k8s.io`, which a deliberately
+    # read-only identity does not have and should not need (this cluster has
+    # no default "every authenticated user can self-review" binding, unlike
+    # GKE's built-in system:public-info-viewer-style convenience grant). That
+    # made the sanity check itself fail with a misleading "impersonation not
+    # authorized" diagnosis even after the real IAM grant was in place -- the
+    # actual allowed-read calls below are both the real proof AND a perfectly
+    # good diagnostic on their own; their failure message already surfaces
+    # the real stderr.
 
     - name: "{{ cluster.name }}: real allowed read calls through Connect Gateway"
       ansible.builtin.command:
@@ -119,7 +112,11 @@
         msg: >-
           Verification failed for '{{ cluster.name }}': expected read
           `kubectl get {{ item.item }} -A` to succeed through Connect Gateway, got
-          rc={{ item.rc }}: {{ item.stderr }}
+          rc={{ item.rc }}: {{ item.stderr }}{{
+            ' -- if impersonating, check roles/iam.serviceAccountTokenCreator
+            on ' + runtime_identity + ' for the identity running this playbook,
+            and roles/gkehub.gatewayReader + roles/gkehub.viewer on
+            ' + runtime_identity + ' itself.' if _can_impersonate else '' }}
       loop: "{{ _allowed_reads.results }}"
       when: item.rc != 0
 

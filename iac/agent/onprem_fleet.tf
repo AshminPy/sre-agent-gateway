@@ -35,3 +35,26 @@ resource "google_project_iam_member" "mcp_runtime_gateway_reader" {
   role    = "roles/gkehub.gatewayReader" # read-only: gateway.generateCredentials, gateway.get, memberships.get — no gatewayAdmin/Editor
   member  = "serviceAccount:${google_service_account.mcp_runtime[0].email}"
 }
+
+# Added 2026-09-21, live-verified need: `gatewayReader` alone is sufficient
+# for the actual production path — mcp/server.py builds the Connect Gateway
+# REST URL directly with a plain ADC bearer token, confirmed live (HTTP 200
+# reading real pods on sre-lab, impersonating this exact SA, with only
+# gatewayReader granted). But `gcloud container fleet memberships
+# get-credentials` — the CLI mechanism operator tooling and
+# ansible/roles/onprem_cluster_onboarding/tasks/verify.yml use to mint a
+# kubectl context — additionally requires `gkehub.memberships.list`, which
+# `gatewayReader` does not grant (confirmed live:
+# PERMISSION_DENIED: Permission 'gkehub.memberships.list' denied, while
+# impersonating this SA with only gatewayReader). `roles/gkehub.viewer` adds
+# exactly that: membership list/get metadata, nothing write-capable. Granting
+# it lets operator/CI tooling debug as this identity without expanding what
+# the identity can actually DO once inside a cluster (unchanged: K8s-side
+# RBAC is the only thing that controls that).
+resource "google_project_iam_member" "mcp_runtime_gateway_viewer" {
+  count = var.enable_custom_mcp && var.onprem_fleet_membership != "" ? 1 : 0
+
+  project = var.project_a_id
+  role    = "roles/gkehub.viewer" # read-only: membership list/get metadata only, required by `get-credentials`
+  member  = "serviceAccount:${google_service_account.mcp_runtime[0].email}"
+}
