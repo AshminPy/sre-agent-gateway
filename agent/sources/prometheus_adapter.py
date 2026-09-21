@@ -80,10 +80,17 @@ def query_range(cluster_id: str, promql: str, start_ts: float, end_ts: float, st
             f"max_window_seconds={max_window}s"
         )
 
-    endpoint = os.environ.get(entry.get("endpoint_env", "PROMETHEUS_URL"), "").strip()
+    # Copilot review finding on the app-infra port (confirmed real, 2026-09-10): the
+    # read below correctly falls back to "PROMETHEUS_URL" when endpoint_env isn't
+    # set, but the error message used to call entry.get("endpoint_env") a SECOND
+    # time without that same default -- producing a misleading "(None is unset)"
+    # instead of naming the real env var that was actually checked. Resolve the
+    # name once, reuse it.
+    endpoint_env = entry.get("endpoint_env", "PROMETHEUS_URL")
+    endpoint = os.environ.get(endpoint_env, "").strip()
     if not endpoint:
         raise PrometheusQueryError(
-            f"no Prometheus endpoint configured ({entry.get('endpoint_env')} is unset)"
+            f"no Prometheus endpoint configured ({endpoint_env} is unset)"
         )
 
     collection_time = time.time()
