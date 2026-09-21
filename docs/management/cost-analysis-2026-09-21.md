@@ -92,6 +92,69 @@
 > savings than anything identified in the original modeled analysis, and it doesn't touch the
 > agent/cluster/RBAC work already scoped in `openspec/changes/environment-lifecycle-iac/`.
 
+---
+
+## THIRD ENTRY (2026-09-21, same day) — Fleet fix executed live + standing idle-cost rule adopted
+
+**Fleet fix executed, not just planned.** Both `sre-lab` and `sre-lab-2` fleet memberships
+unregistered live (`gcloud container fleet memberships unregister`, gateway RBAC revoked first).
+Verified via `gcloud container fleet memberships list --project=sreagent-t2-demo` → **0 items**.
+`iac/agent/variables.tf`'s `additional_clusters` entries set to `enabled = false` (every other
+field left intact for a one-line recreate), applied scoped to exactly the 2 affected resources
+(`google_storage_bucket_object.clusters_json`, `google_project_iam_member.mcp_runtime_gateway_reader`
+destroyed as correct least-privilege cleanup). Live-verified in the bucket object post-apply.
+GitHub Actions repo variable `ONPREM_FLEET_MEMBERSHIP` (was `sre-lab`) cleared so CI doesn't
+silently re-create the destroyed IAM grant. Local `kind` clusters left running untouched — zero
+GCP cost either way, and recreating later is a documented, already-proven runbook
+(`docs/connect-gateway-onprem.md`), not a from-zero rebuild. Merged: PR #254.
+
+**Test pod check (user request):** live-verified via `kubectl get pods -A` against
+`sre-test-cluster` — **0 nodes provisioned, all 20 pods are `kube-system`/`gke-gmp-system`
+managed system pods, all stuck `Pending`, zero test/demo workloads running.** Nothing to remove
+here; the cluster is already at zero compute cost.
+
+**Second idle-cost resource found and removed: Cloud NAT + router + reserved external IP
+(Project B, `sreagent-demo`).**
+- `sre-agent-router` (created 2026-05-11) + NAT `sre-agent-nat` (`ALL_SUBNETWORKS_ALL_IP_RANGES`,
+  PREMIUM tier) + one auto-allocated external IP (`35.232.117.155`, `IN_USE` by the router) —
+  all in network `sre-agent-vpc`, region `us-central1`. **Not Terraform-managed** (absent from
+  `iac/gke-access` state, same as the cluster itself before this session).
+- Confirmed via live checks before touching anything: `gcloud compute instances list` and
+  `gcloud compute forwarding-rules list` (project `sreagent-demo`) both return **0 items** — no
+  VM or load balancer in this VPC currently depends on this NAT for egress. Removing it affects
+  nothing live.
+- **Exact recreate commands** (documented before destroy, per the standing rule below):
+  ```
+  gcloud compute routers create sre-agent-router \
+    --project=sreagent-demo --region=us-central1 --network=sre-agent-vpc
+
+  gcloud compute routers nats create sre-agent-nat \
+    --router=sre-agent-router --project=sreagent-demo --region=us-central1 \
+    --auto-allocate-nat-external-ips \
+    --nat-all-subnet-ip-ranges \
+    --network-tier=PREMIUM
+  ```
+  (The external IP is `AUTO_ONLY` allocation — GCP creates and releases it automatically with
+  the NAT; no separate `gcloud compute addresses` command needed to recreate it.)
+- **Removal commands, in order** (NAT first, then the router that hosts it):
+  ```
+  gcloud compute routers nats delete sre-agent-nat --router=sre-agent-router \
+    --project=sreagent-demo --region=us-central1 --quiet
+
+  gcloud compute routers delete sre-agent-router \
+    --project=sreagent-demo --region=us-central1 --quiet
+  ```
+- **Verification after removal:** `gcloud compute routers list --project=sreagent-demo` → 0
+  items; `gcloud compute addresses list --project=sreagent-demo` → 0 items (confirms the
+  auto-allocated IP was released automatically, as expected for `AUTO_ONLY` allocation).
+
+**Standing rule adopted this session, saved to memory
+(`feedback-personal-gcp-idle-cost-teardown-rule.md`), applies to every personal GCP project going
+forward, not just this one:** for any resource that costs money while idle, verify the exact
+recreate steps FIRST, then destroy, then document every step (what was found, exact removal
+commands, exact recreate commands, before/after live verification). A recurring habit, not a
+one-time cleanup — check for this on every future session touching this environment.
+
 
 **Scope:** Read-only cost investigation. No resources changed. Covers both live GCP projects
 on billing account `billingAccounts/0138AB-1B1BE5-05AFF5` (currency CAD):
