@@ -16,13 +16,28 @@ node_read_verbs:
   - get
   - list
 
-# Fleet Membership `clusterTier` is an output-only field (no register-time flag sets it --
-# verified against the current Membership REST reference, 2026-09-21). This role can only
-# detect and roll back an unexpected tier, not prevent it via a flag. Historical incident:
-# commit cc9dbe0, both prior memberships landed on ENTERPRISE (~$216/month combined).
-acceptable_cluster_tiers:
-  - "STANDARD"
-  - "CLUSTER_TIER_UNSPECIFIED"
+# Cost safety gate -- CORRECTED 2026-09-22 after independently verifying current
+# Google documentation. The original design treated Fleet Membership `clusterTier ==
+# ENTERPRISE` as proof of billing and auto-unregistered on it. That was the wrong
+# signal: GKE no longer has separate Standard/Enterprise commercial editions (a
+# current Google doc states GKE is now a single offering with no tiers), so
+# `clusterTier` is legacy metadata the API can still return -- its value alone does
+# not prove a cluster is or isn't billed. The actual documented cost driver is
+# registering a THIRD-PARTY/non-GKE cluster into a Fleet at all: current GKE pricing
+# lists GKE Multicloud Attached Clusters at a per-vCPU/hour charge, and a current
+# Google doc states third-party clusters registered to a Fleet "will incur a
+# per-vCPU charge as part of your GKE pricing" -- independent of what clusterTier
+# later reports. Every cluster this role manages is non-GKE by definition (this is
+# the on-prem/third-party onboarding role), so the gate below applies to all of them.
+#
+# This variable therefore represents EXPLICIT ACCEPTANCE of that documented,
+# potentially-billable registration -- not a tier check. Default false: registering
+# a new cluster fails loudly, before any Fleet mutation, until a human sets this
+# true for that specific cluster (or, once a team has explicitly approved it, for
+# a whole inventory/group -- see ansible/PORTING.md). `clusterTier` is still
+# recorded as informational evidence (report.yml's `observed_tier`) -- it is no
+# longer the safety decision.
+allow_billable_external_cluster: false
 
 # Ownership signal for objects this workflow creates. A LABEL, not an annotation --
 # `kubectl -l` selectors only match labels, and cleanup.yml selects by this.

@@ -481,6 +481,121 @@ for `sre-lab-2`. All steps below are real, live, evidence-backed — not simulat
 - [ ] `ansible-lint`/`yamllint` clean
 - [ ] Full Groundwork completion block filed in the PR description, with `Overall: PARTIAL` unless the real non-prod work-cluster validation (see "What kind cannot prove") has also actually run — do not claim COMPLETE or work-ready from kind alone
 
+## Cost-safety correction, 2026-09-22 — user independently verified current Google docs
+
+The user independently re-verified current Google documentation and found a real flaw
+in the original Fleet-tier safety design: it treated `clusterTier == ENTERPRISE` as
+proof of billing and auto-unregistered on it. That was the wrong signal — see
+`design.md`'s corrected DECISION record (search "CORRECTED 2026-09-22") for the full
+evidence and reasoning. Summary: GKE no longer has separate Standard/Enterprise
+commercial editions (current doc), so `clusterTier` is legacy, output-only metadata,
+not a billing signal; the actual documented cost driver is registering a
+third-party/non-GKE cluster into a Fleet at all (current GKE pricing lists GKE
+Multicloud Attached Clusters at a per-vCPU/hour charge), independent of what
+`clusterTier` reports.
+
+**Smallest safe change made:**
+- `ansible/roles/onprem_cluster_onboarding/defaults/main.yml`: replaced
+  `acceptable_cluster_tiers` (removed entirely) with `allow_billable_external_cluster`
+  (default `false`).
+- `ansible/roles/onprem_cluster_onboarding/tasks/fleet_register.yml`: added a
+  `fail` gate BEFORE any Fleet mutation, firing only when registration would create a
+  NEW membership and approval isn't explicitly set; removed the two tasks that
+  auto-unregistered and failed on `clusterTier != acceptable`; replaced with a single
+  informational `debug` task recording the observed tier.
+- `ansible/inventories/kind/group_vars/all.yml`: `allow_billable_external_cluster:
+  true` set ONLY on `sre-lab`'s entry; `sre-lab-2` deliberately left without it
+  (protected, per explicit instruction).
+- Docs corrected: `docs/runbooks/add-onprem-cluster.md`, `ansible/PORTING.md`
+  (work-team approval guidance added), `design.md` (correction DECISION record
+  appended, original not silently edited), `specs/onprem-cluster-onboarding/spec.md`
+  (the "Fleet tier safety" requirement rewritten as "Explicit cost approval before
+  registering a billable external cluster").
+- No unrelated refactoring — `preflight.yml`, `rbac.yml`, `verify.yml`,
+  `cleanup_one_cluster.yml`, `main.yml`, `report.yml` untouched.
+
+**Tests run before live validation:**
+1. **Cost approval false** — live, not mocked (safe: `sre-lab` had zero Fleet state
+   at the time). Ran `onboard.yml` against `sre-lab` with `allow_billable_external_
+   cluster` unset. Failed exactly at `"sre-lab: require explicit cost approval before
+   registering a new billable external cluster"`. Confirmed zero Fleet mutation:
+   `gcloud container fleet memberships list` → 0 items throughout; no `register`
+   command ever appears in the log.
+2. **Cost approval true + `clusterTier: ENTERPRISE`** — proven via the live
+   validation below (not a separate mock): registration continued, `clusterTier:
+   ENTERPRISE` was recorded as informational evidence only
+   (`"registration was already explicitly approved via allow_billable_external_
+   cluster, so no action is taken based on this value alone"`), and the membership
+   was NOT unregistered. Additionally confirmed structurally: `grep -n unregister
+   fleet_register.yml` finds no `unregister` task anywhere in the file (only the
+   explanatory comment) — the dangerous code path doesn't exist to fire.
+3. **Idempotency** — unaffected files; not re-tested from scratch (per "no
+   unrelated refactoring") but exercised for real during the live validation
+   (re-describe state check correctly short-circuited `_would_register` logic).
+4. **Ownership-safe cleanup** — unaffected files; exercised for real during the
+   live validation's Step 8 cleanup (see below), same ownership-label logic as
+   before.
+5. **Allowed/denied RBAC verification** — unaffected files; exercised for real
+   during the live validation, passed with `EXIT 0`.
+
+**Live validation, `sre-lab` only (2026-09-22, personal project only, `sre-lab-2`
+never touched):**
+- Temporary IAM: `roles/iam.serviceAccountTokenCreator` granted to
+  `user:ashmin.sub@gmail.com` on `sre-k8s-mcp-runtime@sreagent-t2-demo.iam.
+  gserviceaccount.com` (resource-scoped), removed again at the end. Confirmed
+  before/after: `{}` (no bindings) → 1 binding → `{}` again.
+- Registration: `gcloud container fleet memberships register sre-lab` succeeded,
+  `state.code: READY`, `clusterTier: ENTERPRISE` (recorded as evidence only, per
+  the corrected design).
+- Connect Agent: `gke-connect-agent-*` pods `2/2 Running` in the `gke-connect`
+  namespace.
+- RBAC: impersonation + `view` permission + supplemental `nodes: get,list` all
+  applied and labeled correctly (`"RBAC OK ... reconciled by this run"`).
+- Terraform: targeted apply (`google_project_iam_member.mcp_runtime_gateway_reader`,
+  `..._gateway_viewer`, `google_storage_bucket_object.clusters_json`) —
+  `Plan: 2 to add, 1 to change, 0 to destroy`, applied cleanly, no unrelated drift
+  touched (the same pre-existing CI-vs-local var gotcha from the prior session was
+  worked around the same way, not re-litigated here).
+- Runtime-identity verification: `ansible-playbook playbooks/verify.yml` against
+  `sre-lab` only — `EXIT 0`, `"Verification OK for 'sre-lab': pods/deployments/
+  events/nodes readable, namespace-create and secret-read correctly denied, tested
+  as sre-k8s-mcp-runtime@sreagent-t2-demo.iam.gserviceaccount.com."`
+- Real Agent Engine investigation: `python3 invoke_agent.py --scenario onprem
+  --verbose`. Run ID `run_20260922_022452_bate`. Target cluster confirmed `sre-lab`
+  (`cluster_routing_reason: "'sre-lab' matched a registered cluster id exactly."`).
+  MCP source confirmed `k8s_mcp` (custom MCP / Connect Gateway, not GKE Remote MCP).
+  Outcome `PROBABLE`, root-cause confidence `0.65 (review_required)`, investigation
+  completeness `0.80 (complete_with_gaps, missing kubernetes_events domain)` — lower
+  than the prior session's `CONFIRMED`/`1.0` result because the agent made only 1
+  tool call this run (real LLM run-to-run variance in how much evidence it gathers,
+  not a defect in the infrastructure path this task validates); root cause
+  identified (nonexistent image) was still correct. Corroborated independently via
+  Cloud Run MCP logs: `"Initializing K8s client via dynamic Connect Gateway
+  (cluster_id=sre-lab, fleet_project_number=327234009108, fleet_membership=sre-lab)
+  — no static kubeconfig file involved"`, real `mcp_tool_call` audit entry
+  (`describe_pod_detail`, `cluster_id: sre-lab`, `ok: true`).
+- Cleanup: `ansible-playbook playbooks/cleanup.yml` against `sre-lab` only —
+  `status: CLEANED`, `rbac_was_present: true`. Terraform reverted (`0 to add, 1 to
+  change, 2 to destroy` — both IAM grants removed, registry back to `enabled:
+  false`). Temporary IAM grant removed.
+- Final state verified identical to baseline: 0 Fleet memberships, empty IAM policy
+  on the SA, project IAM shows only the pre-existing `roles/modelarmor.user`, no
+  gateway RBAC on `sre-lab`, `clusters.json` shows both on-prem clusters `enabled:
+  false` again, both kind clusters (`sre-lab`, `sre-lab-2`) preserved and untouched.
+- `sre-lab-2`: never registered, never touched — confirmed protected by the new
+  gate (a real, live attempt during the same `onboard.yml` run failed at exactly
+  `"sre-lab-2: require explicit cost approval before registering a new billable
+  external cluster"`, proving the per-cluster approval design works correctly
+  across multiple clusters in one invocation, not just in isolation).
+
+**Remaining limitation**: the exact per-vCPU rate for third-party Fleet registration
+remains UNVERIFIED against the primary GKE pricing page directly (still not fully
+fetchable); the current, dated `creating-fleets` doc's plain-language statement
+remains the strongest available evidence. Whether `clusterTier` correlates with
+actual billing at all post-tier-retirement is still not resolved from documentation
+alone — which is exactly why the design no longer depends on that field. Broader
+WORK readiness remains PARTIAL, unchanged from before this correction.
+
 ## Definition of Done (tracked here, checked at close-out)
 
 - [x] Reusable Ansible onboarding automation exists, with no cluster-specific logic hardcoded into roles

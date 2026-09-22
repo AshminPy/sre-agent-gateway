@@ -169,6 +169,72 @@ UNCERTAINTY         **RESOLVED BY LIVE EVIDENCE, 2026-09-21 — updates the hypo
 ```
 
 ```
+DECISION            CORRECTED 2026-09-22 -- SUPERSEDES the DECISION and CONCLUSION
+                    above. Fleet-tier safety is now an explicit approval gate
+                    (`allow_billable_external_cluster`, default false, checked BEFORE
+                    any Fleet mutation), not a post-registration `clusterTier ==
+                    ENTERPRISE` check-and-unregister. `clusterTier` is now recorded
+                    as informational evidence only and never triggers an automatic
+                    unregister.
+EVIDENCE            The user independently re-verified current Google documentation
+                    and identified a flaw in the reasoning above: it treated
+                    `clusterTier == ENTERPRISE` as proof of billing, but a current
+                    Google doc (docs.cloud.google.com/kubernetes-engine/docs/concepts/
+                    gke-editions) states GKE no longer has separate Standard/Enterprise
+                    commercial editions at all -- `clusterTier` is legacy, output-only
+                    metadata the API can still return, and its value alone does not
+                    prove a cluster is billed. The actual documented cost driver,
+                    confirmed independently and consistent with the CONCLUSION above,
+                    is registering a THIRD-PARTY/non-GKE cluster into a Fleet at all
+                    (current GKE pricing lists GKE Multicloud Attached Clusters at a
+                    per-vCPU/hour charge; the same creating-fleets page cited above
+                    confirms this for third-party Fleet registration specifically) --
+                    independent of what `clusterTier` later reports.
+WHY                 The old design's safety boundary (detect ENTERPRISE, roll back)
+                    conflated two different things: a legacy metadata field, and the
+                    real, documented cost driver (the registration itself). Gating on
+                    the metadata field is both potentially over-broad (it could
+                    trigger on a value that no longer means anything, given the tier
+                    concept's retirement) and under-protective in spirit (it implies
+                    a cluster reporting `STANDARD`/`CLUSTER_TIER_UNSPECIFIED` would be
+                    "safe," when the actual cost driver -- third-party registration --
+                    applies regardless of tier). Gating on explicit, per-cluster human
+                    approval of "registering this non-GKE cluster is a documented,
+                    accepted cost" is the correct boundary: it matches what's actually
+                    documented, doesn't depend on interpreting a field whose meaning
+                    is now uncertain, and requires a deliberate decision rather than
+                    an automatic tier-based verdict.
+TRADEOFFS           The workflow can no longer detect, after the fact, whether a
+                    registration "should" have been cheaper -- it simply requires
+                    up-front acceptance that registering a non-GKE cluster is billed,
+                    which is the conservative, doc-grounded default. `clusterTier` is
+                    still captured as evidence (it may still correlate with real
+                    billing behavior even if its name is now legacy) -- just not
+                    acted upon automatically.
+VALIDATION METHOD   `ansible/roles/onprem_cluster_onboarding/tasks/fleet_register.yml`:
+                    a `fail` task fires before the `register` command whenever
+                    registration would create a new membership AND
+                    `allow_billable_external_cluster` is not explicitly true for that
+                    cluster -- zero Fleet mutation occurs in that case (live-verified,
+                    2026-09-22: ran against `sre-lab` with the approval unset, failed
+                    at exactly this task, `gcloud container fleet memberships list`
+                    confirmed 0 items throughout). When approval is true, the
+                    unregister-on-tier code path has been removed entirely (grep-
+                    confirmed: no `unregister` task exists in `fleet_register.yml`
+                    outside this comment) -- structurally guarantees a cluster is
+                    never rolled back based on `clusterTier` alone.
+UNCERTAINTY         Whether `clusterTier` correlates with actual billing at all
+                    post-tier-retirement remains genuinely unclear from documentation
+                    alone (the strongest available evidence is the creating-fleets
+                    page's plain statement about third-party registration, not a
+                    `clusterTier`-specific pricing statement) -- this is exactly why
+                    the design no longer depends on that field for its safety
+                    decision. The exact current per-vCPU rate remains UNVERIFIED
+                    against the primary GKE pricing page (still not fetchable in full
+                    in this session).
+```
+
+```
 DECISION            No service-account-key code path exists anywhere in this workflow.
                     Registration uses keyless Fleet Workload Identity only
                     (`--enable-workload-identity`, plus `--has-private-issuer` for a

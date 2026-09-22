@@ -71,7 +71,13 @@ external_clusters:
     environment: test
     rbac_role: clusterrole/view      # optional, this is the default
     grant_node_read: true            # optional, this is the default
+    allow_billable_external_cluster: true   # REQUIRED for a new registration -- see Cost note
 ```
+
+`allow_billable_external_cluster` defaults to `false` and has no effect on a
+cluster that's already registered (idempotent re-runs/`verify.yml` are never
+blocked by it) — it only gates a genuinely NEW Fleet registration. Set it
+per-cluster, explicitly, only once you've accepted the documented cost.
 
 `runtime_identity` (the SRE Agent's own service account — already IAM-granted, see
 Step 3) is set once, above `external_clusters`, and doesn't change per cluster:
@@ -93,19 +99,22 @@ ansible-playbook playbooks/onboard.yml
 This does, per cluster, in order — all idempotent, safe to re-run:
 1. Preflight (kube-context reachable, cluster-admin confirmed, required GCP APIs
    enabled, keyless-registration prerequisites checked)
-2. Fleet registration (`gcloud container fleet memberships register`, keyless WIF)
-3. **Mandatory tier check** — if the resulting Fleet membership lands on `ENTERPRISE`
-   tier (there is no flag to request `STANDARD` — confirmed against current docs and
-   live behavior), the run fails loudly and **automatically unregisters** the
-   membership. This is the exact safety net that didn't exist before commit `cc9dbe0`'s
-   real cost incident. If you hit this, see [Cost note](#cost-note) below before
-   deciding how to proceed — it is not a bug in the playbook.
-4. RBAC: impersonation + `view` permission (Google's own `generate-gateway-rbac`
+2. **Mandatory cost-approval gate** — if this cluster isn't already registered, and
+   `allow_billable_external_cluster` isn't explicitly `true` for it (inventory,
+   default `false`), the run **fails loudly here, before any Fleet mutation at
+   all**. See [Cost note](#cost-note) below for why this is the gate now, instead of
+   the old (incorrect) "unregister if `ENTERPRISE`" logic.
+3. Fleet registration (`gcloud container fleet memberships register`, keyless WIF)
+   — only reached once the gate above has passed
+4. `clusterTier` is read back and recorded as **informational evidence only** — no
+   action is taken based on its value; a cluster is never unregistered just because
+   it reports `ENTERPRISE`
+5. RBAC: impersonation + `view` permission (Google's own `generate-gateway-rbac`
    helper), plus a narrow supplemental grant for `nodes: get,list` (the MCP tool suite
    calls `list_node`/`read_node`; `view` alone doesn't cover cluster-scoped `nodes` —
    this was a real, documented parity gap, now closed for every cluster onboarded
    through this workflow)
-5. Verification: real read calls (`pods`, `deployments`, `events`, `nodes`) and real
+6. Verification: real read calls (`pods`, `deployments`, `events`, `nodes`) and real
    denied calls (`create namespace`, `delete pod`, `get secrets`) through Connect
    Gateway, **as the real runtime identity** (impersonated), not just your own
    operator access
@@ -225,16 +234,30 @@ If you also flipped the Terraform registry entry (Step 3) for testing only, reve
 the same way — apply again without the on-prem overrides (falls back to the committed
 `enabled = false` default), or explicitly set `enabled = false` again.
 
-## Cost note
+## Cost note (corrected 2026-09-22)
 
-Registering a non-GKE cluster's Fleet membership currently, unavoidably, lands on
-`ENTERPRISE` tier (confirmed live and against current official docs — no flag exists
-to request `STANDARD`). This is billed (a current, dated GCP doc states third-party
-cluster registration "will incur a per-vCPU charge as part of your GKE pricing" — the
-September 2025 "free with GKE Standard" announcement does not cover this). The
-mandatory tier check (Step 2.3) exists specifically to catch this before it runs
-unnoticed for weeks like the original incident. Keep test registrations short —
-onboard, verify, test, clean up, in one sitting.
+**GKE no longer has separate Standard/Enterprise commercial editions** — current
+Google documentation states GKE is now a single offering with no tiers. Registering
+a non-GKE cluster's Fleet membership still, reproducibly, shows `clusterTier:
+ENTERPRISE` in `gcloud describe` output — but **that field alone is legacy metadata,
+not proof of billing**, and this workflow no longer treats it as one. The actual
+documented cost driver is registering a **third-party/non-GKE cluster into a Fleet
+at all**: current GKE pricing lists GKE Multicloud Attached Clusters at a per-vCPU/
+hour charge, and a current, dated GCP doc states third-party clusters registered to
+a Fleet "will incur a per-vCPU charge as part of your GKE pricing" — independent of
+what `clusterTier` later reports.
+
+**The safety gate is now explicit approval, not a tier check.** Every cluster this
+workflow onboards is non-GKE by definition, so registering a NEW one always requires
+`allow_billable_external_cluster: true` set for that specific cluster in inventory
+(default `false` — the playbook fails clearly, before any Fleet mutation, until you
+set it). `clusterTier` is still recorded as informational evidence in the run
+artifact, but a cluster is never auto-unregistered just because it reports
+`ENTERPRISE` — that was the old, incorrect logic (see
+`openspec/changes/onprem-cluster-ansible-onboarding/tasks.md`'s 2026-09-22 correction
+entry for the full before/after). Keep test registrations short regardless — onboard,
+verify, test, clean up, in one sitting — since the underlying registration is still a
+real, accepted cost, not a free operation.
 
 ## Troubleshooting
 
@@ -243,7 +266,8 @@ onboard, verify, test, clean up, in one sitting.
 | `gke-gcloud-auth-plugin not found` | Not installed, or SDK `bin/` not on PATH | `gcloud components install gke-gcloud-auth-plugin`; add the SDK's `bin/` dir to PATH |
 | `PERMISSION_DENIED: ... gkehub.memberships.list ...` during verification | The runtime SA lacks `roles/gkehub.viewer` (needed only by the `get-credentials` CLI mechanism `verify.yml` uses — NOT needed by the actual production path, which calls the Connect Gateway REST API directly) | Confirm Step 3's Terraform apply included `google_project_iam_member.mcp_runtime_gateway_viewer`; if this repo predates 2026-09-21, that resource may not exist yet — it does now, in `iac/agent/onprem_fleet.tf` |
 | `Failed to impersonate ... roles/iam.serviceAccountTokenCreator` | The identity running Ansible isn't authorized to impersonate `runtime_identity` | Grant `roles/iam.serviceAccountTokenCreator` on the SA (not project-wide) to your own identity — temporary, remove it after testing. This is a real IAM change; do it deliberately, not by default |
-| Registration lands on `ENTERPRISE` tier | Expected — see [Cost note](#cost-note) | The playbook auto-unregisters and fails loudly; investigate before retrying, don't relax the check |
+| `require explicit cost approval` failure | Expected on any first registration — see [Cost note](#cost-note) | Set `allow_billable_external_cluster: true` for that specific cluster in inventory, only after you've explicitly accepted the documented per-vCPU cost |
+| Registration lands on `ENTERPRISE` tier | Expected, informational only — see [Cost note](#cost-note) | No action needed; this is no longer the safety gate and does not cause a failure or unregister |
 | `terraform plan` on `iac/agent` shows the custom MCP service being destroyed | Pre-existing, unrelated CI-vs-local var drift (see Step 3) | Pass the CI-equivalent vars explicitly, as shown above |
 
 ---
