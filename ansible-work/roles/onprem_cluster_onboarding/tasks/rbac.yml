@@ -1,0 +1,218 @@
+---
+# WORK-SAFE VARIANT. Two RBAC layers, both idempotent and ownership-checked BEFORE
+# any mutation:
+#   1. Impersonation + read-only permission, via Google's own `generate-gateway-rbac`
+#      helper.
+#   2. A narrow supplemental grant for cluster-scoped `nodes: get,list` -- the
+#      documented parity gap `view` alone does not cover.
+#
+# Ownership rule, hardened for production use: this role NEVER overwrites, adopts,
+# relabels, or broadens a pre-existing RBAC object it did not itself create. If an
+# object it would need to create/reconcile already exists under the same
+# name/identity and does NOT carry this workflow's own ownership label, that is
+# treated as a pre-existing company-managed object -- the role FAILS and touches
+# nothing, rather than guessing it is safe to proceed.
+
+- name: "{{ cluster.name }}: check for an existing gateway RBAC binding for this identity"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context={{ cluster.kube_context }}
+      - get
+      - clusterrolebinding
+      - -l
+      - "connect.gke.io/owner-feature=connect-gateway"
+      - -o
+      - json
+  register: _existing_gateway_rbac
+  changed_when: false
+  failed_when: false
+
+- name: "{{ cluster.name }}: find any existing gateway RBAC binding that already includes this identity"
+  ansible.builtin.set_fact:
+    # Subscript ['items'], NOT dot .items -- dot access on a parsed JSON dict
+    # resolves to Python's real dict.items() bound method (name collision), not the
+    # JSON key. Kubernetes `-o json` list responses always use "items" as the array
+    # key.
+    _matching_bindings: >-
+      {{
+        (_existing_gateway_rbac.stdout | from_json)['items']
+        | json_query(_gateway_rbac_query)
+      }}
+  vars:
+    _gateway_rbac_query: "[?contains(subjects[].name, `{{ runtime_identity }}`)]"
+  when: _existing_gateway_rbac.rc == 0
+
+- name: "{{ cluster.name }}: set gateway RBAC presence/ownership flags"
+  ansible.builtin.set_fact:
+    # default([], true) matters: json_query against an empty `items` list returns
+    # Jinja `None`, not Undefined -- plain default([]) would not catch that and
+    # `None | length` would crash the whole cluster's run.
+    _gateway_rbac_present: "{{ (_matching_bindings | default([], true) | length) > 0 }}"
+    _gateway_rbac_owned_by_us: >-
+      {{
+        (_matching_bindings | default([], true) | json_query(_ownership_query) | length) > 0
+      }}
+  vars:
+    _ownership_query: "[?metadata.labels.\"{{ onboarded_by_label_key }}\" == `{{ onboarded_by_label_value }}`]"
+
+# Safety: a binding already grants this identity gateway access, but it was not
+# created by this workflow (no matching ownership label). Do not assume it is
+# equivalent, do not relabel it, do not apply on top of it -- fail and let a human
+# confirm what it actually grants.
+- name: "{{ cluster.name }}: FAIL if a gateway RBAC binding already exists for this identity but is NOT owned by this workflow"
+  ansible.builtin.fail:
+    msg: >-
+      A ClusterRoleBinding already grants '{{ runtime_identity }}' Connect Gateway
+      access on '{{ cluster.name }}', but it does not carry this workflow's
+      ownership label ({{ onboarded_by_label_key }}={{ onboarded_by_label_value }}).
+      This looks like a pre-existing, company-managed RBAC grant. This workflow will
+      not adopt, relabel, or reconcile on top of an object it did not create --
+      confirm with whoever owns that binding before proceeding. No mutation was
+      performed.
+  when:
+    - _gateway_rbac_present | bool
+    - not (_gateway_rbac_owned_by_us | bool)
+
+- name: "{{ cluster.name }}: apply impersonation + {{ _effective_rbac_role }} permission via generate-gateway-rbac (only when genuinely absent)"
+  ansible.builtin.command:
+    argv:
+      - "{{ gcloud_bin }}"
+      - container
+      - fleet
+      - memberships
+      - generate-gateway-rbac
+      - --project={{ cluster.fleet_project_id }}
+      - --membership={{ cluster.fleet_membership | default(cluster.name) }}
+      - --users={{ runtime_identity }}
+      - --role={{ _effective_rbac_role }}
+      - --context={{ cluster.kube_context }}
+      - --kubeconfig={{ kubeconfig_path }}
+      - --apply
+      - --quiet
+  register: _rbac_apply
+  when: not (_gateway_rbac_present | bool)
+  changed_when: true
+  # No failed_when override: a real RBAC-apply failure must propagate.
+
+- name: "{{ cluster.name }}: find the objects generate-gateway-rbac just created, to label them"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context={{ cluster.kube_context }}
+      - get
+      - clusterrolebinding
+      - -l
+      - connect.gke.io/owner-feature=connect-gateway
+      - -o
+      - json
+  register: _fresh_gateway_objects
+  when: _rbac_apply is not skipped
+  changed_when: false
+
+- name: "{{ cluster.name }}: label this run's freshly-created gateway RBAC bindings as workflow-owned"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context={{ cluster.kube_context }}
+      - label
+      - clusterrolebinding
+      - "{{ item.metadata.name }}"
+      - "{{ onboarded_by_label_key }}={{ onboarded_by_label_value }}"
+      - --overwrite
+  loop: "{{ (_fresh_gateway_objects.stdout | from_json)['items'] }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  when:
+    - _rbac_apply is not skipped
+    - item.subjects is defined
+    - runtime_identity in (item.subjects | map(attribute='name') | list)
+  changed_when: true
+
+# Supplemental node-read grant -- fully hand-authored, fixed object names. Ownership
+# is checked BEFORE applying: if an object with these exact names already exists
+# and was not created by this workflow, FAIL rather than silently merge into it.
+- name: "{{ cluster.name }}: check for a pre-existing node-reader ClusterRole (by name)"
+  ansible.builtin.command:
+    argv: [kubectl, "--context={{ cluster.kube_context }}", get, clusterrole, sre-agent-onprem-node-reader, -o, json]
+  register: _existing_node_role
+  changed_when: false
+  failed_when: false
+  when: _effective_grant_node_read | bool
+
+- name: "{{ cluster.name }}: check for a pre-existing node-reader ClusterRoleBinding (by name)"
+  ansible.builtin.command:
+    argv: [kubectl, "--context={{ cluster.kube_context }}", get, clusterrolebinding, sre-agent-onprem-node-reader-binding, -o, json]
+  register: _existing_node_binding
+  changed_when: false
+  failed_when: false
+  when: _effective_grant_node_read | bool
+
+- name: "{{ cluster.name }}: FAIL if the node-reader ClusterRole name is already taken by an object this workflow did not create"
+  ansible.builtin.fail:
+    msg: >-
+      A ClusterRole named 'sre-agent-onprem-node-reader' already exists on
+      '{{ cluster.name }}' but does not carry this workflow's ownership label.
+      Refusing to overwrite or adopt a pre-existing, differently-owned object with
+      this name. No mutation was performed.
+  when:
+    - _effective_grant_node_read | bool
+    - _existing_node_role.rc == 0
+    - onboarded_by_label_key not in ((_existing_node_role.stdout | from_json).metadata.labels | default({}))
+
+- name: "{{ cluster.name }}: FAIL if the node-reader ClusterRoleBinding name is already taken by an object this workflow did not create"
+  ansible.builtin.fail:
+    msg: >-
+      A ClusterRoleBinding named 'sre-agent-onprem-node-reader-binding' already
+      exists on '{{ cluster.name }}' but does not carry this workflow's ownership
+      label. Refusing to overwrite or adopt a pre-existing, differently-owned object
+      with this name. No mutation was performed.
+  when:
+    - _effective_grant_node_read | bool
+    - _existing_node_binding.rc == 0
+    - onboarded_by_label_key not in ((_existing_node_binding.stdout | from_json).metadata.labels | default({}))
+
+- name: "{{ cluster.name }}: render supplemental node-read RBAC manifest"
+  ansible.builtin.set_fact:
+    _node_reader_manifest: |
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: sre-agent-onprem-node-reader
+        labels:
+          {{ onboarded_by_label_key }}: "{{ onboarded_by_label_value }}"
+      rules:
+        - apiGroups: [""]
+          resources: ["nodes"]
+          verbs: {{ node_read_verbs | to_json }}
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: sre-agent-onprem-node-reader-binding
+        labels:
+          {{ onboarded_by_label_key }}: "{{ onboarded_by_label_value }}"
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: sre-agent-onprem-node-reader
+      subjects:
+        - kind: User
+          name: "{{ runtime_identity }}"
+          apiGroup: rbac.authorization.k8s.io
+  when: _effective_grant_node_read | bool
+
+- name: "{{ cluster.name }}: apply supplemental node-read RBAC (create if absent, reconcile only because ownership was just confirmed)"
+  ansible.builtin.command:
+    argv: [kubectl, "--context={{ cluster.kube_context }}", apply, -f, "-"]
+    stdin: "{{ _node_reader_manifest }}"
+  register: _node_rbac_apply
+  when: _effective_grant_node_read | bool
+  changed_when: "'unchanged' not in _node_rbac_apply.stdout"
+
+- name: "{{ cluster.name }}: RBAC OK"
+  ansible.builtin.debug:
+    msg: >-
+      Gateway RBAC ({{ _effective_rbac_role }}) for '{{ runtime_identity }}':
+      {{ 'reconciled by this run' if _rbac_apply is not skipped else 'already present and owned by this workflow, skipped (idempotent)' }}.
+      Node-read supplement: {{ 'applied' if _effective_grant_node_read | bool else 'not requested for this cluster' }}.

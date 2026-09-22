@@ -1,0 +1,33 @@
+---
+# EXAMPLE inventory for the work-safe on-prem onboarding workflow.
+#
+# Copy this file to `all.yml` in this same directory and replace every placeholder
+# with your real work values before running anything:
+#
+#   cp all.example.yml all.yml
+#
+# `all.yml` is excluded by this folder's .gitignore, so real project IDs, cluster
+# names, and service accounts are never accidentally committed. Ansible does not
+# load `all.example.yml` automatically -- only `all.yml` -- so this file being
+# present and full of placeholders is safe by itself; nothing runs against it.
+#
+# See ../../../README.md for the full field reference, cost-approval behavior, and
+# what this workflow intentionally does not do.
+
+runtime_identity: "<WORK_RUNTIME_SERVICE_ACCOUNT>"
+
+# Only needed if `gcloud` is not already on PATH when ansible-playbook runs.
+# gcloud_bin: "/path/to/gcloud"
+
+external_clusters:
+  - name: "<CLUSTER_NAME>"
+    kube_context: "<KUBECONFIG_CONTEXT>"
+    fleet_project_id: "<WORK_FLEET_PROJECT_ID>"
+    fleet_membership: "<FLEET_MEMBERSHIP_NAME>"
+    environment: "nonprod"
+    rbac_role: "clusterrole/view"
+    grant_node_read: true
+    # Explicit, per-cluster cost approval. Requires real, reviewed team approval
+    # for THIS specific cluster before being set true -- see README.md "Cost-
+    # approval behavior". Never set this true globally/by default.
+    allow_billable_external_cluster: false

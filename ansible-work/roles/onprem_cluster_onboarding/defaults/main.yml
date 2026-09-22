@@ -1,0 +1,51 @@
+---
+# WORK-SAFE VARIANT of the personal ansible/roles/onprem_cluster_onboarding role.
+# Portable defaults only -- no project IDs, cluster names, or paths here. Per-cluster
+# values (kube_context, fleet_project_id, fleet_membership, runtime_identity) come
+# from inventory (ansible-work/inventories/<env>/), never from this role.
+#
+# This variant is ONBOARDING-ONLY: it can register a new cluster, grant read-only
+# RBAC, and verify it read-only. It has no unregister/revoke/delete task anywhere
+# in this role -- see ../../../README.md for the full list of what was intentionally
+# left out and why.
+
+# Kubernetes RBAC granted at cluster scope, via `gcloud ... generate-gateway-rbac`.
+rbac_role: "clusterrole/view"
+
+# The `view` ClusterRole excludes cluster-scoped `nodes`. This grants only the two
+# verbs an investigation tool actually needs (list, get) -- no `watch`.
+grant_node_read: true
+node_read_verbs:
+  - get
+  - list
+
+# Cost-safety gate. GKE no longer has separate Standard/Enterprise commercial
+# editions -- `clusterTier` is legacy, output-only metadata and is NEVER used as a
+# pass/fail condition anywhere in this role. The real, documented cost driver is
+# registering a third-party/non-GKE cluster into a Fleet at all: Google's current
+# pricing lists GKE Multicloud Attached Clusters at a per-vCPU/hour charge, and
+# documents that third-party clusters registered to a Fleet "will incur a per-vCPU
+# charge as part of your GKE pricing" -- independent of what clusterTier reports.
+#
+# This variable represents EXPLICIT, REVIEWED ACCEPTANCE of that documented,
+# potentially-billable registration for one specific cluster -- never a blanket
+# default. Registering a NEW cluster fails loudly, before any Fleet mutation, until
+# a human sets this true for that specific cluster in inventory, after real team
+# approval. See README.md "Cost-approval behavior".
+allow_billable_external_cluster: false
+
+# Ownership signal for objects this workflow creates. A LABEL, not an annotation --
+# `kubectl -l` selectors only match labels, and this role's own ownership checks
+# (rbac.yml) refuse to touch any object that doesn't carry it. Deliberately a
+# DIFFERENT value than the personal lab workflow's label, so objects created by
+# each are always distinguishable from each other if ever inspected side by side.
+onboarded_by_label_key: "sre-agent-gateway.internal/onboarded-by"
+onboarded_by_label_value: "ansible-onprem-onboarding-work"
+
+# No service-account-key path exists in this role. This var intentionally has no
+# default and is never read by any task -- present only so the `assert` check in
+# preflight.yml can confirm a cluster definition never tries to set it.
+# service_account_key_file: (never define this)
+
+gcloud_bin: "gcloud"
+kubeconfig_path: "{{ ansible_env.HOME }}/.kube/config"

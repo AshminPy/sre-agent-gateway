@@ -1,0 +1,20 @@
+# Python dependencies for running this Ansible workflow. Install into a virtual
+# environment (see README.md "Python environment (venv)"), never into system
+# Python -- that's what makes this behave the same on every machine that runs it.
+#
+# Pins use `~=` (compatible release: same major.minor, patch/point updates only) so
+# installs stay reproducible without breaking on a platform where the exact patch
+# build tonight's isn't available as a prebuilt wheel.
+#
+# ansible-core provides `ansible-playbook` and every module this role uses
+# (ansible.builtin.* only -- no external collection is required). Verified tonight
+# (2026-09-22) on the personal machine: Python 3.13.7, ansible-core 2.21.4.
+# ansible-core 2.21 requires Python >=3.12 on the CONTROL machine (the one running
+# ansible-playbook, not the target cluster) -- run `python3 --version` before
+# creating the venv; if it's older than 3.12, install a newer Python first
+# (e.g. via pyenv or Homebrew) rather than guessing at an older ansible-core pin.
+ansible-core~=2.21
+
+# Backs the json_query filter used in roles/onprem_cluster_onboarding/tasks/rbac.yml.
+# Verified tonight: jmespath 1.1.0.
+jmespath~=1.1
