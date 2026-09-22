@@ -1,0 +1,22 @@
+---
+# Uses `cluster` (the outer loop's loop_var, set in playbooks/verify.yml) -- NOT a
+# `vars: cluster: "{{ item }}"` re-binding, which would be silently shadowed by the
+# role's own internal loops that reuse Ansible's default `item` name.
+
+- name: "Verify {{ cluster.name }}, isolated from other clusters' failures"
+  block:
+    - name: "Verify {{ cluster.name }}"
+      ansible.builtin.include_role:
+        name: onprem_cluster_onboarding
+        tasks_from: verify
+
+    - name: "Record PASS for {{ cluster.name }}"
+      ansible.builtin.set_fact:
+        onboarding_results: "{{ onboarding_results + [{'cluster': cluster.name, 'status': 'PASS'}] }}"
+
+  rescue:
+    - name: "Record FAIL for {{ cluster.name }}"
+      ansible.builtin.set_fact:
+        onboarding_results: >-
+          {{ onboarding_results + [{'cluster': cluster.name, 'status': 'FAIL',
+             'error': (ansible_failed_result.msg | default('unknown'))}] }}

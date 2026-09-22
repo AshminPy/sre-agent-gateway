@@ -1,0 +1,39 @@
+---
+# Per-cluster isolation: an explicit block/rescue, not ignore_errors/
+# max_fail_percentage. A failure here is fully captured into `onboarding_results`
+# and execution continues to the next cluster in the outer loop; the outer
+# playbook fails the whole run (non-zero exit) only after every cluster has been
+# attempted, based on this aggregated list.
+#
+# Uses `loop_var: cluster` (set by the calling playbook's loop), never Ansible's
+# default `item` -- this role's own internal loops (e.g. verify.yml's read-call
+# loop) use `item`, which would otherwise silently shadow a re-bound `cluster` var.
+
+- name: "Onboard {{ cluster.name }}, isolated from other clusters' failures"
+  block:
+    - name: "Run onboarding role for {{ cluster.name }}"
+      ansible.builtin.include_role:
+        name: onprem_cluster_onboarding
+
+    - name: "Record PASS for {{ cluster.name }}"
+      ansible.builtin.set_fact:
+        onboarding_results: "{{ onboarding_results + [cluster_result] }}"
+
+  rescue:
+    - name: "Record FAIL for {{ cluster.name }}"
+      ansible.builtin.set_fact:
+        onboarding_results: >-
+          {{ onboarding_results + [{
+            'cluster': cluster.name,
+            'status': 'FAIL',
+            'failed_task': ansible_failed_task.name | default('unknown'),
+            'error': (ansible_failed_result.msg | default(ansible_failed_result.stderr | default('unknown error'))),
+          }] }}
+
+    - name: "{{ cluster.name }} failed -- continuing to remaining clusters"
+      ansible.builtin.debug:
+        msg: >-
+          Cluster '{{ cluster.name }}' FAILED at task
+          '{{ ansible_failed_task.name | default('unknown') }}'. This does not stop
+          onboarding of any other cluster in this run; the overall playbook will
+          still exit non-zero once every cluster has been attempted.

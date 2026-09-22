@@ -1,0 +1,15 @@
+# Real, filled-in inventory values must never be committed from this folder.
+# Only *.example.yml is tracked.
+inventories/*/group_vars/all.yml
+inventories/*/host_vars/
+
+# Evidence artifacts from real runs may contain real project/cluster names.
+artifacts/*.json
+
+# Ansible run-time noise.
+*.retry
+.ansible/
+
+# Never commit the virtual environment itself -- each machine creates its own from
+# requirements.txt (see README.md "Python environment (venv)").
+.venv/

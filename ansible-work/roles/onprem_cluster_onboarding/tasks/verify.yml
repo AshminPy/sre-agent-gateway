@@ -1,0 +1,157 @@
+---
+# WORK-SAFE VARIANT. Fully read-only verification -- no create, no delete, no
+# server-side dry-run write anywhere in this file. Fetches real Connect Gateway
+# credentials and issues only real GET calls.
+#
+# Self-contained on purpose: this file is called both via the full role
+# (after main.yml has already computed _effective_grant_node_read/_effective_rbac_role)
+# AND standalone via `include_role: tasks_from: verify` (playbooks/verify.yml, which
+# skips main.yml entirely) -- so it computes those same effective values itself and
+# never depends on which caller ran before it.
+#
+# IDENTITY: plain `get-credentials` mints a context using the CALLER's own gcloud
+# identity, not `runtime_identity`. The RBAC this role grants is scoped to
+# `runtime_identity` only (least privilege -- the operator's own identity is
+# deliberately not also granted broad K8s access just to make verification
+# convenient). `CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT` is set only for the
+# subprocess tree of tasks inside this block (kubectl, and the
+# gke-gcloud-auth-plugin it spawns as a child process, which inherits environment
+# variables by default) -- nothing is written to disk, nothing outlives this
+# block's own processes, and there is no global state a concurrent run could race
+# with.
+
+- name: "{{ cluster.name }}: compute effective per-cluster RBAC settings (self-contained, does not depend on main.yml having run)"
+  ansible.builtin.set_fact:
+    _effective_grant_node_read: "{{ cluster.grant_node_read | default(grant_node_read) }}"
+    _effective_rbac_role: "{{ cluster.rbac_role | default(rbac_role) }}"
+
+- name: "{{ cluster.name }}: determine whether runtime_identity can be impersonated for verification"
+  ansible.builtin.set_fact:
+    _can_impersonate: "{{ runtime_identity is search('\\.iam\\.gserviceaccount\\.com$') }}"
+
+- name: "{{ cluster.name }}: compute the Connect Gateway kubeconfig context name"
+  ansible.builtin.set_fact:
+    _gw_context: "connectgateway_{{ cluster.fleet_project_id }}_global_{{ cluster.fleet_membership | default(cluster.name) }}"
+
+- name: "{{ cluster.name }}: run verification as runtime_identity where possible"
+  environment:
+    CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT: "{{ runtime_identity if _can_impersonate else omit }}"
+  block:
+    - name: "{{ cluster.name }}: fetch Connect Gateway credentials (read-only)"
+      ansible.builtin.command:
+        argv:
+          - "{{ gcloud_bin }}"
+          - container
+          - fleet
+          - memberships
+          - get-credentials
+          - "{{ cluster.fleet_membership | default(cluster.name) }}"
+          - --project={{ cluster.fleet_project_id }}
+      changed_when: false
+
+    - name: "{{ cluster.name }}: real allowed read call -- namespaces (cluster-scoped)"
+      ansible.builtin.command:
+        argv: [kubectl, "--context={{ _gw_context }}", get, namespaces]
+      register: _namespaces_read
+      changed_when: false
+      failed_when: false
+
+    - name: "{{ cluster.name }}: fail if the namespaces read did not succeed"
+      ansible.builtin.fail:
+        msg: >-
+          Verification failed for '{{ cluster.name }}': expected `kubectl get
+          namespaces` to succeed through Connect Gateway, got
+          rc={{ _namespaces_read.rc }}: {{ _namespaces_read.stderr }}{{
+            ' -- if impersonating, check roles/iam.serviceAccountTokenCreator on '
+            + runtime_identity + ' for the identity running this playbook, and
+            roles/gkehub.gatewayReader + roles/gkehub.viewer on ' + runtime_identity
+            + ' itself.' if _can_impersonate else '' }}
+      when: _namespaces_read.rc != 0
+
+    - name: "{{ cluster.name }}: real allowed read calls through Connect Gateway (namespaced, all namespaces)"
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --context={{ _gw_context }}
+          - get
+          - "{{ item }}"
+          - -A
+      loop:
+        - pods
+        - deployments
+        - events
+      register: _allowed_reads
+      changed_when: false
+      failed_when: false
+
+    - name: "{{ cluster.name }}: fail if an allowed read call did not succeed"
+      ansible.builtin.fail:
+        msg: >-
+          Verification failed for '{{ cluster.name }}': expected read
+          `kubectl get {{ item.item }} -A` to succeed through Connect Gateway, got
+          rc={{ item.rc }}: {{ item.stderr }}
+      loop: "{{ _allowed_reads.results }}"
+      when: item.rc != 0
+
+    - name: "{{ cluster.name }}: real node-read call (the parity fix -- must succeed if requested)"
+      ansible.builtin.command:
+        argv: [kubectl, "--context={{ _gw_context }}", get, nodes]
+      register: _node_read
+      changed_when: false
+      failed_when: false
+      when: _effective_grant_node_read | bool
+
+    - name: "{{ cluster.name }}: fail if node-read (the parity fix) did not succeed"
+      ansible.builtin.fail:
+        msg: >-
+          Verification failed for '{{ cluster.name }}': `kubectl get nodes` was
+          expected to succeed after the supplemental node-read grant, got
+          rc={{ _node_read.rc }}: {{ _node_read.stderr }}
+      when: _effective_grant_node_read | bool and _node_read.rc != 0
+
+    # Negative test, fully read-only: a GET on a deliberately nonexistent secret
+    # name. Kubernetes RBAC authorization happens BEFORE object-existence lookup,
+    # so a correctly-scoped read-only identity must receive Forbidden even for a
+    # secret name that does not exist -- no real secret ever needs to exist for
+    # this to be a valid test, and nothing is created or deleted to run it.
+    - name: "{{ cluster.name }}: negative secret-access check (deliberately nonexistent secret name)"
+      ansible.builtin.command:
+        argv: [kubectl, "--context={{ _gw_context }}", get, secret, "sre-agent-verification-does-not-exist", -n, default]
+      register: _secret_check
+      changed_when: false
+      failed_when: false
+
+    - name: "{{ cluster.name }}: interpret the negative secret-access check"
+      ansible.builtin.set_fact:
+        _secret_verdict: >-
+          {{ 'PASS' if ('Forbidden' in (_secret_check.stderr | default(''))) else
+             ('FAIL_AUTHORIZED' if ('NotFound' in (_secret_check.stderr | default(''))) else 'FAIL_INCONCLUSIVE') }}
+
+    - name: "{{ cluster.name }}: fail -- the identity was authorized to read secrets (NotFound instead of Forbidden)"
+      ansible.builtin.fail:
+        msg: >-
+          SECURITY: verification failed for '{{ cluster.name }}' -- the negative
+          secret-access check returned NotFound instead of Forbidden, meaning the
+          runtime identity IS authorized to read Secrets. Investigate immediately;
+          do not treat this cluster as onboarded.
+      when: _secret_verdict == 'FAIL_AUTHORIZED'
+
+    - name: "{{ cluster.name }}: fail -- the negative secret-access check was inconclusive"
+      ansible.builtin.fail:
+        msg: >-
+          Verification failed for '{{ cluster.name }}': the negative secret-access
+          check returned neither Forbidden nor NotFound (rc={{ _secret_check.rc }}):
+          {{ _secret_check.stderr }}. This is inconclusive -- it could mean a
+          network, authentication, or timeout problem rather than a real RBAC
+          denial. Do not treat this cluster as onboarded until this is resolved.
+      when: _secret_verdict == 'FAIL_INCONCLUSIVE'
+
+    - name: "{{ cluster.name }}: verification passed"
+      ansible.builtin.debug:
+        msg: >-
+          Verification OK for '{{ cluster.name }}': namespaces/pods/deployments/
+          events{{ '/nodes' if _effective_grant_node_read | bool else '' }} readable,
+          secret access correctly denied (Forbidden on a nonexistent name), tested
+          as {{ runtime_identity if _can_impersonate else 'the operator (no
+          impersonation available)' }}. No create/delete/write call was ever
+          attempted.

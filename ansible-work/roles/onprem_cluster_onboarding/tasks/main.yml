@@ -1,0 +1,41 @@
+---
+# Orchestrates one cluster's onboarding. Called once per cluster (the calling
+# playbook loops over external_clusters and wraps this include in its own
+# block/rescue for per-cluster failure isolation). A real failure in any task below
+# propagates naturally (no ignore_errors anywhere in this role) so the calling
+# block/rescue sees it. No cleanup/unregister/revoke/delete task exists anywhere in
+# this chain -- this role is onboarding-only.
+
+- name: Assert required cluster variables are present
+  ansible.builtin.assert:
+    that:
+      - cluster.name is defined
+      - cluster.kube_context is defined
+      - cluster.fleet_project_id is defined
+      - runtime_identity is defined
+      - cluster.service_account_key_file is not defined
+    fail_msg: >-
+      Cluster definition for {{ cluster.name | default('(unnamed)') }} is missing a
+      required field, or defines a forbidden service_account_key_file. This role has
+      no service-account-key code path -- fix the inventory entry, do not add one.
+    quiet: true
+
+- name: Compute effective per-cluster RBAC settings (inventory overrides role defaults)
+  ansible.builtin.set_fact:
+    _effective_rbac_role: "{{ cluster.rbac_role | default(rbac_role) }}"
+    _effective_grant_node_read: "{{ cluster.grant_node_read | default(grant_node_read) }}"
+
+- name: Preflight checks for {{ cluster.name }}
+  ansible.builtin.include_tasks: preflight.yml
+
+- name: Register {{ cluster.name }} into the Fleet (idempotent, onboarding-only)
+  ansible.builtin.include_tasks: fleet_register.yml
+
+- name: Apply read-only RBAC for {{ cluster.name }} (idempotent, ownership-checked)
+  ansible.builtin.include_tasks: rbac.yml
+
+- name: Verify {{ cluster.name }} onboarding (fully read-only)
+  ansible.builtin.include_tasks: verify.yml
+
+- name: Build per-cluster evidence record
+  ansible.builtin.include_tasks: report.yml

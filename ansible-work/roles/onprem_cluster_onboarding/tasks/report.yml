@@ -1,0 +1,30 @@
+---
+# Builds the per-cluster success evidence record. The calling playbook appends this
+# (on the success path) or a synthesized failure record (on the rescue path, built
+# from ansible_failed_task/ansible_failed_result) to a single run-scoped results
+# list, and writes ONE combined artifact after every cluster has been attempted.
+#
+# The `true` literals below (namespaces_read_ok, allowed_reads_ok) are safe because
+# report.yml only runs on the SUCCESS path -- verify.yml's own `fail` tasks already
+# stopped this cluster's run before reaching here if any read had actually failed.
+
+- name: "{{ cluster.name }}: build evidence record"
+  ansible.builtin.set_fact:
+    cluster_result:
+      cluster: "{{ cluster.name }}"
+      status: "PASS"
+      fleet_membership: "{{ cluster.fleet_membership | default(cluster.name) }}"
+      fleet_project_id: "{{ cluster.fleet_project_id }}"
+      fleet_registered_this_run: "{{ _register_result is not skipped }}"
+      observed_tier: "{{ _observed_tier | default('unknown') }}"
+      gateway_rbac_reconciled_this_run: "{{ _rbac_apply is not skipped }}"
+      node_read_granted: "{{ _effective_grant_node_read | bool }}"
+      verification:
+        namespaces_read_ok: true
+        allowed_reads_ok: true
+        node_read_ok: "{{ (not (_effective_grant_node_read | bool)) or (_node_read.rc | default(1) == 0) }}"
+        secret_access_correctly_denied: "{{ (_secret_verdict | default('')) == 'PASS' }}"
+
+- name: "{{ cluster.name }}: onboarding evidence"
+  ansible.builtin.debug:
+    var: cluster_result

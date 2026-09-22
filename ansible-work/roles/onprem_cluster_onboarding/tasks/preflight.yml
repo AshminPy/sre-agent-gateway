@@ -1,0 +1,160 @@
+---
+# Preflight: verify every prerequisite BEFORE any mutation. Every check here only
+# reads state (`failed_when: false` on a single read command is an idempotency/
+# state-check idiom, not a way of masking a real failure -- a genuine missing
+# prerequisite still fails this task file for real, propagating to the caller's
+# block/rescue). No command in this file creates, modifies, or deletes anything.
+
+- name: "{{ cluster.name }}: kube-context exists in local kubeconfig"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - config
+      - get-contexts
+      - "{{ cluster.kube_context }}"
+  register: _ctx_check
+  changed_when: false
+  failed_when: false
+
+- name: "{{ cluster.name }}: fail if kube-context is missing"
+  ansible.builtin.fail:
+    msg: >-
+      Preflight failed for cluster '{{ cluster.name }}': kube-context
+      '{{ cluster.kube_context }}' does not exist in the local kubeconfig. Add the
+      correct context before retrying.
+  when: _ctx_check.rc != 0
+
+- name: "{{ cluster.name }}: cluster is reachable via the kube-context"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context={{ cluster.kube_context }}
+      - get
+      - namespace
+      - kube-system
+      - -o
+      - name
+  register: _reachable
+  changed_when: false
+  failed_when: false
+
+- name: "{{ cluster.name }}: fail if cluster is unreachable"
+  ansible.builtin.fail:
+    msg: >-
+      Preflight failed for cluster '{{ cluster.name }}': context
+      '{{ cluster.kube_context }}' exists but the cluster did not respond
+      (kube-system namespace read failed). stderr: {{ _reachable.stderr }}
+  when: _reachable.rc != 0
+
+- name: "{{ cluster.name }}: caller has cluster-admin on the target cluster (read-only self-check)"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context={{ cluster.kube_context }}
+      - auth
+      - can-i
+      - "*"
+      - "*"
+      - --all-namespaces
+  register: _admin_check
+  changed_when: false
+  failed_when: false
+
+- name: "{{ cluster.name }}: fail if caller lacks cluster-admin (required for registration)"
+  ansible.builtin.fail:
+    msg: >-
+      Preflight failed for cluster '{{ cluster.name }}': the identity behind
+      kube-context '{{ cluster.kube_context }}' does not have cluster-admin, which
+      Google's Fleet registration requires of the registering identity.
+  when: "'yes' not in _admin_check.stdout"
+
+- name: "{{ cluster.name }}: gcloud has an active authenticated account"
+  ansible.builtin.command:
+    argv: ["{{ gcloud_bin }}", "auth", "list", "--filter=status:ACTIVE", "--format=value(account)"]
+  register: _gcloud_auth
+  changed_when: false
+  failed_when: false
+
+- name: "{{ cluster.name }}: fail if gcloud is not authenticated"
+  ansible.builtin.fail:
+    msg: >-
+      Preflight failed for cluster '{{ cluster.name }}': no active `gcloud`
+      authentication found. Run `gcloud auth login` before retrying.
+  when: _gcloud_auth.stdout | trim | length == 0
+
+- name: "{{ cluster.name }}: required project APIs are enabled (checked, never enabled here)"
+  ansible.builtin.command:
+    argv:
+      - "{{ gcloud_bin }}"
+      - services
+      - list
+      - --project={{ cluster.fleet_project_id }}
+      - --enabled
+      - --filter=name:(gkehub.googleapis.com OR connectgateway.googleapis.com OR container.googleapis.com)
+      - --format=value(name)
+  register: _apis
+  changed_when: false
+  failed_when: false
+
+- name: "{{ cluster.name }}: fail if a required API is not enabled"
+  ansible.builtin.fail:
+    msg: >-
+      Preflight failed for cluster '{{ cluster.name }}': project
+      '{{ cluster.fleet_project_id }}' is missing one or more required APIs
+      (gkehub, connectgateway, container). Enabling these is an existing GCP
+      bootstrap step owned by the project operator, outside this workflow's scope --
+      this workflow only checks, it never runs `gcloud services enable`.
+      Enabled today: {{ _apis.stdout_lines }}
+  when: (_apis.stdout_lines | length) < 3
+
+- name: "{{ cluster.name }}: org policy disableServiceAccountKeyCreation (informational evidence only)"
+  ansible.builtin.command:
+    argv:
+      - "{{ gcloud_bin }}"
+      - resource-manager
+      - org-policies
+      - describe
+      - constraints/iam.disableServiceAccountKeyCreation
+      - --project={{ cluster.fleet_project_id }}
+      - --effective
+      - --format=json
+  register: _org_policy
+  changed_when: false
+  failed_when: false
+  # Not gating: this role never uses a service-account key regardless of what this
+  # policy says. Captured purely as evidence for the per-cluster report.
+
+- name: "{{ cluster.name }}: cluster exposes a discoverable OIDC issuer (required for keyless --has-private-issuer registration)"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context={{ cluster.kube_context }}
+      - get
+      - --raw
+      - "{{ item }}"
+  loop:
+    - /.well-known/openid-configuration
+    - /openid/v1/jwks
+  register: _oidc_check
+  changed_when: false
+  failed_when: false
+
+- name: "{{ cluster.name }}: fail if the cluster cannot satisfy keyless Fleet Workload Identity registration"
+  ansible.builtin.fail:
+    msg: >-
+      Preflight failed for cluster '{{ cluster.name }}': its API server does not
+      serve {{ item.item }} (kubectl get --raw returned rc={{ item.rc }}). This is
+      required for `--has-private-issuer` keyless registration. This workflow has no
+      service-account-key fallback and will not silently generate, download, or
+      install a static key for this cluster.
+  loop: "{{ _oidc_check.results }}"
+  when: item.rc != 0
+
+- name: "{{ cluster.name }}: preflight passed"
+  ansible.builtin.debug:
+    msg: >-
+      Preflight OK for '{{ cluster.name }}': context reachable, cluster-admin
+      confirmed, required APIs enabled, keyless registration prerequisites
+      satisfied (org policy enforced: {{
+      (_org_policy.stdout | from_json).booleanPolicy.enforced
+      | default('not set / inherited') }}).

@@ -1,0 +1,63 @@
+---
+# Onboards one or many external/non-GKE clusters into the Fleet -> Connect
+# Gateway -> RBAC path, driven entirely by inventory (external_clusters). See
+# ansible-work/roles/onprem_cluster_onboarding/ for the reusable per-cluster logic;
+# this playbook only handles the multi-cluster loop, per-cluster failure isolation,
+# result aggregation, and the final pass/fail gate. No ignore_errors, no
+# max_fail_percentage -- a failure on one cluster never hides or is hidden by
+# another's success.
+
+- name: Onboard external clusters (work-safe, onboarding-only)
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  vars:
+    onboarding_results: []
+
+  tasks:
+    - name: Fail fast if no clusters are defined
+      ansible.builtin.fail:
+        msg: >-
+          `external_clusters` is empty or undefined. Copy
+          inventories/work-nonprod/group_vars/all.example.yml to all.yml in the same
+          directory and fill in your real values before running this.
+      when: external_clusters | default([]) | length == 0
+
+    - name: Capture a run timestamp for the evidence artifact
+      ansible.builtin.command: date +%Y%m%dT%H%M%S
+      register: _run_ts
+      changed_when: false
+
+    - name: Onboard each cluster independently
+      ansible.builtin.include_tasks: tasks/onboard_one_cluster.yml
+      loop: "{{ external_clusters }}"
+      loop_control:
+        loop_var: cluster
+        label: "{{ cluster.name }}"
+
+    - name: Ensure the artifacts directory exists
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/../artifacts"
+        state: directory
+        mode: "0755"
+
+    - name: Write the combined per-run evidence artifact
+      ansible.builtin.copy:
+        dest: "{{ playbook_dir }}/../artifacts/onboarding-{{ _run_ts.stdout }}.json"
+        content: "{{ onboarding_results | to_nice_json }}"
+        mode: "0644"
+
+    - name: Print the final per-cluster summary
+      ansible.builtin.debug:
+        var: onboarding_results
+
+    - name: Fail the run if any cluster did not onboard successfully
+      ansible.builtin.fail:
+        msg: >-
+          Onboarding failed for: {{ onboarding_results
+            | selectattr('status', 'equalto', 'FAIL')
+            | map(attribute='cluster') | join(', ') }}.
+          See the evidence artifact and the per-task output above for the exact
+          failing stage per cluster. This is evaluated only after every requested
+          cluster has been attempted.
+      when: onboarding_results | selectattr('status', 'equalto', 'FAIL') | list | length > 0

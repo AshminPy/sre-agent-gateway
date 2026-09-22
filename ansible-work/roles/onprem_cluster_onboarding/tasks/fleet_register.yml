@@ -1,0 +1,184 @@
+---
+# WORK-SAFE VARIANT. Idempotent, keyless-only Fleet Membership registration for a
+# NEW cluster (--enable-workload-identity + --has-private-issuer;
+# --service-account-key-file is never constructed anywhere in this file).
+#
+# Hardened for production use: this file NEVER unregisters, deletes, or auto-repairs
+# an existing membership. If a membership already exists and is READY, it is left
+# alone (verified, not touched). If it exists and is NOT READY, or if its state
+# cannot be determined at all, this task FAILS with zero mutation -- it never
+# guesses that re-registering is safe.
+
+- name: "{{ cluster.name }}: compute effective Fleet membership name"
+  ansible.builtin.set_fact:
+    _membership: "{{ cluster.fleet_membership | default(cluster.name) }}"
+
+- name: "{{ cluster.name }}: check for an existing Fleet membership (read-only state check, not a mutation)"
+  ansible.builtin.command:
+    argv:
+      - "{{ gcloud_bin }}"
+      - container
+      - fleet
+      - memberships
+      - describe
+      - "{{ _membership }}"
+      - --project={{ cluster.fleet_project_id }}
+      - --format=json
+  register: _existing_membership
+  changed_when: false
+  failed_when: false
+
+- name: "{{ cluster.name }}: classify the describe result (found / genuinely absent / unexpected error)"
+  ansible.builtin.set_fact:
+    _describe_stderr: "{{ _existing_membership.stderr | default('') }}"
+    _membership_absent: >-
+      {{ _existing_membership.rc != 0 and (
+           'NOT_FOUND' in (_existing_membership.stderr | default(''))
+           or 'not found' in (_existing_membership.stderr | default('') | lower)
+           or 'No memberships available' in (_existing_membership.stderr | default(''))
+         ) }}
+
+# Safety: if `describe` failed for any reason OTHER than "this membership genuinely
+# does not exist" (permission denied, API not enabled, transient network/auth
+# error), this workflow refuses to guess it is safe to register. Assuming "absent"
+# on an inconclusive error could create a duplicate/conflicting membership.
+- name: "{{ cluster.name }}: FAIL if membership state could not be determined (zero mutation)"
+  ansible.builtin.fail:
+    msg: >-
+      Could not determine the Fleet membership state for '{{ cluster.name }}'
+      (membership '{{ _membership }}'). `gcloud ... describe` failed with a result
+      that is not a clean "not found" -- refusing to assume it is safe to register.
+      Exact error: {{ _describe_stderr }}
+      No mutation was performed.
+  when: _existing_membership.rc != 0 and not _membership_absent
+
+- name: "{{ cluster.name }}: parse existing membership state (only when found)"
+  ansible.builtin.set_fact:
+    _membership_before: "{{ _existing_membership.stdout | from_json }}"
+  when: _existing_membership.rc == 0
+
+- name: "{{ cluster.name }}: FAIL if an existing membership is present but not READY (no auto-repair, zero mutation)"
+  ansible.builtin.fail:
+    msg: >-
+      Fleet membership '{{ _membership }}' already exists for '{{ cluster.name }}'
+      but is NOT READY. Observed state: {{ _membership_before.state | default('unknown') }}.
+      This workflow is onboarding-only and will not auto-repair, re-register, or
+      otherwise mutate an existing unhealthy membership -- that requires a
+      deliberate, reviewed, out-of-band decision by whoever owns it. No mutation
+      was performed.
+  when: _existing_membership.rc == 0 and (_membership_before.state.code | default('') != 'READY')
+
+- name: "{{ cluster.name }}: existing membership is already READY -- skip registration (idempotent)"
+  ansible.builtin.debug:
+    msg: >-
+      Fleet membership '{{ _membership }}' already exists and is READY for
+      '{{ cluster.name }}' -- no registration performed, continuing to verify state.
+  when: _existing_membership.rc == 0 and (_membership_before.state.code | default('') == 'READY')
+
+# Cost safety gate. Fires BEFORE any Fleet mutation, only when registration would
+# actually happen (membership genuinely absent). clusterTier is never part of this
+# decision -- see defaults/main.yml.
+- name: "{{ cluster.name }}: require explicit cost approval before registering a NEW billable external cluster"
+  ansible.builtin.fail:
+    msg: >-
+      Registering '{{ cluster.name }}' would create a NEW Fleet membership for a
+      third-party/non-GKE cluster. Google currently documents third-party/attached
+      clusters registered to a Fleet as incurring a per-vCPU charge (GKE Multicloud
+      Attached Clusters pricing) -- this applies regardless of what Fleet tier the
+      resulting membership later reports. Explicit, reviewed cost approval is
+      required before this workflow will register one. Set
+      `allow_billable_external_cluster: true` for this specific cluster in your
+      inventory only after your team has explicitly accepted this cost -- never set
+      it as a blanket default.
+  when:
+    - _membership_absent
+    - not (cluster.allow_billable_external_cluster | default(allow_billable_external_cluster) | bool)
+
+- name: "{{ cluster.name }}: register the NEW cluster into the Fleet (only when genuinely absent and approved)"
+  ansible.builtin.command:
+    argv:
+      - "{{ gcloud_bin }}"
+      - container
+      - fleet
+      - memberships
+      - register
+      - "{{ _membership }}"
+      - --project={{ cluster.fleet_project_id }}
+      - --context={{ cluster.kube_context }}
+      - --kubeconfig={{ kubeconfig_path }}
+      - --enable-workload-identity
+      - --has-private-issuer
+      - --quiet
+  register: _register_result
+  when:
+    - _membership_absent
+    - (cluster.allow_billable_external_cluster | default(allow_billable_external_cluster) | bool)
+  changed_when: true
+  # No failed_when override: a real registration failure (name collision, Fleet API
+  # unavailable, etc.) MUST propagate to the caller's block/rescue.
+
+- name: "{{ cluster.name }}: re-describe membership after a fresh registration"
+  ansible.builtin.command:
+    argv:
+      - "{{ gcloud_bin }}"
+      - container
+      - fleet
+      - memberships
+      - describe
+      - "{{ _membership }}"
+      - --project={{ cluster.fleet_project_id }}
+      - --format=json
+  register: _membership_after_raw
+  when: _register_result is not skipped
+  changed_when: false
+
+- name: "{{ cluster.name }}: parse post-registration membership state and record tier (informational)"
+  ansible.builtin.set_fact:
+    _membership_after: "{{ _membership_after_raw.stdout | from_json }}"
+    _observed_tier: "{{ (_membership_after_raw.stdout | from_json).clusterTier | default('CLUSTER_TIER_UNSPECIFIED') }}"
+  when: _register_result is not skipped
+
+- name: "{{ cluster.name }}: use the pre-existing membership's tier when registration was skipped"
+  ansible.builtin.set_fact:
+    _observed_tier: "{{ _membership_before.clusterTier | default('CLUSTER_TIER_UNSPECIFIED') }}"
+  when: _register_result is skipped
+
+- name: "{{ cluster.name }}: FAIL if a freshly-registered membership did not reach READY"
+  ansible.builtin.fail:
+    msg: >-
+      Fleet registration for '{{ cluster.name }}' (membership '{{ _membership }}')
+      did not reach READY. Observed state: {{ _membership_after.state | default('unknown') }}.
+  when:
+    - _register_result is not skipped
+    - _membership_after.state.code | default('') != 'READY'
+
+# clusterTier is INFORMATIONAL ONLY -- never a pass/fail condition, never a trigger
+# for any mutation, and `ENTERPRISE` is never treated as a failure here.
+- name: "{{ cluster.name }}: record observed Fleet tier (informational)"
+  ansible.builtin.debug:
+    msg: >-
+      Membership '{{ _membership }}' reports clusterTier='{{ _observed_tier }}'.
+      Recorded as evidence only -- never used as a pass/fail condition or to
+      trigger any mutation.
+
+- name: "{{ cluster.name }}: label the Fleet membership as created by this workflow (only for a fresh registration)"
+  ansible.builtin.command:
+    argv:
+      - "{{ gcloud_bin }}"
+      - container
+      - fleet
+      - memberships
+      - update
+      - "{{ _membership }}"
+      - --project={{ cluster.fleet_project_id }}
+      - --update-labels={{ onboarded_by_label_key | regex_replace('[^a-z0-9-]', '-') }}={{ onboarded_by_label_value }}
+      - --quiet
+  when: _register_result is not skipped
+  changed_when: true
+
+- name: "{{ cluster.name }}: Fleet membership state OK"
+  ansible.builtin.debug:
+    msg: >-
+      Membership '{{ _membership }}' is READY at tier '{{ _observed_tier }}'
+      ({{ 'newly registered by this run' if _register_result is not skipped
+      else 'pre-existing and already READY, no mutation performed' }}).
