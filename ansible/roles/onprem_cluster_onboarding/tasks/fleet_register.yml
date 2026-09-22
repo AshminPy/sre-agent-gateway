@@ -26,6 +26,29 @@
 - name: "{{ cluster.name }}: parse existing membership state, if any"
   ansible.builtin.set_fact:
     _membership_before: "{{ (_existing_membership.stdout | from_json) if _existing_membership.rc == 0 else {} }}"
+    _would_register: >-
+      {{ (_existing_membership.stdout | from_json).state.code | default('') != 'READY'
+         if _existing_membership.rc == 0 else true }}
+
+# Cost safety gate -- CORRECTED 2026-09-22 (see defaults/main.yml for the full
+# rationale and current-doc citations). This fires BEFORE any Fleet mutation, only
+# when registration would actually happen (an already-`READY` cluster from a prior
+# approved run is never re-blocked by this on a later idempotent re-run/verify).
+- name: "{{ cluster.name }}: require explicit cost approval before registering a new billable external cluster"
+  ansible.builtin.fail:
+    msg: >-
+      Registering '{{ cluster.name }}' would create a NEW Fleet membership for a
+      third-party/non-GKE cluster. Google currently documents third-party/attached
+      clusters registered to a Fleet as incurring a per-vCPU charge (GKE Multicloud
+      Attached Clusters pricing) -- this applies regardless of what Fleet tier the
+      resulting membership later reports. Explicit approval is required before this
+      workflow will register one. Set `allow_billable_external_cluster: true` for
+      this cluster in inventory (or once for a whole approved inventory/group -- see
+      ansible/PORTING.md) only after you/your team have explicitly accepted this
+      cost -- never set it globally by default.
+  when:
+    - _would_register
+    - not (cluster.allow_billable_external_cluster | default(allow_billable_external_cluster) | bool)
 
 - name: "{{ cluster.name }}: register into the Fleet (only if absent or not READY)"
   ansible.builtin.command:
@@ -43,9 +66,7 @@
       - --has-private-issuer
       - --quiet
   register: _register_result
-  when: >-
-    (_membership_before == {}) or
-    (_membership_before.state.code | default('') != 'READY')
+  when: _would_register
   changed_when: true
   # No failed_when override here: a real registration failure (name collision,
   # Fleet API unavailable, etc.) MUST propagate to the caller's block/rescue --
@@ -78,37 +99,20 @@
       {{ _membership_after.state | default('unknown') }}.
   when: _membership_after.state.code | default('') != 'READY'
 
-# Fleet tier safety (correction #4): clusterTier is output-only -- there is no
-# register-time flag to request STANDARD (verified 2026-09-21 against the current
-# Membership REST reference). Detection + immediate rollback is the only available
-# control. This directly re-checks the exact failure mode from commit cc9dbe0
-# (~$216/month from two ENTERPRISE-tier memberships, not caught until a dedicated
-# cost audit).
-- name: "{{ cluster.name }}: unregister immediately if the observed tier is unacceptable"
-  ansible.builtin.command:
-    argv:
-      - "{{ gcloud_bin }}"
-      - container
-      - fleet
-      - memberships
-      - unregister
-      - "{{ _membership }}"
-      - --project={{ cluster.fleet_project_id }}
-      - --context={{ cluster.kube_context }}
-      - --kubeconfig={{ kubeconfig_path }}
-      - --quiet
-  when: _observed_tier not in acceptable_cluster_tiers
-  register: _tier_rollback
-
-- name: "{{ cluster.name }}: fail loudly on unacceptable Fleet tier (after rollback)"
-  ansible.builtin.fail:
+# Fleet tier -- INFORMATIONAL ONLY (CORRECTED 2026-09-22, see defaults/main.yml).
+# `clusterTier` is legacy, output-only metadata (no register-time flag sets it, and
+# GKE no longer has separate commercial editions per current docs) -- it is recorded
+# as evidence (report.yml's `observed_tier`) but is NOT the cost-control decision.
+# The actual cost gate is the explicit `allow_billable_external_cluster` approval
+# above, which already ran before this cluster was ever registered. A cluster is
+# never unregistered here just because `clusterTier` happens to say `ENTERPRISE`.
+- name: "{{ cluster.name }}: record observed Fleet tier (informational)"
+  ansible.builtin.debug:
     msg: >-
-      Cluster '{{ cluster.name }}' registered at Fleet tier '{{ _observed_tier }}',
-      which is not in the acceptable set {{ acceptable_cluster_tiers }}. This is the
-      exact failure mode from commit cc9dbe0 (~$216/month unintended cost). The
-      membership has been unregistered automatically as a safety rollback. This
-      cluster is NOT onboarded -- investigate before retrying.
-  when: _observed_tier not in acceptable_cluster_tiers
+      Membership '{{ _membership }}' reports clusterTier='{{ _observed_tier }}'.
+      This is recorded as evidence only -- registration was already explicitly
+      approved via allow_billable_external_cluster, so no action is taken based on
+      this value alone.
 
 # Label the membership as workflow-owned, iff this run actually performed the
 # register step (correction #3: cleanup must not later touch a membership we

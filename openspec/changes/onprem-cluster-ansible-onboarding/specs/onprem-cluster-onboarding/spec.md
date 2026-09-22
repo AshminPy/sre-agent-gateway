@@ -15,12 +15,29 @@ Running the onboarding playbook twice against an already-onboarded cluster SHALL
 - **WHEN** a cluster has a Fleet membership already registered but RBAC was never applied (a simulated partial-failure state)
 - **THEN** the playbook detects the existing membership, skips re-registration, and proceeds to apply only the missing RBAC step
 
-### Requirement: Fleet tier safety
-The workflow SHALL verify, after registration, that the resulting Fleet membership tier is `STANDARD`, and SHALL fail the run for that cluster if it is not, before any RBAC step runs.
+### Requirement: Explicit cost approval before registering a billable external cluster
+CORRECTED 2026-09-22 (supersedes the original "Fleet tier safety" requirement, which
+incorrectly treated `clusterTier == ENTERPRISE` as proof of billing — see
+`design.md`'s corrected DECISION record and `tasks.md` for the full evidence). GKE no
+longer has separate Standard/Enterprise commercial editions; `clusterTier` is legacy,
+output-only metadata, not a billing signal the workflow can safely act on. The
+documented cost driver is registering a third-party/non-GKE cluster into a Fleet at
+all. The workflow SHALL require an explicit, per-cluster approval
+(`allow_billable_external_cluster`, default `false`) before registering any NEW
+cluster, and SHALL NOT automatically unregister a cluster based on its reported
+`clusterTier` alone.
 
-#### Scenario: Registration produces the wrong tier
-- **WHEN** a cluster is registered and `gcloud container fleet memberships describe` reports a tier other than `STANDARD`
-- **THEN** the playbook fails that cluster's run with an explicit tier-mismatch error, and does not proceed to grant RBAC
+#### Scenario: Registration attempted without explicit cost approval
+- **WHEN** a cluster is not yet registered and `allow_billable_external_cluster` is not explicitly `true` for it
+- **THEN** the playbook fails that cluster's run with a message naming the documented per-vCPU cost and the required approval, and no Fleet mutation occurs (confirmed: zero `register` calls issued, `gcloud container fleet memberships list` unchanged)
+
+#### Scenario: Registration proceeds with explicit cost approval
+- **WHEN** a cluster is not yet registered and `allow_billable_external_cluster` is explicitly `true` for it
+- **THEN** registration proceeds, the resulting `clusterTier` is recorded as informational evidence in the run artifact, and the cluster is NOT unregistered merely because `clusterTier` reports `ENTERPRISE`
+
+#### Scenario: Approval does not re-block an already-registered cluster
+- **WHEN** a cluster is already registered and `READY`, regardless of `allow_billable_external_cluster`'s current value
+- **THEN** re-running `onboard.yml` or `verify.yml` against it does not fail on the cost-approval gate (the gate only applies to a genuinely new registration)
 
 ### Requirement: Multi-cluster onboarding in one invocation
 The workflow SHALL onboard one or many clusters from a single playbook invocation, driven entirely by inventory data, with no per-cluster playbook duplication, and a failure on one cluster SHALL NOT affect another cluster's onboarding.

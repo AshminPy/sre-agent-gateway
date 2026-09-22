@@ -49,9 +49,30 @@ external_clusters:
     environment: nonprod
     rbac_role: clusterrole/view
     grant_node_read: true   # or false, if the work MCP tool surface never calls list_node/read_node
+    allow_billable_external_cluster: true   # see "Cost approval" below -- do NOT default this to true
 runtime_identity: <the work SRE Agent runtime's own service-account email, IAM-granted
-                    roles/gkehub.gatewayReader + roles/gkehub.viewer on the Fleet host project>
+                    roles/gkehub.gatewayReader (+ roles/gkehub.viewer only if the work
+                    team also wants Ansible's own get-credentials-based verification
+                    step to work -- production itself only needs gatewayReader,
+                    confirmed live) on the Fleet host project>
 ```
+
+## Cost approval — a real decision, not a default
+
+Registering any non-GKE cluster into a Fleet is documented by Google as incurring a
+per-vCPU charge (GKE Multicloud Attached Clusters pricing) -- independent of what
+`clusterTier` the resulting membership reports (`clusterTier` is legacy metadata; GKE
+no longer has separate commercial editions). This workflow will not register a new
+cluster without `allow_billable_external_cluster: true` set explicitly for it.
+
+**The work team must explicitly approve this cost before it's set anywhere in the
+work inventory** -- this personal repo never assumes that approval on the work
+team's behalf, and this file does not set it for you. Once approved, set it ONCE
+at the work inventory's `group_vars` level (applies to every cluster in that
+group) rather than repeating it per cluster -- that is a deliberate, reviewable,
+one-time decision for that inventory/environment, not a per-cluster afterthought.
+Do not set it in this personal repo's own committed defaults, and do not make it
+true by default anywhere it could silently apply to a cluster nobody reviewed.
 
 ## Required GCP IAM
 
