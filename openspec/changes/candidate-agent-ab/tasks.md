@@ -16,5 +16,5 @@
 - [x] 4.1 Plan with flag on: only additions
 - [x] 4.2 Apply (18 added, 0 changed, 0 destroyed); candidate engine 4863794688827588608 live; primary updateTime unchanged
 - [x] 4.3 Add candidate principal to `k8s/rbac.yaml`; apply; verify binding
-- [ ] 4.4 Smoke investigation on candidate engine succeeds
+- [x] 4.4 Smoke investigation on candidate engine succeeds (crashloop-001, oomkilled-001: confirmed; imagepull-001: insufficient_evidence -- see 4.5)
 - [ ] 4.5 Same eval cases run against both engines; results compared
