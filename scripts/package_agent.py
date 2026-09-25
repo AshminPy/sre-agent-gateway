@@ -17,8 +17,11 @@ import os
 import tarfile
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-AGENT_DIR = os.path.join(REPO_ROOT, "agent")
-OUT_PATH = os.path.join(REPO_ROOT, "agent.tar.gz")
+# Optional overrides, used by `make package-candidate` to build the A/B candidate
+# agent (openspec/changes/candidate-agent-ab) from a source tree OUTSIDE this repo.
+# Unset = the primary agent, byte-identical to before.
+AGENT_DIR = os.path.abspath(os.environ.get("AGENT_SRC_DIR") or os.path.join(REPO_ROOT, "agent"))
+OUT_PATH = os.path.abspath(os.environ.get("AGENT_OUT_PATH") or os.path.join(REPO_ROOT, "agent.tar.gz"))
 
 EXCLUDE_NAMES = {"__pycache__", ".env", ".env.example"}
 EXCLUDE_SUFFIXES = (".pyc",)
@@ -73,7 +76,7 @@ def main():
         with gzip.GzipFile(filename="", mode="wb", fileobj=out, mtime=FIXED_MTIME) as gz:
             gz.write(tar_buffer.getvalue())
 
-    print(f"Built {OUT_PATH} (reproducible, {len(files)} files) from agent/")
+    print(f"Built {OUT_PATH} (reproducible, {len(files)} files) from {AGENT_DIR}")
 
 
 if __name__ == "__main__":

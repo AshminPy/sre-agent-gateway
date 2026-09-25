@@ -1,7 +1,7 @@
 # testing2-gcp-sre-agent — common tasks.
 # Run `make help` for a summary.
 
-.PHONY: help package-agent build-mcp tf-agent-init tf-agent-plan tf-agent-apply \
+.PHONY: help package-agent package-candidate build-mcp tf-agent-init tf-agent-plan tf-agent-apply \
         tf-gke-init tf-gke-plan tf-gke-apply post-apply attach-gateway \
         register-endpoints smoke env fmt validate clean \
         kind-onprem-up onprem-onboard-kind onprem-check-kind onprem-cleanup-kind \
@@ -20,6 +20,10 @@ help:  ## Show this help
 
 package-agent:  ## Build agent.tar.gz from agent/ (reproducible)
 	@bash scripts/package_agent.sh
+
+package-candidate:  ## Build agent-candidate.tar.gz from $$CANDIDATE_AGENT_SRC (A/B candidate, never committed)
+	@test -n "$(CANDIDATE_AGENT_SRC)" || { echo "Set CANDIDATE_AGENT_SRC=/path/to/candidate/agent"; exit 1; }
+	@AGENT_SRC_DIR="$(CANDIDATE_AGENT_SRC)" AGENT_OUT_PATH="$(CURDIR)/agent-candidate.tar.gz" python3 scripts/package_agent.py
 
 build-mcp:  ## Build & push the custom Cloud Run MCP image (only if enable_custom_mcp=true)
 	@echo "Build the MCP image and push to Artifact Registry:"

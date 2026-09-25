@@ -315,3 +315,9 @@ variable "log_analytics_retention_days" {
   type        = number
   default     = 30
 }
+
+variable "enable_candidate_agent" {
+  description = "Deploy the optional A/B candidate agent (candidate_agent.tf). Requires agent-candidate.tar.gz from `make package-candidate`."
+  type        = bool
+  default     = false
+}

@@ -41,3 +41,9 @@ subjects:
     apiGroup: rbac.authorization.k8s.io
     # projects/sreagent-t2-demo/locations/us-central1/reasoningEngines/7801582006105538560
     name: principal://agents.global.org-1076201471152.system.id.goog/resources/aiplatform/projects/327234009108/locations/us-central1/reasoningEngines/7801582006105538560
+  - kind: User
+    apiGroup: rbac.authorization.k8s.io
+    # A/B candidate agent (iac/agent/candidate_agent.tf, output candidate_agent_identity_member).
+    # Remove this subject when the candidate is disabled.
+    # projects/sreagent-t2-demo/locations/us-central1/reasoningEngines/4863794688827588608
+    name: principal://agents.global.org-1076201471152.system.id.goog/resources/aiplatform/projects/327234009108/locations/us-central1/reasoningEngines/4863794688827588608
